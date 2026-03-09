@@ -115,10 +115,11 @@ Data storage location:
 
 ## Install
 
-One command (from GitHub):
+One command (from GitHub, anonymous-friendly):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/intentionally-left-blank/Amaryllis/main/scripts/install_macos.sh | bash
+AMARYLLIS_REPO_URL="https://github.com/<org-or-user>/Amaryllis.git" \
+curl -fsSL "https://raw.githubusercontent.com/<org-or-user>/Amaryllis/main/scripts/install_macos.sh" | bash
 ```
 
 One command (inside cloned repo):
@@ -126,6 +127,10 @@ One command (inside cloned repo):
 ```bash
 ./scripts/install_macos.sh
 ```
+
+Privacy note:
+- installer has no hardcoded personal GitHub URL
+- pass repository URL via `AMARYLLIS_REPO_URL` when installing from raw script
 
 Manual backend setup:
 
@@ -270,14 +275,14 @@ curl -X POST http://localhost:8000/agents/create \
     "system_prompt": "You are a practical research assistant.",
     "model": "mlx-community/Qwen2.5-1.5B-Instruct-4bit",
     "tools": ["web_search", "filesystem"],
-    "user_id": "demo-user"
+    "user_id": "user-001"
   }'
 ```
 
 ### List agents
 
 ```bash
-curl "http://localhost:8000/agents?user_id=demo-user"
+curl "http://localhost:8000/agents?user_id=user-001"
 ```
 
 ### Chat with agent
@@ -286,8 +291,8 @@ curl "http://localhost:8000/agents?user_id=demo-user"
 curl -X POST http://localhost:8000/agents/<agent_id>/chat \
   -H "Content-Type: application/json" \
   -d '{
-    "user_id": "demo-user",
-    "session_id": "demo-session",
+    "user_id": "user-001",
+    "session_id": "session-001",
     "message": "Find 3 sources about MLX and summarize them."
   }'
 ```

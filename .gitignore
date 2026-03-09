@@ -173,6 +173,9 @@ cython_debug/
 DerivedData/
 macos/AmaryllisApp/dist/
 macos/AmaryllisApp/Assets/
+.DS_Store
+.AppleDouble
+.LSOverride
 
 # PyCharm
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
