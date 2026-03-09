@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_URL="${AMARYLLIS_REPO_URL:-}"
+REPO_URL="${AMARYLLIS_REPO_URL:-https://github.com/intentionally-left-blank/Amaryllis.git}"
 BRANCH="${AMARYLLIS_BRANCH:-main}"
 APP_NAME="Amaryllis.app"
 BUNDLE_ID="org.amaryllis.app"
@@ -21,12 +21,6 @@ cleanup() {
 trap cleanup EXIT
 
 if [[ ! -x "${SOURCE_DIR}/macos/AmaryllisApp/scripts/build_app.sh" ]]; then
-  if [[ -z "${REPO_URL}" ]]; then
-    echo "AMARYLLIS_REPO_URL is not set."
-    echo "Set it explicitly, for example:"
-    echo "  AMARYLLIS_REPO_URL=https://github.com/<org-or-user>/Amaryllis.git ./scripts/install_macos.sh"
-    exit 1
-  fi
   WORKDIR="$(mktemp -d)"
   SOURCE_DIR="${WORKDIR}/Amaryllis"
   git clone --depth 1 --branch "${BRANCH}" "${REPO_URL}" "${SOURCE_DIR}"

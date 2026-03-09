@@ -115,11 +115,10 @@ Data storage location:
 
 ## Install
 
-One command (from GitHub, anonymous-friendly):
+One command (from GitHub):
 
 ```bash
-AMARYLLIS_REPO_URL="https://github.com/<org-or-user>/Amaryllis.git" \
-curl -fsSL "https://raw.githubusercontent.com/<org-or-user>/Amaryllis/main/scripts/install_macos.sh" | bash
+curl -fsSL https://raw.githubusercontent.com/intentionally-left-blank/Amaryllis/main/scripts/install_macos.sh | bash
 ```
 
 One command (inside cloned repo):
@@ -127,10 +126,6 @@ One command (inside cloned repo):
 ```bash
 ./scripts/install_macos.sh
 ```
-
-Privacy note:
-- installer has no hardcoded personal GitHub URL
-- pass repository URL via `AMARYLLIS_REPO_URL` when installing from raw script
 
 Manual backend setup:
 
