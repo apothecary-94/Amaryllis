@@ -198,8 +198,27 @@ def chat_completions(payload: ChatCompletionsRequest, request: Request):
             }
             yield f"data: {json.dumps(first_chunk, ensure_ascii=False)}\n\n"
 
-            for chunk in iterator:
-                payload_chunk = {
+            stream_error = False
+            try:
+                for chunk in iterator:
+                    payload_chunk = {
+                        "id": completion_id,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": model_used,
+                        "provider": provider_used,
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {"content": chunk},
+                                "finish_reason": None,
+                            }
+                        ],
+                    }
+                    yield f"data: {json.dumps(payload_chunk, ensure_ascii=False)}\n\n"
+            except Exception as exc:
+                stream_error = True
+                error_chunk = {
                     "id": completion_id,
                     "object": "chat.completion.chunk",
                     "created": created,
@@ -208,12 +227,12 @@ def chat_completions(payload: ChatCompletionsRequest, request: Request):
                     "choices": [
                         {
                             "index": 0,
-                            "delta": {"content": chunk},
-                            "finish_reason": None,
+                            "delta": {"content": f"Error: {exc}"},
+                            "finish_reason": "error",
                         }
                     ],
                 }
-                yield f"data: {json.dumps(payload_chunk, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps(error_chunk, ensure_ascii=False)}\n\n"
 
             done_chunk = {
                 "id": completion_id,
@@ -225,7 +244,7 @@ def chat_completions(payload: ChatCompletionsRequest, request: Request):
                     {
                         "index": 0,
                         "delta": {},
-                        "finish_reason": "stop",
+                        "finish_reason": "error" if stream_error else "stop",
                     }
                 ],
             }
