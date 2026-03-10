@@ -22,6 +22,30 @@ struct SettingsView: View {
                 TextField("Path to repository root", text: $appState.runtimeDirectory)
                     .textFieldStyle(.roundedBorder)
 
+                Text("OpenAI Base URL")
+                    .font(AmaryllisTheme.bodyFont(size: 12, weight: .semibold))
+                    .foregroundStyle(AmaryllisTheme.textSecondary)
+                TextField("https://api.openai.com/v1", text: $appState.openAIBaseURL)
+                    .textFieldStyle(.roundedBorder)
+
+                Text("OpenAI API Key")
+                    .font(AmaryllisTheme.bodyFont(size: 12, weight: .semibold))
+                    .foregroundStyle(AmaryllisTheme.textSecondary)
+                SecureField("sk-...", text: $appState.openAIAPIKey)
+                    .textFieldStyle(.roundedBorder)
+
+                Text("OpenRouter Base URL")
+                    .font(AmaryllisTheme.bodyFont(size: 12, weight: .semibold))
+                    .foregroundStyle(AmaryllisTheme.textSecondary)
+                TextField("https://openrouter.ai/api/v1", text: $appState.openRouterBaseURL)
+                    .textFieldStyle(.roundedBorder)
+
+                Text("OpenRouter API Key")
+                    .font(AmaryllisTheme.bodyFont(size: 12, weight: .semibold))
+                    .foregroundStyle(AmaryllisTheme.textSecondary)
+                SecureField("or-...", text: $appState.openRouterAPIKey)
+                    .textFieldStyle(.roundedBorder)
+
                 HStack(spacing: 8) {
                     Button("Save") {
                         appState.persistSettings()
@@ -45,6 +69,10 @@ struct SettingsView: View {
                     }
                     .buttonStyle(AmaryllisSecondaryButtonStyle())
                 }
+
+                Text("After updating cloud provider keys, restart runtime.")
+                    .font(AmaryllisTheme.bodyFont(size: 11, weight: .medium))
+                    .foregroundStyle(AmaryllisTheme.textSecondary)
 
                 if let error = appState.lastError {
                     Text(error)

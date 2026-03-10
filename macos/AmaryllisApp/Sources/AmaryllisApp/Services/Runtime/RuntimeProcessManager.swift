@@ -26,7 +26,12 @@ final class RuntimeProcessManager: ObservableObject {
         processState == .running
     }
 
-    func start(runtimeDirectory: String, host: String, port: Int) {
+    func start(
+        runtimeDirectory: String,
+        host: String,
+        port: Int,
+        additionalEnvironment: [String: String] = [:]
+    ) {
         guard process == nil else { return }
 
         processState = .starting
@@ -58,7 +63,7 @@ final class RuntimeProcessManager: ObservableObject {
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         proc.arguments = uvicornArgs
         proc.currentDirectoryURL = runtimeURL
-        proc.environment = mergedEnvironment()
+        proc.environment = mergedEnvironment(additional: additionalEnvironment)
 
         let pipe = Pipe()
         outputPipe = pipe
@@ -123,9 +128,12 @@ final class RuntimeProcessManager: ObservableObject {
         }
     }
 
-    private func mergedEnvironment() -> [String: String] {
+    private func mergedEnvironment(additional: [String: String]) -> [String: String] {
         var env = ProcessInfo.processInfo.environment
         env["PYTHONUNBUFFERED"] = "1"
+        for (key, value) in additional {
+            env[key] = value
+        }
         return env
     }
 }

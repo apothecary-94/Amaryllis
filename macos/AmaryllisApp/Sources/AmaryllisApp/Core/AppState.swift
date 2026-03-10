@@ -9,6 +9,10 @@ final class AppState: ObservableObject {
     @Published var modelCatalog: APIModelCatalog?
     @Published var selectedModel: String?
     @Published var selectedProvider: String?
+    @Published var openAIBaseURL: String
+    @Published var openAIAPIKey: String
+    @Published var openRouterBaseURL: String
+    @Published var openRouterAPIKey: String
     @Published var chatSessions: [LocalChatSession] = []
     @Published var selectedChatID: UUID?
     @Published var isBusy: Bool = false
@@ -19,6 +23,11 @@ final class AppState: ObservableObject {
     private let endpointKey = "amaryllis.endpoint"
     private let runtimeDirKey = "amaryllis.runtimeDirectory"
     private let selectedChatKey = "amaryllis.selectedChatID"
+    private let openAIBaseURLKey = "amaryllis.openai.baseURL"
+    private let openRouterBaseURLKey = "amaryllis.openrouter.baseURL"
+    private let keychainService = "org.amaryllis.app.credentials"
+    private let openAIKeychainAccount = "openai_api_key"
+    private let openRouterKeychainAccount = "openrouter_api_key"
 
     lazy var apiClient = AmaryllisAPIClient(baseURLProvider: { [unowned self] in
         self.endpoint
@@ -27,6 +36,10 @@ final class AppState: ObservableObject {
     init() {
         let defaults = UserDefaults.standard
         self.endpoint = defaults.string(forKey: endpointKey) ?? "http://localhost:8000"
+        self.openAIBaseURL = defaults.string(forKey: openAIBaseURLKey) ?? "https://api.openai.com/v1"
+        self.openRouterBaseURL = defaults.string(forKey: openRouterBaseURLKey) ?? "https://openrouter.ai/api/v1"
+        self.openAIAPIKey = KeychainStore.get(service: keychainService, account: openAIKeychainAccount) ?? ""
+        self.openRouterAPIKey = KeychainStore.get(service: keychainService, account: openRouterKeychainAccount) ?? ""
 
         let discoveredRuntimeDir = AppState.discoverRuntimeDirectory()
         let persistedRuntimeDir = defaults.string(forKey: runtimeDirKey)
@@ -42,8 +55,13 @@ final class AppState: ObservableObject {
 
     func persistSettings() {
         let defaults = UserDefaults.standard
-        defaults.set(endpoint, forKey: endpointKey)
-        defaults.set(runtimeDirectory, forKey: runtimeDirKey)
+        defaults.set(endpoint.trimmingCharacters(in: .whitespacesAndNewlines), forKey: endpointKey)
+        defaults.set(runtimeDirectory.trimmingCharacters(in: .whitespacesAndNewlines), forKey: runtimeDirKey)
+        defaults.set(openAIBaseURL.trimmingCharacters(in: .whitespacesAndNewlines), forKey: openAIBaseURLKey)
+        defaults.set(openRouterBaseURL.trimmingCharacters(in: .whitespacesAndNewlines), forKey: openRouterBaseURLKey)
+
+        saveSecret(openAIAPIKey, account: openAIKeychainAccount)
+        saveSecret(openRouterAPIKey, account: openRouterKeychainAccount)
     }
 
     func clearError() {
@@ -117,7 +135,12 @@ final class AppState: ObservableObject {
     func startRuntime() {
         let host = URL(string: endpoint)?.host ?? "localhost"
         let port = URL(string: endpoint)?.port ?? 8000
-        runtimeManager.start(runtimeDirectory: runtimeDirectory, host: host, port: port)
+        runtimeManager.start(
+            runtimeDirectory: runtimeDirectory,
+            host: host,
+            port: port,
+            additionalEnvironment: runtimeEnvironment()
+        )
     }
 
     func stopRuntime() {
@@ -353,6 +376,37 @@ final class AppState: ObservableObject {
         } catch {
             runtimeManager.connectionState = .offline
             return false
+        }
+    }
+
+    private func runtimeEnvironment() -> [String: String] {
+        var env: [String: String] = [:]
+        let trimmedOpenAIBase = openAIBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedOpenAIKey = openAIAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedOpenRouterBase = openRouterBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedOpenRouterKey = openRouterAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if !trimmedOpenAIBase.isEmpty {
+            env["AMARYLLIS_OPENAI_BASE_URL"] = trimmedOpenAIBase
+        }
+        if !trimmedOpenAIKey.isEmpty {
+            env["AMARYLLIS_OPENAI_API_KEY"] = trimmedOpenAIKey
+        }
+        if !trimmedOpenRouterBase.isEmpty {
+            env["AMARYLLIS_OPENROUTER_BASE_URL"] = trimmedOpenRouterBase
+        }
+        if !trimmedOpenRouterKey.isEmpty {
+            env["AMARYLLIS_OPENROUTER_API_KEY"] = trimmedOpenRouterKey
+        }
+        return env
+    }
+
+    private func saveSecret(_ rawValue: String, account: String) {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            _ = KeychainStore.delete(service: keychainService, account: account)
+        } else {
+            _ = KeychainStore.set(service: keychainService, account: account, value: trimmed)
         }
     }
 

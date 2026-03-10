@@ -78,6 +78,7 @@ Data storage location:
 │   └── providers
 │       ├── mlx_provider.py
 │       ├── openai_provider.py
+│       ├── openrouter_provider.py
 │       └── ollama_provider.py
 ├── macos
 │   └── AmaryllisApp
@@ -189,7 +190,11 @@ macos/AmaryllisApp/dist/Amaryllis.dmg
 In app settings:
 - set `API Endpoint` (default `http://localhost:8000`)
 - set `Runtime Directory` to your repository root
+- set optional cloud provider URLs and API keys:
+  - OpenAI (`https://api.openai.com/v1`)
+  - OpenRouter (`https://openrouter.ai/api/v1`)
 - use `Start Runtime` to run the Python backend from UI
+- API keys entered in app settings are stored in macOS Keychain
 
 Chat tab behavior:
 - create multiple chats (`New Chat`)
@@ -239,6 +244,17 @@ curl -X POST http://localhost:8000/models/load \
   -d '{
     "model_id": "gpt-4o-mini",
     "provider": "openai"
+  }'
+```
+
+### Load remote OpenRouter model (optional)
+
+```bash
+curl -X POST http://localhost:8000/models/load \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model_id": "openai/gpt-4o-mini",
+    "provider": "openrouter"
   }'
 ```
 
@@ -318,12 +334,14 @@ Plugins are auto-discovered from:
 
 - MLX is the primary local inference provider.
 - If MLX fails and fallback is enabled, runtime can try Ollama.
-- You can optionally enable a remote OpenAI-compatible provider.
+- You can optionally enable remote cloud providers: OpenAI and OpenRouter.
 - Configure fallback via env:
   - `AMARYLLIS_OLLAMA_FALLBACK=true|false`
   - `AMARYLLIS_OLLAMA_URL=http://localhost:11434`
   - `AMARYLLIS_OPENAI_BASE_URL=https://api.openai.com/v1`
   - `AMARYLLIS_OPENAI_API_KEY=<your_key>`
+  - `AMARYLLIS_OPENROUTER_BASE_URL=https://openrouter.ai/api/v1`
+  - `AMARYLLIS_OPENROUTER_API_KEY=<your_key>`
 
 ## Example Environment Variables
 
@@ -336,6 +354,8 @@ export AMARYLLIS_OLLAMA_URL=http://localhost:11434
 export AMARYLLIS_OLLAMA_FALLBACK=true
 export AMARYLLIS_OPENAI_BASE_URL=https://api.openai.com/v1
 export AMARYLLIS_OPENAI_API_KEY=replace_me
+export AMARYLLIS_OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+export AMARYLLIS_OPENROUTER_API_KEY=replace_me
 ```
 
 ## License

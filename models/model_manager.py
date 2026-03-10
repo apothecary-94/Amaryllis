@@ -6,6 +6,7 @@ from typing import Any, Iterator
 
 from models.providers.mlx_provider import MLXProvider
 from models.providers.openai_provider import OpenAIProvider
+from models.providers.openrouter_provider import OpenRouterProvider
 from models.providers.ollama_provider import OllamaProvider
 from runtime.config import AppConfig
 from storage.database import Database
@@ -25,6 +26,11 @@ class ModelManager:
             self.providers["openai"] = OpenAIProvider(
                 base_url=config.openai_base_url,
                 api_key=config.openai_api_key,
+            )
+        if config.openrouter_api_key or config.openrouter_base_url != "https://openrouter.ai/api/v1":
+            self.providers["openrouter"] = OpenRouterProvider(
+                base_url=config.openrouter_base_url,
+                api_key=config.openrouter_api_key,
             )
 
         self.active_provider = database.get_setting("active_provider", config.default_provider) or config.default_provider
@@ -247,6 +253,11 @@ class ModelManager:
     def _default_model_for_provider(self, provider_name: str) -> str:
         if provider_name == "openai":
             return self.database.get_setting("openai_default_model", "gpt-4o-mini") or "gpt-4o-mini"
+        if provider_name == "openrouter":
+            return (
+                self.database.get_setting("openrouter_default_model", "openai/gpt-4o-mini")
+                or "openai/gpt-4o-mini"
+            )
         if provider_name == "ollama":
             return self.database.get_setting("ollama_fallback_model", "llama3.2") or "llama3.2"
         return self.config.default_model
