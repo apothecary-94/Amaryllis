@@ -219,6 +219,131 @@ final class AmaryllisAPIClient {
         return try await request(path: path, method: "POST", body: body)
     }
 
+    func createAutomation(
+        agentId: String,
+        userId: String,
+        message: String,
+        sessionId: String?,
+        intervalSec: Int? = nil,
+        scheduleType: String? = nil,
+        schedule: [String: JSONValue]? = nil,
+        timezone: String = "UTC",
+        startImmediately: Bool
+    ) async throws -> APIAutomationRecord {
+        let payload = APICreateAutomationRequest(
+            agentId: agentId,
+            userId: userId,
+            message: message,
+            sessionId: sessionId,
+            intervalSec: intervalSec,
+            scheduleType: scheduleType,
+            schedule: schedule,
+            timezone: timezone,
+            startImmediately: startImmediately
+        )
+        let body = try jsonEncoder.encode(payload)
+        let response: APIAutomationSingleResponse = try await request(
+            path: "/automations/create",
+            method: "POST",
+            body: body
+        )
+        return response.automation
+    }
+
+    func updateAutomation(
+        automationId: String,
+        message: String? = nil,
+        sessionId: String? = nil,
+        intervalSec: Int? = nil,
+        scheduleType: String? = nil,
+        schedule: [String: JSONValue]? = nil,
+        timezone: String? = nil
+    ) async throws -> APIAutomationRecord {
+        let payload = APIUpdateAutomationRequest(
+            message: message,
+            sessionId: sessionId,
+            intervalSec: intervalSec,
+            scheduleType: scheduleType,
+            schedule: schedule,
+            timezone: timezone
+        )
+        let body = try jsonEncoder.encode(payload)
+        let response: APIAutomationSingleResponse = try await request(
+            path: "/automations/\(automationId)/update",
+            method: "POST",
+            body: body
+        )
+        return response.automation
+    }
+
+    func listAutomations(
+        userId: String?,
+        agentId: String?,
+        enabled: Bool? = nil,
+        limit: Int = 200
+    ) async throws -> APIAutomationListResponse {
+        var queryItems: [URLQueryItem] = [
+            URLQueryItem(name: "limit", value: String(limit))
+        ]
+        if let userId, !userId.isEmpty {
+            queryItems.append(URLQueryItem(name: "user_id", value: userId))
+        }
+        if let agentId, !agentId.isEmpty {
+            queryItems.append(URLQueryItem(name: "agent_id", value: agentId))
+        }
+        if let enabled {
+            queryItems.append(URLQueryItem(name: "enabled", value: enabled ? "true" : "false"))
+        }
+        let path = buildPath(path: "/automations", queryItems: queryItems)
+        return try await request(path: path, method: "GET", body: Optional<Data>.none)
+    }
+
+    func pauseAutomation(automationId: String) async throws -> APIAutomationRecord {
+        let response: APIAutomationSingleResponse = try await request(
+            path: "/automations/\(automationId)/pause",
+            method: "POST",
+            body: Optional<Data>.none
+        )
+        return response.automation
+    }
+
+    func resumeAutomation(automationId: String) async throws -> APIAutomationRecord {
+        let response: APIAutomationSingleResponse = try await request(
+            path: "/automations/\(automationId)/resume",
+            method: "POST",
+            body: Optional<Data>.none
+        )
+        return response.automation
+    }
+
+    func runAutomationNow(automationId: String) async throws -> APIAutomationRecord {
+        let response: APIAutomationSingleResponse = try await request(
+            path: "/automations/\(automationId)/run",
+            method: "POST",
+            body: Optional<Data>.none
+        )
+        return response.automation
+    }
+
+    func deleteAutomation(automationId: String) async throws -> APIAutomationDeleteResponse {
+        try await request(
+            path: "/automations/\(automationId)",
+            method: "DELETE",
+            body: Optional<Data>.none
+        )
+    }
+
+    func listAutomationEvents(
+        automationId: String,
+        limit: Int = 100
+    ) async throws -> APIAutomationEventsResponse {
+        let path = buildPath(
+            path: "/automations/\(automationId)/events",
+            queryItems: [URLQueryItem(name: "limit", value: String(limit))]
+        )
+        return try await request(path: path, method: "GET", body: Optional<Data>.none)
+    }
+
     func debugMemoryContext(
         userId: String,
         agentId: String?,

@@ -29,6 +29,8 @@ class AppConfig:
     openrouter_api_key: str | None
     run_workers: int
     run_max_attempts: int
+    automation_poll_sec: float
+    automation_batch_size: int
     tool_approval_enforcement: str
     blocked_tools: tuple[str, ...]
     plugin_signing_key: str | None
@@ -125,6 +127,8 @@ class AppConfig:
             openrouter_api_key=(os.getenv("AMARYLLIS_OPENROUTER_API_KEY") or "").strip() or None,
             run_workers=max(1, int(os.getenv("AMARYLLIS_RUN_WORKERS", "2"))),
             run_max_attempts=max(1, int(os.getenv("AMARYLLIS_RUN_MAX_ATTEMPTS", "2"))),
+            automation_poll_sec=max(0.5, float(os.getenv("AMARYLLIS_AUTOMATION_POLL_SEC", "2"))),
+            automation_batch_size=max(1, int(os.getenv("AMARYLLIS_AUTOMATION_BATCH_SIZE", "10"))),
             tool_approval_enforcement=tool_approval_enforcement,
             blocked_tools=blocked_tools,
             plugin_signing_key=(os.getenv("AMARYLLIS_PLUGIN_SIGNING_KEY") or "").strip() or None,

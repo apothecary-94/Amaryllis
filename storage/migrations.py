@@ -162,6 +162,52 @@ MIGRATIONS: list[Migration] = [
             ON agent_runs(status, updated_at);
         """,
     ),
+    Migration(
+        version=4,
+        name="automation_layer_v1",
+        sql="""
+        CREATE TABLE IF NOT EXISTS automations (
+            id TEXT PRIMARY KEY,
+            agent_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            session_id TEXT,
+            message TEXT NOT NULL,
+            interval_sec INTEGER NOT NULL,
+            is_enabled INTEGER NOT NULL DEFAULT 1,
+            next_run_at TEXT NOT NULL,
+            last_run_at TEXT,
+            last_error TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_automations_enabled_next_run
+            ON automations(is_enabled, next_run_at);
+        CREATE INDEX IF NOT EXISTS idx_automations_user_created
+            ON automations(user_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS automation_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            automation_id TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            message TEXT NOT NULL,
+            run_id TEXT,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_automation_events_automation_time
+            ON automation_events(automation_id, created_at);
+        """,
+    ),
+    Migration(
+        version=5,
+        name="automation_schedule_v2",
+        sql="""
+        ALTER TABLE automations ADD COLUMN schedule_type TEXT NOT NULL DEFAULT 'interval';
+        ALTER TABLE automations ADD COLUMN schedule_json TEXT NOT NULL DEFAULT '{}';
+        ALTER TABLE automations ADD COLUMN timezone TEXT NOT NULL DEFAULT 'UTC';
+        """,
+    ),
 ]
 
 

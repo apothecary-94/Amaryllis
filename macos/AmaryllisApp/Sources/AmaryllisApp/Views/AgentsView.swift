@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 
 struct AgentsView: View {
@@ -16,9 +17,25 @@ struct AgentsView: View {
     @State private var chatInput: String = ""
     @State private var chatHistory: [String] = []
 
+    @State private var newAutomationMessage: String = "Check recent updates and summarize key points."
+    @State private var newAutomationScheduleType: String = "interval"
+    @State private var newAutomationIntervalSec: String = "300"
+    @State private var newAutomationIntervalHours: String = "4"
+    @State private var newAutomationHour: String = "9"
+    @State private var newAutomationMinute: String = "0"
+    @State private var newAutomationWeekdays: String = "MO,TU,WE,TH,FR"
+    @State private var newAutomationTimezone: String = TimeZone.current.identifier
+    @State private var automationStartImmediately: Bool = false
+    @State private var automations: [APIAutomationRecord] = []
+    @State private var selectedAutomationID: String?
+    @State private var automationEvents: [APIAutomationEvent] = []
+
     @State private var isLoadingAgents: Bool = false
     @State private var isCreatingAgent: Bool = false
     @State private var isSending: Bool = false
+    @State private var isLoadingAutomations: Bool = false
+    @State private var isCreatingAutomation: Bool = false
+    @State private var isAutomationActionLoading: Bool = false
 
     var body: some View {
         HStack(spacing: 12) {
@@ -30,6 +47,10 @@ struct AgentsView: View {
         }
         .task {
             await refreshAgents()
+            await refreshAutomations()
+        }
+        .onChange(of: selectedAgentID ?? "") { _ in
+            Task { await refreshAutomations() }
         }
     }
 
@@ -70,7 +91,10 @@ struct AgentsView: View {
                     .disabled(isCreatingAgent || newAgentName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
                     Button("Refresh") {
-                        Task { await refreshAgents() }
+                        Task {
+                            await refreshAgents()
+                            await refreshAutomations()
+                        }
                     }
                     .buttonStyle(AmaryllisSecondaryButtonStyle())
                     .disabled(isLoadingAgents)
@@ -148,6 +172,7 @@ struct AgentsView: View {
                     }
                 }
             }
+            .frame(maxHeight: 220)
             .amaryllisCard()
 
             HStack(spacing: 8) {
@@ -172,6 +197,216 @@ struct AgentsView: View {
                 }
                 .buttonStyle(AmaryllisPrimaryButtonStyle())
                 .disabled(isSending || selectedAgent == nil || chatInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            .amaryllisCard()
+
+            automationPanel
+                .frame(maxHeight: .infinity)
+        }
+    }
+
+    private var automationPanel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Automation")
+                .font(AmaryllisTheme.sectionFont(size: 18))
+                .foregroundStyle(AmaryllisTheme.textPrimary)
+
+            if selectedAgent == nil {
+                Text("Select an agent to configure scheduled runs.")
+                    .font(AmaryllisTheme.bodyFont(size: 12, weight: .medium))
+                    .foregroundStyle(AmaryllisTheme.textSecondary)
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        TextField("Scheduled message", text: $newAutomationMessage)
+                            .textFieldStyle(.roundedBorder)
+
+                        TextField("Timezone", text: $newAutomationTimezone)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 180)
+                    }
+
+                    HStack(spacing: 8) {
+                        Picker("Schedule", selection: $newAutomationScheduleType) {
+                            Text("interval").tag("interval")
+                            Text("hourly").tag("hourly")
+                            Text("weekly").tag("weekly")
+                        }
+                        .pickerStyle(.menu)
+                        .frame(width: 120)
+
+                        if newAutomationScheduleType == "interval" {
+                            TextField("Interval (sec)", text: $newAutomationIntervalSec)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 130)
+                        } else if newAutomationScheduleType == "hourly" {
+                            TextField("Every N hours", text: $newAutomationIntervalHours)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 130)
+                            TextField("Minute", text: $newAutomationMinute)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 90)
+                        } else {
+                            TextField("Weekdays (MO,TU,...)", text: $newAutomationWeekdays)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(minWidth: 170, maxWidth: 240)
+                            TextField("Hour", text: $newAutomationHour)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 80)
+                            TextField("Minute", text: $newAutomationMinute)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 80)
+                        }
+
+                        Toggle("Run now", isOn: $automationStartImmediately)
+                            .toggleStyle(.switch)
+                            .font(AmaryllisTheme.bodyFont(size: 11, weight: .semibold))
+                            .frame(width: 120)
+
+                        Button {
+                            Task { await createAutomation() }
+                        } label: {
+                            if isCreatingAutomation {
+                                ProgressView()
+                                    .controlSize(.small)
+                                    .frame(width: 90)
+                            } else {
+                                Text("Create")
+                                    .frame(width: 90)
+                            }
+                        }
+                        .buttonStyle(AmaryllisPrimaryButtonStyle())
+                        .disabled(isCreatingAutomation || newAutomationMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                        Button("Apply") {
+                            Task { await applyAutomationScheduleUpdate() }
+                        }
+                        .buttonStyle(AmaryllisSecondaryButtonStyle())
+                        .disabled(isAutomationActionLoading || selectedAutomationID == nil)
+
+                        Button("Refresh") {
+                            Task { await refreshAutomations() }
+                        }
+                        .buttonStyle(AmaryllisSecondaryButtonStyle())
+                        .disabled(isLoadingAutomations || isAutomationActionLoading)
+                    }
+                }
+
+                Text("Automations: \(automations.count)")
+                    .font(AmaryllisTheme.bodyFont(size: 11, weight: .medium))
+                    .foregroundStyle(AmaryllisTheme.textSecondary)
+
+                if automations.isEmpty {
+                    Text("No automations for this agent yet.")
+                        .font(AmaryllisTheme.bodyFont(size: 12, weight: .medium))
+                        .foregroundStyle(AmaryllisTheme.textSecondary)
+                } else {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 8) {
+                            ForEach(automations) { automation in
+                                VStack(alignment: .leading, spacing: 6) {
+                                    HStack(spacing: 8) {
+                                        Circle()
+                                            .fill(automation.isEnabled ? Color.green : AmaryllisTheme.accent)
+                                            .frame(width: 8, height: 8)
+                                        Text(automation.message)
+                                            .font(AmaryllisTheme.bodyFont(size: 12, weight: .semibold))
+                                            .foregroundStyle(AmaryllisTheme.textPrimary)
+                                            .lineLimit(2)
+                                        Spacer()
+                                        Text(scheduleSummary(for: automation))
+                                            .font(AmaryllisTheme.monoFont(size: 10, weight: .regular))
+                                            .foregroundStyle(AmaryllisTheme.textSecondary)
+                                    }
+
+                                    Text("next: \(automation.nextRunAt) | tz: \(automation.timezone)")
+                                        .font(AmaryllisTheme.monoFont(size: 10, weight: .regular))
+                                        .foregroundStyle(AmaryllisTheme.textSecondary)
+
+                                    if let error = automation.lastError, !error.isEmpty {
+                                        Text("last_error: \(error)")
+                                            .font(AmaryllisTheme.bodyFont(size: 11, weight: .medium))
+                                            .foregroundStyle(AmaryllisTheme.accent)
+                                    }
+
+                                    HStack(spacing: 8) {
+                                        Button(automation.isEnabled ? "Pause" : "Resume") {
+                                            Task {
+                                                if automation.isEnabled {
+                                                    await pauseAutomation(id: automation.id)
+                                                } else {
+                                                    await resumeAutomation(id: automation.id)
+                                                }
+                                            }
+                                        }
+                                        .buttonStyle(AmaryllisSecondaryButtonStyle())
+                                        .disabled(isAutomationActionLoading)
+
+                                        Button("Run now") {
+                                            Task { await runAutomationNow(id: automation.id) }
+                                        }
+                                        .buttonStyle(AmaryllisSecondaryButtonStyle())
+                                        .disabled(isAutomationActionLoading)
+
+                                        Button("Events") {
+                                            Task {
+                                                selectedAutomationID = automation.id
+                                                await loadAutomationEvents(automationID: automation.id)
+                                            }
+                                        }
+                                        .buttonStyle(AmaryllisSecondaryButtonStyle())
+                                        .disabled(isAutomationActionLoading)
+
+                                        Button("Delete") {
+                                            Task { await deleteAutomation(id: automation.id) }
+                                        }
+                                        .buttonStyle(AmaryllisSecondaryButtonStyle())
+                                        .disabled(isAutomationActionLoading)
+                                    }
+                                }
+                                .padding(8)
+                                .background(AmaryllisTheme.surface)
+                                .clipShape(RoundedRectangle(cornerRadius: 10))
+                                .onTapGesture {
+                                    selectedAutomationID = automation.id
+                                    applyAutomationToForm(automation)
+                                }
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 180)
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Automation Events")
+                        .font(AmaryllisTheme.bodyFont(size: 12, weight: .semibold))
+                        .foregroundStyle(AmaryllisTheme.textPrimary)
+
+                    if automationEvents.isEmpty {
+                        Text("No events yet.")
+                            .font(AmaryllisTheme.bodyFont(size: 11, weight: .medium))
+                            .foregroundStyle(AmaryllisTheme.textSecondary)
+                    } else {
+                        ScrollView {
+                            LazyVStack(alignment: .leading, spacing: 6) {
+                                ForEach(automationEvents) { event in
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("[\(event.eventType)] \(event.message)")
+                                            .font(AmaryllisTheme.bodyFont(size: 11, weight: .medium))
+                                            .foregroundStyle(AmaryllisTheme.textPrimary)
+                                        Text("\(event.createdAt)\(event.runId.map { " run_id=\($0)" } ?? "")")
+                                            .font(AmaryllisTheme.monoFont(size: 10, weight: .regular))
+                                            .foregroundStyle(AmaryllisTheme.textSecondary)
+                                    }
+                                }
+                            }
+                        }
+                        .frame(maxHeight: 140)
+                        .padding(8)
+                        .background(AmaryllisTheme.surface)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                    }
+                }
             }
         }
         .amaryllisCard()
@@ -206,6 +441,7 @@ struct AgentsView: View {
 
             selectedAgentID = agent.id
             await refreshAgents()
+            await refreshAutomations()
             appState.clearError()
         } catch {
             appState.lastError = error.localizedDescription
@@ -219,7 +455,7 @@ struct AgentsView: View {
         do {
             let response = try await appState.apiClient.listAgents(userId: userID)
             agents = response.items
-            if selectedAgentID == nil {
+            if selectedAgentID == nil || !agents.contains(where: { $0.id == selectedAgentID }) {
                 selectedAgentID = agents.first?.id
             }
             appState.clearError()
@@ -252,5 +488,282 @@ struct AgentsView: View {
             chatHistory.append("ERROR: \(error.localizedDescription)")
             appState.lastError = error.localizedDescription
         }
+    }
+
+    private func createAutomation() async {
+        guard let agent = selectedAgent else { return }
+        let message = newAutomationMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !message.isEmpty else { return }
+
+        isCreatingAutomation = true
+        defer { isCreatingAutomation = false }
+
+        do {
+            let schedulePayload = buildSchedulePayload()
+            let fallbackInterval = clampInt(newAutomationIntervalSec, fallback: 300, min: 10, max: 86_400)
+            _ = try await appState.apiClient.createAutomation(
+                agentId: agent.id,
+                userId: userID,
+                message: message,
+                sessionId: sessionID.isEmpty ? nil : sessionID,
+                intervalSec: fallbackInterval,
+                scheduleType: newAutomationScheduleType,
+                schedule: schedulePayload,
+                timezone: newAutomationTimezone.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? TimeZone.current.identifier
+                    : newAutomationTimezone.trimmingCharacters(in: .whitespacesAndNewlines),
+                startImmediately: automationStartImmediately
+            )
+            await refreshAutomations()
+            appState.clearError()
+        } catch {
+            appState.lastError = error.localizedDescription
+        }
+    }
+
+    private func refreshAutomations() async {
+        guard let agent = selectedAgent else {
+            automations = []
+            selectedAutomationID = nil
+            automationEvents = []
+            return
+        }
+
+        isLoadingAutomations = true
+        defer { isLoadingAutomations = false }
+
+        do {
+            let response = try await appState.apiClient.listAutomations(
+                userId: userID,
+                agentId: agent.id,
+                enabled: nil,
+                limit: 200
+            )
+            automations = response.items
+            if selectedAutomationID == nil || !automations.contains(where: { $0.id == selectedAutomationID }) {
+                selectedAutomationID = automations.first?.id
+            }
+            if let selectedAutomationID {
+                await loadAutomationEvents(automationID: selectedAutomationID)
+            } else {
+                automationEvents = []
+            }
+            appState.clearError()
+        } catch {
+            appState.lastError = error.localizedDescription
+        }
+    }
+
+    private func loadAutomationEvents(automationID: String) async {
+        do {
+            let response = try await appState.apiClient.listAutomationEvents(automationId: automationID, limit: 100)
+            automationEvents = response.items
+        } catch {
+            appState.lastError = error.localizedDescription
+        }
+    }
+
+    private func pauseAutomation(id: String) async {
+        isAutomationActionLoading = true
+        defer { isAutomationActionLoading = false }
+        do {
+            _ = try await appState.apiClient.pauseAutomation(automationId: id)
+            selectedAutomationID = id
+            await refreshAutomations()
+            appState.clearError()
+        } catch {
+            appState.lastError = error.localizedDescription
+        }
+    }
+
+    private func resumeAutomation(id: String) async {
+        isAutomationActionLoading = true
+        defer { isAutomationActionLoading = false }
+        do {
+            _ = try await appState.apiClient.resumeAutomation(automationId: id)
+            selectedAutomationID = id
+            await refreshAutomations()
+            appState.clearError()
+        } catch {
+            appState.lastError = error.localizedDescription
+        }
+    }
+
+    private func runAutomationNow(id: String) async {
+        isAutomationActionLoading = true
+        defer { isAutomationActionLoading = false }
+        do {
+            _ = try await appState.apiClient.runAutomationNow(automationId: id)
+            selectedAutomationID = id
+            await refreshAutomations()
+            appState.clearError()
+        } catch {
+            appState.lastError = error.localizedDescription
+        }
+    }
+
+    private func deleteAutomation(id: String) async {
+        isAutomationActionLoading = true
+        defer { isAutomationActionLoading = false }
+        do {
+            _ = try await appState.apiClient.deleteAutomation(automationId: id)
+            if selectedAutomationID == id {
+                selectedAutomationID = nil
+            }
+            await refreshAutomations()
+            appState.clearError()
+        } catch {
+            appState.lastError = error.localizedDescription
+        }
+    }
+
+    private func buildSchedulePayload() -> [String: JSONValue] {
+        switch newAutomationScheduleType {
+        case "hourly":
+            let intervalHours = clampInt(newAutomationIntervalHours, fallback: 1, min: 1, max: 24)
+            let minute = clampInt(newAutomationMinute, fallback: 0, min: 0, max: 59)
+            return [
+                "interval_hours": .number(Double(intervalHours)),
+                "minute": .number(Double(minute)),
+            ]
+        case "weekly":
+            let hour = clampInt(newAutomationHour, fallback: 9, min: 0, max: 23)
+            let minute = clampInt(newAutomationMinute, fallback: 0, min: 0, max: 59)
+            return [
+                "byday": .array(parseWeekdaysInput(newAutomationWeekdays).map { .string($0) }),
+                "hour": .number(Double(hour)),
+                "minute": .number(Double(minute)),
+            ]
+        default:
+            let interval = clampInt(newAutomationIntervalSec, fallback: 300, min: 10, max: 86_400)
+            return ["interval_sec": .number(Double(interval))]
+        }
+    }
+
+    private func applyAutomationScheduleUpdate() async {
+        guard let automationID = selectedAutomationID else { return }
+        isAutomationActionLoading = true
+        defer { isAutomationActionLoading = false }
+
+        do {
+            let message = newAutomationMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+            let timezone = newAutomationTimezone.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? TimeZone.current.identifier
+                : newAutomationTimezone.trimmingCharacters(in: .whitespacesAndNewlines)
+            let intervalOverride: Int? = newAutomationScheduleType == "interval"
+                ? clampInt(newAutomationIntervalSec, fallback: 300, min: 10, max: 86_400)
+                : nil
+
+            _ = try await appState.apiClient.updateAutomation(
+                automationId: automationID,
+                message: message.isEmpty ? nil : message,
+                sessionId: sessionID.isEmpty ? nil : sessionID,
+                intervalSec: intervalOverride,
+                scheduleType: newAutomationScheduleType,
+                schedule: buildSchedulePayload(),
+                timezone: timezone
+            )
+
+            await refreshAutomations()
+            if let refreshed = automations.first(where: { $0.id == automationID }) {
+                applyAutomationToForm(refreshed)
+            }
+            appState.clearError()
+        } catch {
+            appState.lastError = error.localizedDescription
+        }
+    }
+
+    private func applyAutomationToForm(_ automation: APIAutomationRecord) {
+        selectedAutomationID = automation.id
+        newAutomationMessage = automation.message
+        newAutomationScheduleType = automation.scheduleType
+        newAutomationTimezone = automation.timezone
+
+        if let interval = jsonIntValue(automation.schedule["interval_sec"]) {
+            newAutomationIntervalSec = String(interval)
+        } else {
+            newAutomationIntervalSec = String(automation.intervalSec)
+        }
+        if let hours = jsonIntValue(automation.schedule["interval_hours"]) {
+            newAutomationIntervalHours = String(hours)
+        }
+        if let minute = jsonIntValue(automation.schedule["minute"]) {
+            newAutomationMinute = String(minute)
+        }
+        if let hour = jsonIntValue(automation.schedule["hour"]) {
+            newAutomationHour = String(hour)
+        }
+        if let weekdays = jsonStringArrayValue(automation.schedule["byday"]), !weekdays.isEmpty {
+            newAutomationWeekdays = weekdays.joined(separator: ",")
+        }
+    }
+
+    private func scheduleSummary(for automation: APIAutomationRecord) -> String {
+        switch automation.scheduleType {
+        case "hourly":
+            let hours = jsonIntValue(automation.schedule["interval_hours"]) ?? max(1, automation.intervalSec / 3600)
+            let minute = jsonIntValue(automation.schedule["minute"]) ?? 0
+            return "hourly/\(hours)h @:\(String(format: "%02d", minute))"
+        case "weekly":
+            let byday = jsonStringArrayValue(automation.schedule["byday"]) ?? ["MO"]
+            let hour = jsonIntValue(automation.schedule["hour"]) ?? 9
+            let minute = jsonIntValue(automation.schedule["minute"]) ?? 0
+            return "weekly \(byday.joined(separator: ",")) \(String(format: "%02d:%02d", hour, minute))"
+        default:
+            return "interval \(automation.intervalSec)s"
+        }
+    }
+
+    private func parseWeekdaysInput(_ raw: String) -> [String] {
+        let allowed = Set(["MO", "TU", "WE", "TH", "FR", "SA", "SU"])
+        var seen = Set<String>()
+        var result: [String] = []
+        for token in raw.split(separator: ",") {
+            let value = token.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            guard allowed.contains(value), !seen.contains(value) else { continue }
+            seen.insert(value)
+            result.append(value)
+        }
+        return result.isEmpty ? ["MO"] : result
+    }
+
+    private func jsonIntValue(_ value: JSONValue?) -> Int? {
+        guard let value else { return nil }
+        switch value {
+        case .number(let number):
+            return Int(number)
+        case .string(let string):
+            return Int(string.trimmingCharacters(in: .whitespacesAndNewlines))
+        default:
+            return nil
+        }
+    }
+
+    private func jsonStringArrayValue(_ value: JSONValue?) -> [String]? {
+        guard let value else { return nil }
+        switch value {
+        case .array(let items):
+            let result = items.compactMap { item -> String? in
+                if case .string(let string) = item {
+                    return string
+                }
+                return nil
+            }
+            return result.isEmpty ? nil : result
+        case .string(let raw):
+            let parsed = raw
+                .split(separator: ",")
+                .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            return parsed.isEmpty ? nil : parsed
+        default:
+            return nil
+        }
+    }
+
+    private func clampInt(_ raw: String, fallback: Int, min: Int, max: Int) -> Int {
+        let parsed = Int(raw.trimmingCharacters(in: .whitespacesAndNewlines)) ?? fallback
+        return Swift.max(min, Swift.min(max, parsed))
     }
 }

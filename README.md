@@ -70,8 +70,12 @@ Local telemetry log:
 │   ├── agent.py
 │   ├── agent_manager.py
 │   └── agent_run_manager.py
+├── automation
+│   ├── automation_scheduler.py
+│   └── schedule.py
 ├── api
 │   ├── agent_api.py
+│   ├── automation_api.py
 │   ├── chat_api.py
 │   ├── memory_api.py
 │   ├── model_api.py
@@ -119,6 +123,8 @@ Local telemetry log:
 │   └── task_executor.py
 ├── tests
 │   ├── test_agent_run_manager.py
+│   ├── test_automation_schedule.py
+│   ├── test_automation_scheduler.py
 │   ├── test_memory_manager.py
 │   └── test_tools_mcp.py
 ├── tools
@@ -487,6 +493,64 @@ Implemented now:
 - signed plugin manifest verification (HMAC-SHA256 when signing key is configured)
 - structured tool execution trace (`status`, `duration_ms`, `permission_prompt_id`) in chat responses
 
+## Automation Layer Foundation (Current)
+
+Implemented now:
+- persistent automation schedules in SQLite (`automations`, `automation_events`)
+- typed schedules (`interval`, `hourly`, `weekly`) with timezone-aware next-run calculation
+- background scheduler loop (single-node) that queues agent runs
+- manual `run now`, `pause`, `resume`, `delete`
+- automation update endpoint for changing schedule/message/session without recreation
+- automation event log for observability
+- desktop UI controls in Agents tab
+
+Automation API:
+
+```bash
+# create
+curl -X POST http://localhost:8000/automations/create \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agent_id": "<agent_id>",
+    "user_id": "user-001",
+    "session_id": "session-001",
+    "message": "Check latest project updates and summarize",
+    "schedule_type": "weekly",
+    "schedule": {
+      "byday": ["MO", "WE", "FR"],
+      "hour": 9,
+      "minute": 30
+    },
+    "timezone": "Asia/Aqtau",
+    "start_immediately": false
+  }'
+
+# update schedule/message/session
+curl -X POST "http://localhost:8000/automations/<automation_id>/update" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Check release notes and summarize action items",
+    "session_id": "session-001",
+    "schedule_type": "hourly",
+    "schedule": {
+      "interval_hours": 4,
+      "minute": 15
+    },
+    "timezone": "UTC"
+  }'
+
+# list
+curl "http://localhost:8000/automations?user_id=user-001&agent_id=<agent_id>&limit=100"
+
+# pause / resume / run now
+curl -X POST "http://localhost:8000/automations/<automation_id>/pause"
+curl -X POST "http://localhost:8000/automations/<automation_id>/resume"
+curl -X POST "http://localhost:8000/automations/<automation_id>/run"
+
+# events
+curl "http://localhost:8000/automations/<automation_id>/events?limit=100"
+```
+
 ### Tooling API
 
 List all tools with metadata:
@@ -551,7 +615,7 @@ Plugins are auto-discovered from:
 
 ## Tests
 
-Run unit tests (memory + work mode + tools/MCP):
+Run unit tests (memory + work mode + tools/MCP + automation):
 
 ```bash
 ~/Library/Application\ Support/amaryllis/runtime-src/.venv/bin/python -m unittest discover -s tests -p "test_*.py" -v
@@ -576,6 +640,8 @@ Run unit tests (memory + work mode + tools/MCP):
   - `AMARYLLIS_OPENROUTER_API_KEY=<your_key>`
   - `AMARYLLIS_RUN_WORKERS=2`
   - `AMARYLLIS_RUN_MAX_ATTEMPTS=2`
+  - `AMARYLLIS_AUTOMATION_POLL_SEC=2`
+  - `AMARYLLIS_AUTOMATION_BATCH_SIZE=10`
   - `AMARYLLIS_TOOL_APPROVAL_ENFORCEMENT=prompt_and_allow|strict`
   - `AMARYLLIS_BLOCKED_TOOLS=python_exec,filesystem`
   - `AMARYLLIS_PLUGIN_SIGNING_KEY=<hmac_secret>`
@@ -600,6 +666,8 @@ export AMARYLLIS_OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
 export AMARYLLIS_OPENROUTER_API_KEY=replace_me
 export AMARYLLIS_RUN_WORKERS=2
 export AMARYLLIS_RUN_MAX_ATTEMPTS=2
+export AMARYLLIS_AUTOMATION_POLL_SEC=2
+export AMARYLLIS_AUTOMATION_BATCH_SIZE=10
 export AMARYLLIS_TOOL_APPROVAL_ENFORCEMENT=prompt_and_allow
 export AMARYLLIS_BLOCKED_TOOLS=
 export AMARYLLIS_PLUGIN_SIGNING_KEY=

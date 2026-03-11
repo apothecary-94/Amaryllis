@@ -13,10 +13,12 @@ from fastapi.responses import JSONResponse
 from agents.agent_manager import AgentManager
 from agents.agent_run_manager import AgentRunManager
 from api.agent_api import router as agent_router
+from api.automation_api import router as automation_router
 from api.chat_api import router as chat_router
 from api.memory_api import router as memory_router
 from api.model_api import router as model_router
 from api.tool_api import router as tool_router
+from automation.automation_scheduler import AutomationScheduler
 from controller.meta_controller import MetaController
 from memory.episodic_memory import EpisodicMemory
 from memory.memory_manager import MemoryManager
@@ -52,6 +54,7 @@ class ServiceContainer:
     task_executor: TaskExecutor
     agent_run_manager: AgentRunManager
     agent_manager: AgentManager
+    automation_scheduler: AutomationScheduler
     telemetry: LocalTelemetry
 
 
@@ -128,6 +131,14 @@ def create_services() -> ServiceContainer:
         task_executor=task_executor,
         run_manager=agent_run_manager,
     )
+    automation_scheduler = AutomationScheduler(
+        database=database,
+        run_manager=agent_run_manager,
+        poll_interval_sec=config.automation_poll_sec,
+        batch_size=config.automation_batch_size,
+        telemetry=telemetry,
+    )
+    automation_scheduler.start()
 
     return ServiceContainer(
         config=config,
@@ -142,6 +153,7 @@ def create_services() -> ServiceContainer:
         task_executor=task_executor,
         agent_run_manager=agent_run_manager,
         agent_manager=agent_manager,
+        automation_scheduler=automation_scheduler,
         telemetry=telemetry,
     )
 
@@ -304,6 +316,7 @@ def create_app() -> FastAPI:
     app.include_router(chat_router)
     app.include_router(model_router)
     app.include_router(agent_router)
+    app.include_router(automation_router)
     app.include_router(memory_router)
     app.include_router(tool_router)
 
@@ -341,6 +354,7 @@ def create_app() -> FastAPI:
                 "app": services.config.app_name,
             },
         )
+        services.automation_scheduler.stop()
         services.agent_run_manager.stop()
         services.database.close()
         services.vector_store.persist()

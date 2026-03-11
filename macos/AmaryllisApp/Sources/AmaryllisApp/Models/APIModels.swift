@@ -368,6 +368,148 @@ struct APIAgentChatResponse: Decodable {
     }
 }
 
+struct APICreateAutomationRequest: Encodable {
+    let agentId: String
+    let userId: String
+    let message: String
+    let sessionId: String?
+    let intervalSec: Int?
+    let scheduleType: String?
+    let schedule: [String: JSONValue]?
+    let timezone: String
+    let startImmediately: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case agentId = "agent_id"
+        case userId = "user_id"
+        case message
+        case sessionId = "session_id"
+        case intervalSec = "interval_sec"
+        case scheduleType = "schedule_type"
+        case schedule
+        case timezone
+        case startImmediately = "start_immediately"
+    }
+}
+
+struct APIUpdateAutomationRequest: Encodable {
+    let message: String?
+    let sessionId: String?
+    let intervalSec: Int?
+    let scheduleType: String?
+    let schedule: [String: JSONValue]?
+    let timezone: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case message
+        case sessionId = "session_id"
+        case intervalSec = "interval_sec"
+        case scheduleType = "schedule_type"
+        case schedule
+        case timezone
+    }
+}
+
+struct APIAutomationRecord: Decodable, Identifiable {
+    let id: String
+    let agentId: String
+    let userId: String
+    let sessionId: String?
+    let message: String
+    let intervalSec: Int
+    let scheduleType: String
+    let schedule: [String: JSONValue]
+    let timezone: String
+    let isEnabled: Bool
+    let nextRunAt: String
+    let lastRunAt: String?
+    let lastError: String?
+    let createdAt: String
+    let updatedAt: String
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case agentId = "agent_id"
+        case userId = "user_id"
+        case sessionId = "session_id"
+        case message
+        case intervalSec = "interval_sec"
+        case scheduleType = "schedule_type"
+        case schedule
+        case timezone
+        case isEnabled = "is_enabled"
+        case nextRunAt = "next_run_at"
+        case lastRunAt = "last_run_at"
+        case lastError = "last_error"
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
+    }
+}
+
+struct APIAutomationEvent: Decodable, Identifiable {
+    let id: Int
+    let automationId: String
+    let eventType: String
+    let message: String
+    let runId: String?
+    let createdAt: String
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case automationId = "automation_id"
+        case eventType = "event_type"
+        case message
+        case runId = "run_id"
+        case createdAt = "created_at"
+    }
+}
+
+struct APIAutomationSingleResponse: Decodable {
+    let automation: APIAutomationRecord
+    let requestId: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case automation
+        case requestId = "request_id"
+    }
+}
+
+struct APIAutomationListResponse: Decodable {
+    let items: [APIAutomationRecord]
+    let count: Int
+    let requestId: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case items
+        case count
+        case requestId = "request_id"
+    }
+}
+
+struct APIAutomationDeleteResponse: Decodable {
+    let status: String
+    let automationId: String
+    let requestId: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case status
+        case automationId = "automation_id"
+        case requestId = "request_id"
+    }
+}
+
+struct APIAutomationEventsResponse: Decodable {
+    let items: [APIAutomationEvent]
+    let count: Int
+    let requestId: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case items
+        case count
+        case requestId = "request_id"
+    }
+}
+
 struct LocalChatMessage: Codable, Identifiable, Equatable {
     let id: UUID
     let role: String

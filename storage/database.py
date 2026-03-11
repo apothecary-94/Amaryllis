@@ -805,6 +805,223 @@ class Database:
             rows = self._conn.execute(query, tuple(params)).fetchall()
         return [self._decode_agent_run_row(dict(row)) for row in rows]
 
+    def create_automation(
+        self,
+        automation_id: str,
+        agent_id: str,
+        user_id: str,
+        session_id: str | None,
+        message: str,
+        interval_sec: int,
+        next_run_at: str,
+        schedule_type: str,
+        schedule: dict[str, Any],
+        timezone_name: str,
+    ) -> None:
+        now = self._utc_now()
+        schedule_json = json.dumps(schedule, ensure_ascii=False)
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO automations(
+                    id,
+                    agent_id,
+                    user_id,
+                    session_id,
+                    message,
+                    interval_sec,
+                    schedule_type,
+                    schedule_json,
+                    timezone,
+                    is_enabled,
+                    next_run_at,
+                    last_run_at,
+                    last_error,
+                    created_at,
+                    updated_at
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL, NULL, ?, ?)
+                """,
+                (
+                    automation_id,
+                    agent_id,
+                    user_id,
+                    session_id,
+                    message,
+                    max(10, interval_sec),
+                    schedule_type,
+                    schedule_json,
+                    timezone_name,
+                    next_run_at,
+                    now,
+                    now,
+                ),
+            )
+            self._conn.commit()
+
+    def get_automation(self, automation_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM automations WHERE id = ?",
+                (automation_id,),
+            ).fetchone()
+        if not row:
+            return None
+        return self._decode_automation_row(dict(row))
+
+    def list_automations(
+        self,
+        user_id: str | None = None,
+        agent_id: str | None = None,
+        enabled: bool | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        if limit <= 0:
+            return []
+
+        query = "SELECT * FROM automations WHERE 1 = 1"
+        params: list[Any] = []
+        if user_id:
+            query += " AND user_id = ?"
+            params.append(user_id)
+        if agent_id:
+            query += " AND agent_id = ?"
+            params.append(agent_id)
+        if enabled is not None:
+            query += " AND is_enabled = ?"
+            params.append(1 if enabled else 0)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+
+        with self._lock:
+            rows = self._conn.execute(query, tuple(params)).fetchall()
+        return [self._decode_automation_row(dict(row)) for row in rows]
+
+    def list_due_automations(self, now_iso: str, limit: int = 20) -> list[dict[str, Any]]:
+        if limit <= 0:
+            return []
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT * FROM automations
+                WHERE is_enabled = 1 AND next_run_at <= ?
+                ORDER BY next_run_at ASC
+                LIMIT ?
+                """,
+                (now_iso, limit),
+            ).fetchall()
+        return [self._decode_automation_row(dict(row)) for row in rows]
+
+    def update_automation_fields(self, automation_id: str, **fields: Any) -> None:
+        if not fields:
+            return
+
+        allowed = {
+            "agent_id",
+            "user_id",
+            "session_id",
+            "message",
+            "interval_sec",
+            "schedule_type",
+            "schedule_json",
+            "timezone",
+            "is_enabled",
+            "next_run_at",
+            "last_run_at",
+            "last_error",
+            "updated_at",
+        }
+        sanitized: dict[str, Any] = {}
+        for key, value in fields.items():
+            if key not in allowed:
+                continue
+            if key == "interval_sec":
+                try:
+                    sanitized[key] = max(10, int(value))
+                except Exception:
+                    continue
+            elif key == "schedule_json" and isinstance(value, (dict, list)):
+                sanitized[key] = json.dumps(value, ensure_ascii=False)
+            elif key == "is_enabled" and isinstance(value, bool):
+                sanitized[key] = 1 if value else 0
+            else:
+                sanitized[key] = value
+
+        if not sanitized:
+            return
+        if "updated_at" not in sanitized:
+            sanitized["updated_at"] = self._utc_now()
+
+        assignments = ", ".join(f"{column} = ?" for column in sanitized.keys())
+        values = list(sanitized.values()) + [automation_id]
+        with self._lock:
+            self._conn.execute(
+                f"UPDATE automations SET {assignments} WHERE id = ?",
+                values,
+            )
+            self._conn.commit()
+
+    def delete_automation(self, automation_id: str) -> bool:
+        with self._lock:
+            cursor = self._conn.execute(
+                "DELETE FROM automations WHERE id = ?",
+                (automation_id,),
+            )
+            self._conn.execute(
+                "DELETE FROM automation_events WHERE automation_id = ?",
+                (automation_id,),
+            )
+            self._conn.commit()
+        return int(cursor.rowcount or 0) > 0
+
+    def add_automation_event(
+        self,
+        automation_id: str,
+        event_type: str,
+        message: str,
+        run_id: str | None = None,
+    ) -> int:
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                INSERT INTO automation_events(
+                    automation_id,
+                    event_type,
+                    message,
+                    run_id,
+                    created_at
+                )
+                VALUES(?, ?, ?, ?, ?)
+                """,
+                (
+                    automation_id,
+                    event_type,
+                    message,
+                    run_id,
+                    self._utc_now(),
+                ),
+            )
+            self._conn.commit()
+            return int(cursor.lastrowid)
+
+    def list_automation_events(self, automation_id: str, limit: int = 100) -> list[dict[str, Any]]:
+        if limit <= 0:
+            return []
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT id, automation_id, event_type, message, run_id, created_at
+                FROM automation_events
+                WHERE automation_id = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (automation_id, limit),
+            ).fetchall()
+        result = [dict(row) for row in rows]
+        result.reverse()
+        return result
+
     def _decode_agent_run_row(self, row: dict[str, Any]) -> dict[str, Any]:
         try:
             row["result"] = json.loads(row["result_json"]) if row.get("result_json") else None
@@ -818,6 +1035,24 @@ class Database:
             row["checkpoints"] = []
         row.pop("result_json", None)
         row.pop("checkpoints_json", None)
+        return row
+
+    @staticmethod
+    def _decode_automation_row(row: dict[str, Any]) -> dict[str, Any]:
+        row["is_enabled"] = bool(int(row.get("is_enabled", 0)))
+        interval = row.get("interval_sec")
+        try:
+            row["interval_sec"] = int(interval)
+        except Exception:
+            row["interval_sec"] = 60
+        schedule_json = row.pop("schedule_json", "{}")
+        try:
+            parsed = json.loads(schedule_json or "{}")
+            row["schedule"] = parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            row["schedule"] = {}
+        row["schedule_type"] = str(row.get("schedule_type") or "interval")
+        row["timezone"] = str(row.get("timezone") or "UTC")
         return row
 
     def upsert_agent(self, agent: dict[str, Any]) -> None:
