@@ -56,6 +56,14 @@ struct APIModelCatalog: Decodable {
     let active: Active
     let providers: [String: ProviderPayload]
     let suggested: [String: [SuggestedModel]]?
+    let routingModes: [String]?
+
+    private enum CodingKeys: String, CodingKey {
+        case active
+        case providers
+        case suggested
+        case routingModes = "routing_modes"
+    }
 }
 
 struct APIModelItem: Decodable, Identifiable {
@@ -202,6 +210,7 @@ struct APIChatCompletionsRequest: Encodable {
     let maxTokens: Int
     let tools: [APIChatToolDefinition]?
     let permissionIds: [String]?
+    let routing: APIChatRoutingOptions?
 
     private enum CodingKeys: String, CodingKey {
         case model
@@ -212,6 +221,47 @@ struct APIChatCompletionsRequest: Encodable {
         case maxTokens = "max_tokens"
         case tools
         case permissionIds = "permission_ids"
+        case routing
+    }
+}
+
+struct APIChatRoutingOptions: Encodable {
+    let mode: String
+    let requireStream: Bool
+    let requireTools: Bool
+    let preferLocal: Bool?
+    let minParamsB: Double?
+    let maxParamsB: Double?
+    let includeSuggested: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case mode
+        case requireStream = "require_stream"
+        case requireTools = "require_tools"
+        case preferLocal = "prefer_local"
+        case minParamsB = "min_params_b"
+        case maxParamsB = "max_params_b"
+        case includeSuggested = "include_suggested"
+    }
+}
+
+struct APIChatRouteTarget: Decodable {
+    let provider: String
+    let model: String
+    let score: Double?
+}
+
+struct APIChatRoutingDecision: Decodable {
+    let mode: String?
+    let selected: APIChatRouteTarget?
+    let fallbacks: [APIChatRouteTarget]?
+    let consideredCount: Int?
+
+    private enum CodingKeys: String, CodingKey {
+        case mode
+        case selected
+        case fallbacks
+        case consideredCount = "considered_count"
     }
 }
 
@@ -256,6 +306,7 @@ struct APIChatCompletionsResponse: Decodable {
     let provider: String?
     let choices: [Choice]
     let toolEvents: [APIChatToolEvent]?
+    let routing: APIChatRoutingDecision?
 
     private enum CodingKeys: String, CodingKey {
         case id
@@ -263,6 +314,7 @@ struct APIChatCompletionsResponse: Decodable {
         case provider
         case choices
         case toolEvents = "tool_events"
+        case routing
     }
 }
 

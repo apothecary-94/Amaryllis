@@ -234,6 +234,7 @@ Chat tab behavior:
 - create multiple chats (`New Chat`)
 - switch chats from the chat selector
 - full chat history is saved automatically and restored after restart
+- supports `Auto Route` policy modes (`balanced`, `local_first`, `quality_first`, `coding`, `reasoning`)
 
 Local chat file:
 - `~/Library/Application Support/amaryllis/chat_sessions.json`
@@ -250,6 +251,25 @@ curl http://localhost:8000/models
 
 ```bash
 curl http://localhost:8000/models/capabilities
+```
+
+### Model capability matrix (provider-agnostic)
+
+```bash
+curl "http://localhost:8000/models/capability-matrix?include_suggested=true&limit_per_provider=120"
+```
+
+### Resolve best route for request policy
+
+```bash
+curl -X POST http://localhost:8000/models/route \
+  -H "Content-Type: application/json" \
+  -d '{
+    "mode": "coding",
+    "require_stream": true,
+    "prefer_local": true,
+    "include_suggested": false
+  }'
 ```
 
 ### Download model (MLX)
@@ -322,6 +342,22 @@ curl -X POST http://localhost:8000/v1/chat/completions \
       {"role": "system", "content": "You are a concise assistant."},
       {"role": "user", "content": "Explain what Amaryllis is."}
     ],
+    "stream": false
+  }'
+```
+
+Auto-routing mode (no fixed `provider/model`):
+
+```bash
+curl -X POST http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [{"role": "user", "content": "Refactor this Python snippet for readability."}],
+    "routing": {
+      "mode": "coding",
+      "require_stream": false,
+      "prefer_local": true
+    },
     "stream": false
   }'
 ```

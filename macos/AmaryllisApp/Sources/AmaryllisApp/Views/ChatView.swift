@@ -8,6 +8,8 @@ struct ChatView: View {
     @State private var isStreaming: Bool = true
     @State private var selectedModelID: String = ""
     @State private var selectedProvider: String = ""
+    @State private var autoRoutingEnabled: Bool = true
+    @State private var routingMode: String = "balanced"
     @State private var toolsEnabled: Bool = true
     @State private var isSending: Bool = false
 
@@ -152,6 +154,7 @@ struct ChatView: View {
             }
             .pickerStyle(.menu)
             .frame(width: 140)
+            .disabled(autoRoutingEnabled)
 
             Picker("Model", selection: $selectedModelID) {
                 Text("active").tag("")
@@ -161,6 +164,21 @@ struct ChatView: View {
             }
             .pickerStyle(.menu)
             .frame(maxWidth: .infinity)
+            .disabled(autoRoutingEnabled)
+
+            Toggle("Auto Route", isOn: $autoRoutingEnabled)
+                .toggleStyle(.switch)
+                .font(AmaryllisTheme.bodyFont(size: 12, weight: .semibold))
+                .frame(width: 130)
+
+            Picker("Policy", selection: $routingMode) {
+                ForEach(routingModes, id: \.self) { mode in
+                    Text(mode).tag(mode)
+                }
+            }
+            .pickerStyle(.menu)
+            .frame(width: 130)
+            .disabled(!autoRoutingEnabled)
 
             Toggle("Stream", isOn: $isStreaming)
                 .toggleStyle(.switch)
@@ -213,6 +231,13 @@ struct ChatView: View {
         return catalog.providers.keys.sorted()
     }
 
+    private var routingModes: [String] {
+        guard let modes = appState.modelCatalog?.routingModes, !modes.isEmpty else {
+            return ["balanced", "local_first", "quality_first", "coding", "reasoning"]
+        }
+        return modes
+    }
+
     private var chatTools: [APIChatToolDefinition] {
         appState.availableTools.map { tool in
             APIChatToolDefinition(
@@ -251,6 +276,17 @@ struct ChatView: View {
         let provider = selectedProvider.isEmpty ? nil : selectedProvider
         let model = selectedModelID.isEmpty ? nil : selectedModelID
         let tools = toolsEnabled ? chatTools : []
+        let route = autoRoutingEnabled ? APIChatRoutingOptions(
+            mode: routingMode,
+            requireStream: isStreaming && tools.isEmpty,
+            requireTools: false,
+            preferLocal: nil,
+            minParamsB: nil,
+            maxParamsB: nil,
+            includeSuggested: false
+        ) : nil
+        let providerTarget = autoRoutingEnabled ? nil : provider
+        let modelTarget = autoRoutingEnabled ? nil : model
         let shouldUseStreaming = isStreaming && tools.isEmpty
 
         Task {
@@ -258,10 +294,11 @@ struct ChatView: View {
                 if shouldUseStreaming {
                     var combined = ""
                     let stream = appState.apiClient.streamChatCompletions(
-                        model: model,
-                        provider: provider,
+                        model: modelTarget,
+                        provider: providerTarget,
                         messages: payload,
-                        tools: nil
+                        tools: nil,
+                        routing: route
                     )
 
                     for try await chunk in stream {
@@ -288,14 +325,19 @@ struct ChatView: View {
                     }
 
                     var response = try await appState.apiClient.chatCompletions(
-                        model: model,
-                        provider: provider,
+                        model: modelTarget,
+                        provider: providerTarget,
                         messages: payload,
-                        tools: tools.isEmpty ? nil : tools
+                        tools: tools.isEmpty ? nil : tools,
+                        routing: route
                     )
 
                     let pendingPromptIDs = pendingPermissionPromptIDs(from: response.toolEvents)
                     var content = response.choices.first?.message.content ?? ""
+                    let routingTrace = renderRoutingTrace(response.routing)
+                    if !routingTrace.isEmpty {
+                        content += "\n\n\(routingTrace)"
+                    }
                     let firstTrace = renderToolTrace(response.toolEvents)
                     if !firstTrace.isEmpty {
                         content += "\n\n\(firstTrace)"
@@ -312,14 +354,19 @@ struct ChatView: View {
                         let approvalState = try await waitForPromptDecision(promptIDs: pendingPromptIDs, timeoutSec: 120)
                         if approvalState == .approved {
                             response = try await appState.apiClient.chatCompletions(
-                                model: model,
-                                provider: provider,
+                                model: modelTarget,
+                                provider: providerTarget,
                                 messages: payload,
                                 tools: tools.isEmpty ? nil : tools,
-                                permissionIds: pendingPromptIDs
+                                permissionIds: pendingPromptIDs,
+                                routing: route
                             )
 
                             var retriedContent = response.choices.first?.message.content ?? content
+                            let retryRoutingTrace = renderRoutingTrace(response.routing)
+                            if !retryRoutingTrace.isEmpty {
+                                retriedContent += "\n\n\(retryRoutingTrace)"
+                            }
                             let retryTrace = renderToolTrace(response.toolEvents)
                             if !retryTrace.isEmpty {
                                 retriedContent += "\n\n\(retryTrace)"
@@ -416,6 +463,24 @@ struct ChatView: View {
                 line += " error=\(error)"
             }
             lines.append(line)
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private func renderRoutingTrace(_ routing: APIChatRoutingDecision?) -> String {
+        guard let routing, let selected = routing.selected else { return "" }
+        var lines = ["Routing: mode=\(routing.mode ?? "-") selected=\(selected.provider)/\(selected.model)"]
+        if let score = selected.score {
+            lines[0] += String(format: " score=%.3f", score)
+        }
+        if let fallbacks = routing.fallbacks, !fallbacks.isEmpty {
+            let preview = fallbacks.prefix(3).map { item -> String in
+                if let score = item.score {
+                    return "\(item.provider)/\(item.model)(\(String(format: "%.2f", score)))"
+                }
+                return "\(item.provider)/\(item.model)"
+            }
+            lines.append("Fallbacks: \(preview.joined(separator: ", "))")
         }
         return lines.joined(separator: "\n")
     }
