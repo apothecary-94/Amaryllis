@@ -37,7 +37,36 @@ class AutomationScheduleTests(unittest.TestCase):
         )
         self.assertEqual(value, "2026-03-16T09:30:00+00:00")
 
+    def test_normalize_watch_fs_schedule(self) -> None:
+        schedule_type, payload, interval = normalize_schedule(
+            schedule_type="watch_fs",
+            schedule={
+                "path": "/tmp/amaryllis-watch",
+                "poll_sec": 12,
+                "recursive": False,
+                "glob": "*.txt",
+                "max_changed_files": 5,
+            },
+            interval_sec=None,
+        )
+        self.assertEqual(schedule_type, "watch_fs")
+        self.assertEqual(payload["path"], "/tmp/amaryllis-watch")
+        self.assertEqual(payload["poll_sec"], 12)
+        self.assertEqual(payload["recursive"], False)
+        self.assertEqual(payload["glob"], "*.txt")
+        self.assertEqual(payload["max_changed_files"], 5)
+        self.assertEqual(interval, 12)
+
+    def test_compute_watch_fs_next_run(self) -> None:
+        now = datetime(2026, 3, 11, 10, 0, tzinfo=timezone.utc)
+        value = compute_next_run_at(
+            schedule_type="watch_fs",
+            schedule={"path": "/tmp/amaryllis-watch", "poll_sec": 9},
+            timezone_name="UTC",
+            now_utc=now,
+        )
+        self.assertEqual(value, "2026-03-11T10:00:09+00:00")
+
 
 if __name__ == "__main__":
     unittest.main()
-

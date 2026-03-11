@@ -77,6 +77,7 @@ Local telemetry log:
 │   ├── agent_api.py
 │   ├── automation_api.py
 │   ├── chat_api.py
+│   ├── inbox_api.py
 │   ├── memory_api.py
 │   ├── model_api.py
 │   └── tool_api.py
@@ -126,6 +127,7 @@ Local telemetry log:
 │   ├── test_automation_schedule.py
 │   ├── test_automation_scheduler.py
 │   ├── test_memory_manager.py
+│   ├── test_model_routing.py
 │   └── test_tools_mcp.py
 ├── tools
 │   ├── builtin_tools
@@ -544,15 +546,18 @@ Implemented now:
 - signed plugin manifest verification (HMAC-SHA256 when signing key is configured)
 - structured tool execution trace (`status`, `duration_ms`, `permission_prompt_id`) in chat responses
 
-## Automation Layer Foundation (Current)
+## Automation Layer 2.0 Foundation (Current)
 
 Implemented now:
 - persistent automation schedules in SQLite (`automations`, `automation_events`)
-- typed schedules (`interval`, `hourly`, `weekly`) with timezone-aware next-run calculation
+- typed schedules (`interval`, `hourly`, `weekly`, `watch_fs`) with timezone-aware next-run calculation
 - background scheduler loop (single-node) that queues agent runs
 - manual `run now`, `pause`, `resume`, `delete`
 - automation update endpoint for changing schedule/message/session without recreation
 - automation event log for observability
+- file watcher mode (`watch_fs`) that triggers runs only on detected file changes
+- inbox/notification feed in SQLite (`inbox_items`) with read/unread state
+- failure escalation policy (`none -> warning -> critical`) with auto-disable threshold
 - desktop UI controls in Agents tab
 
 Automation API:
@@ -600,7 +605,36 @@ curl -X POST "http://localhost:8000/automations/<automation_id>/run"
 
 # events
 curl "http://localhost:8000/automations/<automation_id>/events?limit=100"
+
+# watcher-based automation (folder polling)
+curl -X POST http://localhost:8000/automations/create \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agent_id": "<agent_id>",
+    "user_id": "user-001",
+    "message": "Analyze file changes and summarize",
+    "schedule_type": "watch_fs",
+    "schedule": {
+      "path": "/Users/yourname/Documents/inbox",
+      "poll_sec": 10,
+      "recursive": true,
+      "glob": "*.md",
+      "max_changed_files": 20
+    },
+    "timezone": "UTC",
+    "start_immediately": true
+  }'
+
+# inbox notifications
+curl "http://localhost:8000/inbox?user_id=user-001&unread_only=true&limit=100"
+curl -X POST "http://localhost:8000/inbox/<item_id>/read"
+curl -X POST "http://localhost:8000/inbox/<item_id>/unread"
 ```
+
+Escalation env vars:
+- `AMARYLLIS_AUTOMATION_ESCALATION_WARNING` (default `2`)
+- `AMARYLLIS_AUTOMATION_ESCALATION_CRITICAL` (default `4`)
+- `AMARYLLIS_AUTOMATION_ESCALATION_DISABLE` (default `6`)
 
 ### Tooling API
 

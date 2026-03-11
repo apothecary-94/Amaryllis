@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
 from typing import Any
+from uuid import uuid4
 
 from storage.migrations import apply_migrations
 
@@ -929,6 +930,8 @@ class Database:
             "next_run_at",
             "last_run_at",
             "last_error",
+            "consecutive_failures",
+            "escalation_level",
             "updated_at",
         }
         sanitized: dict[str, Any] = {}
@@ -944,6 +947,16 @@ class Database:
                 sanitized[key] = json.dumps(value, ensure_ascii=False)
             elif key == "is_enabled" and isinstance(value, bool):
                 sanitized[key] = 1 if value else 0
+            elif key == "consecutive_failures":
+                try:
+                    sanitized[key] = max(0, int(value))
+                except Exception:
+                    continue
+            elif key == "escalation_level":
+                normalized = str(value or "").strip().lower()
+                if normalized not in {"none", "warning", "critical"}:
+                    normalized = "none"
+                sanitized[key] = normalized
             else:
                 sanitized[key] = value
 
@@ -1022,6 +1035,124 @@ class Database:
         result.reverse()
         return result
 
+    def add_inbox_item(
+        self,
+        *,
+        user_id: str,
+        category: str,
+        severity: str,
+        title: str,
+        body: str,
+        source_type: str | None = None,
+        source_id: str | None = None,
+        run_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        requires_action: bool = False,
+    ) -> dict[str, Any]:
+        item_id = str(uuid4())
+        now = self._utc_now()
+        normalized_category = str(category or "general").strip().lower() or "general"
+        normalized_severity = str(severity or "info").strip().lower() or "info"
+        if normalized_severity not in {"info", "warning", "error"}:
+            normalized_severity = "info"
+        payload = json.dumps(metadata or {}, ensure_ascii=False)
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO inbox_items(
+                    id,
+                    user_id,
+                    category,
+                    severity,
+                    title,
+                    body,
+                    source_type,
+                    source_id,
+                    run_id,
+                    metadata_json,
+                    is_read,
+                    requires_action,
+                    created_at,
+                    updated_at
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+                """,
+                (
+                    item_id,
+                    user_id,
+                    normalized_category,
+                    normalized_severity,
+                    title,
+                    body,
+                    source_type,
+                    source_id,
+                    run_id,
+                    payload,
+                    1 if requires_action else 0,
+                    now,
+                    now,
+                ),
+            )
+            self._conn.commit()
+
+        item = self.get_inbox_item(item_id)
+        assert item is not None
+        return item
+
+    def get_inbox_item(self, item_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM inbox_items WHERE id = ?",
+                (item_id,),
+            ).fetchone()
+        if not row:
+            return None
+        return self._decode_inbox_row(dict(row))
+
+    def list_inbox_items(
+        self,
+        *,
+        user_id: str | None = None,
+        unread_only: bool = False,
+        category: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        if limit <= 0:
+            return []
+
+        query = "SELECT * FROM inbox_items WHERE 1 = 1"
+        params: list[Any] = []
+        if user_id:
+            query += " AND user_id = ?"
+            params.append(user_id)
+        if unread_only:
+            query += " AND is_read = 0"
+        if category:
+            query += " AND category = ?"
+            params.append(str(category).strip().lower())
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+
+        with self._lock:
+            rows = self._conn.execute(query, tuple(params)).fetchall()
+        return [self._decode_inbox_row(dict(row)) for row in rows]
+
+    def set_inbox_item_read(self, item_id: str, is_read: bool) -> dict[str, Any] | None:
+        now = self._utc_now()
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                UPDATE inbox_items
+                SET is_read = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (1 if is_read else 0, now, item_id),
+            )
+            self._conn.commit()
+        if int(cursor.rowcount or 0) <= 0:
+            return None
+        return self.get_inbox_item(item_id)
+
     def _decode_agent_run_row(self, row: dict[str, Any]) -> dict[str, Any]:
         try:
             row["result"] = json.loads(row["result_json"]) if row.get("result_json") else None
@@ -1053,6 +1184,31 @@ class Database:
             row["schedule"] = {}
         row["schedule_type"] = str(row.get("schedule_type") or "interval")
         row["timezone"] = str(row.get("timezone") or "UTC")
+        try:
+            row["consecutive_failures"] = max(0, int(row.get("consecutive_failures", 0)))
+        except Exception:
+            row["consecutive_failures"] = 0
+        level = str(row.get("escalation_level") or "none").strip().lower()
+        if level not in {"none", "warning", "critical"}:
+            level = "none"
+        row["escalation_level"] = level
+        return row
+
+    @staticmethod
+    def _decode_inbox_row(row: dict[str, Any]) -> dict[str, Any]:
+        row["is_read"] = bool(int(row.get("is_read", 0)))
+        row["requires_action"] = bool(int(row.get("requires_action", 0)))
+        metadata_json = row.pop("metadata_json", "{}")
+        try:
+            parsed = json.loads(metadata_json or "{}")
+            row["metadata"] = parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            row["metadata"] = {}
+        row["category"] = str(row.get("category") or "general").strip().lower()
+        severity = str(row.get("severity") or "info").strip().lower()
+        if severity not in {"info", "warning", "error"}:
+            severity = "info"
+        row["severity"] = severity
         return row
 
     def upsert_agent(self, agent: dict[str, Any]) -> None:

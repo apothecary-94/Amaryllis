@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -46,6 +47,9 @@ class AutomationSchedulerTests(unittest.TestCase):
             run_manager=self.run_manager,
             poll_interval_sec=0.5,
             batch_size=10,
+            escalation_warning_threshold=1,
+            escalation_critical_threshold=2,
+            escalation_disable_threshold=3,
         )
 
         self.agent = Agent.create(
@@ -108,6 +112,94 @@ class AutomationSchedulerTests(unittest.TestCase):
         assert row is not None
         self.assertIsNotNone(row.get("last_run_at"))
         self.assertIsNone(row.get("last_error"))
+
+    def test_watch_fs_triggers_only_on_file_change(self) -> None:
+        watch_dir = self.base / "watch"
+        watch_dir.mkdir(parents=True, exist_ok=True)
+        watched_file = watch_dir / "notes.txt"
+        watched_file.write_text("v1", encoding="utf-8")
+
+        automation = self.scheduler.create_automation(
+            agent_id=self.agent.id,
+            user_id="user-1",
+            session_id="session-watch",
+            message="watch changes",
+            schedule_type="watch_fs",
+            schedule={
+                "path": str(watch_dir),
+                "poll_sec": 2,
+                "recursive": False,
+                "glob": "*.txt",
+                "max_changed_files": 10,
+            },
+            start_immediately=True,
+        )
+
+        self.scheduler._tick()  # noqa: SLF001
+        runs = self.database.list_agent_runs(user_id="user-1", limit=20)
+        self.assertEqual(len(runs), 0)
+
+        time.sleep(0.01)
+        watched_file.write_text("v2", encoding="utf-8")
+        self.database.update_automation_fields(automation["id"], next_run_at="1970-01-01T00:00:00+00:00")
+
+        self.scheduler._tick()  # noqa: SLF001
+        runs_after_change = self.database.list_agent_runs(user_id="user-1", limit=20)
+        self.assertEqual(len(runs_after_change), 1)
+        self.assertIn("Watcher detected file changes", runs_after_change[0]["input_message"])
+        self.assertIn("- notes.txt", runs_after_change[0]["input_message"])
+
+        inbox = self.scheduler.list_inbox_items(user_id="user-1", limit=20)
+        self.assertTrue(any(item["title"] == "Automation watcher triggered" for item in inbox))
+
+    def test_escalation_policy_creates_inbox_and_disables(self) -> None:
+        automation = self.scheduler.create_automation(
+            agent_id="missing-agent",
+            user_id="user-1",
+            session_id=None,
+            message="will fail",
+            interval_sec=60,
+            start_immediately=False,
+        )
+
+        for _ in range(3):
+            with self.assertRaises(ValueError):
+                self.scheduler.run_now(automation["id"])
+
+        row = self.database.get_automation(automation["id"])
+        self.assertIsNotNone(row)
+        assert row is not None
+        self.assertEqual(row["consecutive_failures"], 3)
+        self.assertEqual(row["escalation_level"], "critical")
+        self.assertFalse(row["is_enabled"])
+        self.assertIsNotNone(row["last_error"])
+
+        inbox = self.scheduler.list_inbox_items(user_id="user-1", limit=20)
+        self.assertGreaterEqual(len(inbox), 3)
+        titles = [item["title"] for item in inbox]
+        self.assertIn("Automation warning", titles)
+        self.assertIn("Automation in critical failure state", titles)
+        self.assertIn("Automation disabled after failures", titles)
+
+    def test_mark_inbox_item_read_and_unread(self) -> None:
+        item = self.database.add_inbox_item(
+            user_id="user-1",
+            category="automation",
+            severity="info",
+            title="Test item",
+            body="Body",
+            source_type="automation",
+            source_id="automation-1",
+            metadata={"x": 1},
+            requires_action=False,
+        )
+        self.assertFalse(item["is_read"])
+
+        read_item = self.scheduler.set_inbox_item_read(item["id"], is_read=True)
+        self.assertTrue(read_item["is_read"])
+
+        unread_item = self.scheduler.set_inbox_item_read(item["id"], is_read=False)
+        self.assertFalse(unread_item["is_read"])
 
 
 if __name__ == "__main__":

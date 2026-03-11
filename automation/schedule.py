@@ -82,7 +82,47 @@ def normalize_schedule(
 
         return "weekly", {"byday": dedup_days, "hour": hour, "minute": minute}, 7 * 24 * 3600
 
-    raise ValueError("Unsupported schedule_type. Allowed: interval, hourly, weekly")
+    if normalized_type == "watch_fs":
+        raw_path = str(payload.get("path", "")).strip()
+        if not raw_path:
+            raise ValueError("watch_fs schedule requires non-empty path")
+
+        raw_poll = payload.get("poll_sec", interval_sec if interval_sec is not None else 10)
+        try:
+            poll_sec = int(raw_poll)
+        except Exception as exc:
+            raise ValueError("watch_fs schedule requires integer poll_sec") from exc
+        if poll_sec < 2 or poll_sec > 3600:
+            raise ValueError("poll_sec must be in [2, 3600]")
+
+        raw_max = payload.get("max_changed_files", 20)
+        try:
+            max_changed_files = int(raw_max)
+        except Exception as exc:
+            raise ValueError("watch_fs schedule requires integer max_changed_files") from exc
+        if max_changed_files < 1 or max_changed_files > 500:
+            raise ValueError("max_changed_files must be in [1, 500]")
+
+        state_raw = payload.get("last_seen_mtime_ns", 0)
+        try:
+            last_seen_mtime_ns = max(0, int(state_raw))
+        except Exception:
+            last_seen_mtime_ns = 0
+
+        return (
+            "watch_fs",
+            {
+                "path": raw_path,
+                "poll_sec": poll_sec,
+                "recursive": _to_bool(payload.get("recursive", True), default=True),
+                "glob": str(payload.get("glob", "*")).strip() or "*",
+                "max_changed_files": max_changed_files,
+                "last_seen_mtime_ns": last_seen_mtime_ns,
+            },
+            poll_sec,
+        )
+
+    raise ValueError("Unsupported schedule_type. Allowed: interval, hourly, weekly, watch_fs")
 
 
 def compute_next_run_at(
@@ -103,6 +143,11 @@ def compute_next_run_at(
     if schedule_type == "interval":
         interval_sec = int(schedule.get("interval_sec", 300))
         next_utc = now + timedelta(seconds=max(10, interval_sec))
+        return next_utc.isoformat()
+
+    if schedule_type == "watch_fs":
+        poll_sec = int(schedule.get("poll_sec", 10))
+        next_utc = now + timedelta(seconds=max(2, poll_sec))
         return next_utc.isoformat()
 
     local_now = now.astimezone(tz)
@@ -151,3 +196,15 @@ def compute_next_run_at(
 
     raise ValueError(f"Unsupported schedule_type: {schedule_type}")
 
+
+def _to_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default

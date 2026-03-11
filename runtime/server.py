@@ -15,6 +15,7 @@ from agents.agent_run_manager import AgentRunManager
 from api.agent_api import router as agent_router
 from api.automation_api import router as automation_router
 from api.chat_api import router as chat_router
+from api.inbox_api import router as inbox_router
 from api.memory_api import router as memory_router
 from api.model_api import router as model_router
 from api.tool_api import router as tool_router
@@ -136,6 +137,9 @@ def create_services() -> ServiceContainer:
         run_manager=agent_run_manager,
         poll_interval_sec=config.automation_poll_sec,
         batch_size=config.automation_batch_size,
+        escalation_warning_threshold=config.automation_escalation_warning,
+        escalation_critical_threshold=config.automation_escalation_critical,
+        escalation_disable_threshold=config.automation_escalation_disable,
         telemetry=telemetry,
     )
     automation_scheduler.start()
@@ -317,6 +321,7 @@ def create_app() -> FastAPI:
     app.include_router(model_router)
     app.include_router(agent_router)
     app.include_router(automation_router)
+    app.include_router(inbox_router)
     app.include_router(memory_router)
     app.include_router(tool_router)
 

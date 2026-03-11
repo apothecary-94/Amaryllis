@@ -31,6 +31,9 @@ class AppConfig:
     run_max_attempts: int
     automation_poll_sec: float
     automation_batch_size: int
+    automation_escalation_warning: int
+    automation_escalation_critical: int
+    automation_escalation_disable: int
     tool_approval_enforcement: str
     blocked_tools: tuple[str, ...]
     plugin_signing_key: str | None
@@ -129,6 +132,11 @@ class AppConfig:
             run_max_attempts=max(1, int(os.getenv("AMARYLLIS_RUN_MAX_ATTEMPTS", "2"))),
             automation_poll_sec=max(0.5, float(os.getenv("AMARYLLIS_AUTOMATION_POLL_SEC", "2"))),
             automation_batch_size=max(1, int(os.getenv("AMARYLLIS_AUTOMATION_BATCH_SIZE", "10"))),
+            automation_escalation_warning=max(1, int(os.getenv("AMARYLLIS_AUTOMATION_ESCALATION_WARNING", "2"))),
+            automation_escalation_critical=max(
+                1, int(os.getenv("AMARYLLIS_AUTOMATION_ESCALATION_CRITICAL", "4"))
+            ),
+            automation_escalation_disable=max(1, int(os.getenv("AMARYLLIS_AUTOMATION_ESCALATION_DISABLE", "6"))),
             tool_approval_enforcement=tool_approval_enforcement,
             blocked_tools=blocked_tools,
             plugin_signing_key=(os.getenv("AMARYLLIS_PLUGIN_SIGNING_KEY") or "").strip() or None,

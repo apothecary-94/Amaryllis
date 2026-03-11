@@ -208,6 +208,38 @@ MIGRATIONS: list[Migration] = [
         ALTER TABLE automations ADD COLUMN timezone TEXT NOT NULL DEFAULT 'UTC';
         """,
     ),
+    Migration(
+        version=6,
+        name="automation_inbox_escalation_v3",
+        sql="""
+        ALTER TABLE automations ADD COLUMN consecutive_failures INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE automations ADD COLUMN escalation_level TEXT NOT NULL DEFAULT 'none';
+
+        CREATE TABLE IF NOT EXISTS inbox_items (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            category TEXT NOT NULL,
+            severity TEXT NOT NULL,
+            title TEXT NOT NULL,
+            body TEXT NOT NULL,
+            source_type TEXT,
+            source_id TEXT,
+            run_id TEXT,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            is_read INTEGER NOT NULL DEFAULT 0,
+            requires_action INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_inbox_user_created
+            ON inbox_items(user_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_inbox_user_read_created
+            ON inbox_items(user_id, is_read, created_at);
+        CREATE INDEX IF NOT EXISTS idx_inbox_source
+            ON inbox_items(source_type, source_id, created_at);
+        """,
+    ),
 ]
 
 
