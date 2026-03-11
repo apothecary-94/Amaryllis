@@ -24,6 +24,13 @@ class AgentChatRequest(BaseModel):
     session_id: str | None = None
 
 
+class AgentRunCreateRequest(BaseModel):
+    user_id: str = Field(min_length=1)
+    message: str = Field(min_length=1)
+    session_id: str | None = None
+    max_attempts: int | None = Field(default=None, ge=1, le=10)
+
+
 @router.post("/agents/create")
 def create_agent(payload: CreateAgentRequest, request: Request) -> dict[str, Any]:
     services = request.app.state.services
@@ -50,6 +57,112 @@ def list_agents(request: Request, user_id: str | None = Query(default=None)) -> 
         "items": [agent.to_record() for agent in agents],
         "count": len(agents),
     }
+
+
+@router.post("/agents/{agent_id}/runs")
+def create_agent_run(
+    payload: AgentRunCreateRequest,
+    request: Request,
+    agent_id: str = Path(..., min_length=1),
+) -> dict[str, Any]:
+    services = request.app.state.services
+    try:
+        run = services.agent_manager.create_run(
+            agent_id=agent_id,
+            user_message=payload.message,
+            user_id=payload.user_id,
+            session_id=payload.session_id,
+            max_attempts=payload.max_attempts,
+        )
+        return {
+            "run": run,
+            "request_id": str(getattr(request.state, "request_id", "")),
+        }
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
+    except Exception as exc:
+        raise ProviderError(str(exc)) from exc
+
+
+@router.get("/agents/{agent_id}/runs")
+def list_agent_runs(
+    request: Request,
+    agent_id: str = Path(..., min_length=1),
+    user_id: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> dict[str, Any]:
+    services = request.app.state.services
+    try:
+        runs = services.agent_manager.list_runs(
+            user_id=user_id,
+            agent_id=agent_id,
+            status=status,
+            limit=limit,
+        )
+        return {
+            "items": runs,
+            "count": len(runs),
+            "request_id": str(getattr(request.state, "request_id", "")),
+        }
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
+    except Exception as exc:
+        raise ProviderError(str(exc)) from exc
+
+
+@router.get("/agents/runs/{run_id}")
+def get_agent_run(
+    request: Request,
+    run_id: str = Path(..., min_length=1),
+) -> dict[str, Any]:
+    services = request.app.state.services
+    try:
+        run = services.agent_manager.get_run(run_id=run_id)
+        return {
+            "run": run,
+            "request_id": str(getattr(request.state, "request_id", "")),
+        }
+    except ValueError as exc:
+        raise NotFoundError(str(exc)) from exc
+    except Exception as exc:
+        raise ProviderError(str(exc)) from exc
+
+
+@router.post("/agents/runs/{run_id}/cancel")
+def cancel_agent_run(
+    request: Request,
+    run_id: str = Path(..., min_length=1),
+) -> dict[str, Any]:
+    services = request.app.state.services
+    try:
+        run = services.agent_manager.cancel_run(run_id=run_id)
+        return {
+            "run": run,
+            "request_id": str(getattr(request.state, "request_id", "")),
+        }
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
+    except Exception as exc:
+        raise ProviderError(str(exc)) from exc
+
+
+@router.post("/agents/runs/{run_id}/resume")
+def resume_agent_run(
+    request: Request,
+    run_id: str = Path(..., min_length=1),
+) -> dict[str, Any]:
+    services = request.app.state.services
+    try:
+        run = services.agent_manager.resume_run(run_id=run_id)
+        return {
+            "run": run,
+            "request_id": str(getattr(request.state, "request_id", "")),
+        }
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
+    except Exception as exc:
+        raise ProviderError(str(exc)) from exc
 
 
 @router.post("/agents/{agent_id}/chat")

@@ -11,6 +11,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from agents.agent_manager import AgentManager
+from agents.agent_run_manager import AgentRunManager
 from api.agent_api import router as agent_router
 from api.chat_api import router as chat_router
 from api.memory_api import router as memory_router
@@ -45,6 +46,7 @@ class ServiceContainer:
     meta_controller: MetaController
     planner: Planner
     task_executor: TaskExecutor
+    agent_run_manager: AgentRunManager
     agent_manager: AgentManager
     telemetry: LocalTelemetry
 
@@ -95,7 +97,19 @@ def create_services() -> ServiceContainer:
         planner=planner,
     )
 
-    agent_manager = AgentManager(database=database, task_executor=task_executor)
+    agent_run_manager = AgentRunManager(
+        database=database,
+        task_executor=task_executor,
+        worker_count=config.run_workers,
+        default_max_attempts=config.run_max_attempts,
+        telemetry=telemetry,
+    )
+    agent_run_manager.start()
+    agent_manager = AgentManager(
+        database=database,
+        task_executor=task_executor,
+        run_manager=agent_run_manager,
+    )
 
     return ServiceContainer(
         config=config,
@@ -108,6 +122,7 @@ def create_services() -> ServiceContainer:
         meta_controller=meta_controller,
         planner=planner,
         task_executor=task_executor,
+        agent_run_manager=agent_run_manager,
         agent_manager=agent_manager,
         telemetry=telemetry,
     )
@@ -307,6 +322,7 @@ def create_app() -> FastAPI:
                 "app": services.config.app_name,
             },
         )
+        services.agent_run_manager.stop()
         services.database.close()
         services.vector_store.persist()
         services.telemetry.emit(

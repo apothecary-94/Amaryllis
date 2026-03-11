@@ -68,7 +68,8 @@ Local telemetry log:
 .
 ├── agents
 │   ├── agent.py
-│   └── agent_manager.py
+│   ├── agent_manager.py
+│   └── agent_run_manager.py
 ├── api
 │   ├── agent_api.py
 │   ├── chat_api.py
@@ -116,6 +117,7 @@ Local telemetry log:
 ├── tasks
 │   └── task_executor.py
 ├── tests
+│   ├── test_agent_run_manager.py
 │   └── test_memory_manager.py
 ├── tools
 │   ├── builtin_tools
@@ -358,6 +360,43 @@ curl -X POST http://localhost:8000/agents/<agent_id>/chat \
   }'
 ```
 
+### Work Mode: create async run
+
+```bash
+curl -X POST http://localhost:8000/agents/<agent_id>/runs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_id": "user-001",
+    "session_id": "session-001",
+    "message": "Find 3 sources about MLX and summarize them.",
+    "max_attempts": 2
+  }'
+```
+
+### Work Mode: list runs for agent
+
+```bash
+curl "http://localhost:8000/agents/<agent_id>/runs?user_id=user-001&limit=20"
+```
+
+### Work Mode: get run by id
+
+```bash
+curl "http://localhost:8000/agents/runs/<run_id>"
+```
+
+### Work Mode: cancel run
+
+```bash
+curl -X POST "http://localhost:8000/agents/runs/<run_id>/cancel"
+```
+
+### Work Mode: resume failed/canceled run
+
+```bash
+curl -X POST "http://localhost:8000/agents/runs/<run_id>/resume"
+```
+
 ## Memory 2.0 Foundation (Current)
 
 Implemented now:
@@ -379,7 +418,23 @@ SQLite tables added in migration `v2`:
 - `memory_extractions`
 - `memory_conflicts`
 
-### Memory Debug API
+## Agents Work Mode Foundation (Current)
+
+Implemented now:
+- async run queue for agents (`queued` -> `running` -> `succeeded|failed|canceled`)
+- persistent run state in SQLite (`agent_runs`)
+- run checkpoints (stage history)
+- automatic retry until `max_attempts`
+- manual cancel and resume APIs
+
+Run status values:
+- `queued`
+- `running`
+- `succeeded`
+- `failed`
+- `canceled`
+
+## Memory Debug API
 
 Get computed memory context for a user/session:
 
@@ -417,7 +472,7 @@ Plugins are auto-discovered from:
 
 ## Tests
 
-Run memory policy/scoring unit tests:
+Run unit tests (memory + work mode runs):
 
 ```bash
 ~/Library/Application\ Support/amaryllis/runtime-src/.venv/bin/python -m unittest discover -s tests -p "test_*.py" -v
@@ -440,6 +495,8 @@ Run memory policy/scoring unit tests:
   - `AMARYLLIS_ANTHROPIC_API_KEY=<your_key>`
   - `AMARYLLIS_OPENROUTER_BASE_URL=https://openrouter.ai/api/v1`
   - `AMARYLLIS_OPENROUTER_API_KEY=<your_key>`
+  - `AMARYLLIS_RUN_WORKERS=2`
+  - `AMARYLLIS_RUN_MAX_ATTEMPTS=2`
 
 ## Example Environment Variables
 
@@ -457,6 +514,8 @@ export AMARYLLIS_ANTHROPIC_BASE_URL=https://api.anthropic.com/v1
 export AMARYLLIS_ANTHROPIC_API_KEY=replace_me
 export AMARYLLIS_OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
 export AMARYLLIS_OPENROUTER_API_KEY=replace_me
+export AMARYLLIS_RUN_WORKERS=2
+export AMARYLLIS_RUN_MAX_ATTEMPTS=2
 ```
 
 ## License

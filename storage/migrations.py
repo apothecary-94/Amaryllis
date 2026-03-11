@@ -131,6 +131,37 @@ MIGRATIONS: list[Migration] = [
             ON memory_conflicts(user_id, created_at);
         """,
     ),
+    Migration(
+        version=3,
+        name="agent_runs_work_mode",
+        sql="""
+        CREATE TABLE IF NOT EXISTS agent_runs (
+            id TEXT PRIMARY KEY,
+            agent_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            session_id TEXT,
+            input_message TEXT NOT NULL,
+            status TEXT NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            max_attempts INTEGER NOT NULL DEFAULT 2,
+            cancel_requested INTEGER NOT NULL DEFAULT 0,
+            result_json TEXT,
+            error_message TEXT,
+            checkpoints_json TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            started_at TEXT,
+            finished_at TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_agent_runs_user_created
+            ON agent_runs(user_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_agent_runs_agent_created
+            ON agent_runs(agent_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_agent_runs_status_updated
+            ON agent_runs(status, updated_at);
+        """,
+    ),
 ]
 
 

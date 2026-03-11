@@ -1,0 +1,164 @@
+from __future__ import annotations
+
+import tempfile
+import time
+import unittest
+from pathlib import Path
+from typing import Any
+
+from agents.agent import Agent
+from agents.agent_run_manager import AgentRunManager
+from storage.database import Database
+from storage.vector_store import VectorStore
+
+
+class _FakeTaskExecutor:
+    def __init__(self, fail_first: bool = False, always_fail: bool = False) -> None:
+        self.fail_first = fail_first
+        self.always_fail = always_fail
+        self.call_count = 0
+
+    def execute(
+        self,
+        agent: Agent,
+        user_id: str,
+        session_id: str | None,
+        user_message: str,
+    ) -> dict[str, Any]:
+        self.call_count += 1
+        if self.always_fail:
+            raise RuntimeError("forced failure")
+        if self.fail_first and self.call_count == 1:
+            raise RuntimeError("fail first attempt")
+        return {
+            "agent_id": agent.id,
+            "user_id": user_id,
+            "session_id": session_id,
+            "response": f"ok:{user_message}",
+        }
+
+
+class AgentRunManagerTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory(prefix="amaryllis-tests-runs-")
+        self.base = Path(self._tmp.name)
+        self.database = Database(self.base / "state.db")
+        self.vector = VectorStore(self.base / "vectors.faiss")
+        self.executor = _FakeTaskExecutor()
+        self.manager = AgentRunManager(
+            database=self.database,
+            task_executor=self.executor,  # type: ignore[arg-type]
+            worker_count=1,
+            default_max_attempts=2,
+        )
+
+        self.agent = Agent.create(
+            name="Run Test Agent",
+            system_prompt="Test prompt",
+            model=None,
+            tools=[],
+            user_id="user-1",
+        )
+        self.database.upsert_agent(self.agent.to_record())
+
+    def tearDown(self) -> None:
+        self.manager.stop()
+        self.database.close()
+        self._tmp.cleanup()
+
+    def test_run_succeeds_and_records_checkpoints(self) -> None:
+        self.manager.start()
+        run = self.manager.create_run(
+            agent=self.agent,
+            user_id="user-1",
+            session_id="session-1",
+            user_message="hello",
+            max_attempts=2,
+        )
+
+        final = self._wait_for_status(run["id"], {"succeeded"})
+        self.assertIsNotNone(final)
+        assert final is not None
+        self.assertEqual(final["status"], "succeeded")
+        self.assertEqual(final["attempts"], 1)
+        self.assertEqual(final["attempts"], 1)
+        self.assertIsInstance(final["result"], dict)
+        stages = {item.get("stage") for item in final["checkpoints"]}
+        self.assertIn("queued", stages)
+        self.assertIn("running", stages)
+        self.assertIn("succeeded", stages)
+
+    def test_run_retries_then_succeeds(self) -> None:
+        self.executor.fail_first = True
+        self.manager.start()
+        run = self.manager.create_run(
+            agent=self.agent,
+            user_id="user-1",
+            session_id="session-1",
+            user_message="retry me",
+            max_attempts=2,
+        )
+
+        final = self._wait_for_status(run["id"], {"succeeded"})
+        self.assertIsNotNone(final)
+        assert final is not None
+        self.assertEqual(final["status"], "succeeded")
+        self.assertEqual(final["attempts"], 2)
+        stages = [item.get("stage") for item in final["checkpoints"]]
+        self.assertIn("retry_scheduled", stages)
+
+    def test_cancel_queued_run_without_workers(self) -> None:
+        run = self.manager.create_run(
+            agent=self.agent,
+            user_id="user-1",
+            session_id=None,
+            user_message="cancel me",
+            max_attempts=1,
+        )
+
+        canceled = self.manager.cancel_run(run["id"])
+        self.assertEqual(canceled["status"], "canceled")
+        self.assertEqual(canceled["cancel_requested"], 1)
+
+    def test_resume_failed_run(self) -> None:
+        self.executor.always_fail = True
+        self.manager.start()
+        run = self.manager.create_run(
+            agent=self.agent,
+            user_id="user-1",
+            session_id=None,
+            user_message="fail then resume",
+            max_attempts=1,
+        )
+
+        failed = self._wait_for_status(run["id"], {"failed"})
+        self.assertIsNotNone(failed)
+        assert failed is not None
+        self.assertEqual(failed["status"], "failed")
+
+        self.executor.always_fail = False
+        resumed = self.manager.resume_run(run["id"])
+        self.assertEqual(resumed["status"], "queued")
+
+        final = self._wait_for_status(run["id"], {"succeeded"})
+        self.assertIsNotNone(final)
+        assert final is not None
+        self.assertEqual(final["status"], "succeeded")
+
+    def _wait_for_status(
+        self,
+        run_id: str,
+        statuses: set[str],
+        timeout_sec: float = 4.0,
+    ) -> dict[str, Any] | None:
+        deadline = time.time() + timeout_sec
+        while time.time() < deadline:
+            run = self.manager.get_run(run_id)
+            if run and str(run.get("status")) in statuses:
+                return run
+            time.sleep(0.05)
+        return self.manager.get_run(run_id)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -658,6 +658,168 @@ class Database:
         result.reverse()
         return result
 
+    def create_agent_run(
+        self,
+        run_id: str,
+        agent_id: str,
+        user_id: str,
+        session_id: str | None,
+        input_message: str,
+        status: str = "queued",
+        max_attempts: int = 2,
+    ) -> None:
+        now = self._utc_now()
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO agent_runs(
+                    id,
+                    agent_id,
+                    user_id,
+                    session_id,
+                    input_message,
+                    status,
+                    attempts,
+                    max_attempts,
+                    cancel_requested,
+                    checkpoints_json,
+                    created_at,
+                    updated_at
+                )
+                VALUES(?, ?, ?, ?, ?, ?, 0, ?, 0, '[]', ?, ?)
+                """,
+                (run_id, agent_id, user_id, session_id, input_message, status, max_attempts, now, now),
+            )
+            self._conn.commit()
+
+    def update_agent_run_fields(self, run_id: str, **fields: Any) -> None:
+        if not fields:
+            return
+
+        allowed = {
+            "status",
+            "attempts",
+            "max_attempts",
+            "cancel_requested",
+            "result_json",
+            "error_message",
+            "checkpoints_json",
+            "started_at",
+            "finished_at",
+            "updated_at",
+        }
+        sanitized: dict[str, Any] = {}
+        for key, value in fields.items():
+            if key not in allowed:
+                continue
+            if key in {"result_json", "checkpoints_json"} and isinstance(value, (dict, list)):
+                sanitized[key] = json.dumps(value, ensure_ascii=False)
+            elif key == "cancel_requested" and isinstance(value, bool):
+                sanitized[key] = 1 if value else 0
+            else:
+                sanitized[key] = value
+
+        if not sanitized:
+            return
+
+        if "updated_at" not in sanitized:
+            sanitized["updated_at"] = self._utc_now()
+
+        assignments = ", ".join(f"{column} = ?" for column in sanitized.keys())
+        values = list(sanitized.values()) + [run_id]
+        with self._lock:
+            self._conn.execute(
+                f"UPDATE agent_runs SET {assignments} WHERE id = ?",
+                values,
+            )
+            self._conn.commit()
+
+    def append_agent_run_checkpoint(self, run_id: str, checkpoint: dict[str, Any]) -> None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT checkpoints_json FROM agent_runs WHERE id = ?",
+                (run_id,),
+            ).fetchone()
+            if not row:
+                return
+
+            checkpoints: list[dict[str, Any]]
+            try:
+                checkpoints = json.loads(row["checkpoints_json"] or "[]")
+            except Exception:
+                checkpoints = []
+            if not isinstance(checkpoints, list):
+                checkpoints = []
+
+            checkpoints.append(
+                {
+                    "timestamp": self._utc_now(),
+                    **checkpoint,
+                }
+            )
+            self._conn.execute(
+                """
+                UPDATE agent_runs
+                SET checkpoints_json = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (json.dumps(checkpoints, ensure_ascii=False), self._utc_now(), run_id),
+            )
+            self._conn.commit()
+
+    def get_agent_run(self, run_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM agent_runs WHERE id = ?",
+                (run_id,),
+            ).fetchone()
+        if not row:
+            return None
+        return self._decode_agent_run_row(dict(row))
+
+    def list_agent_runs(
+        self,
+        user_id: str | None = None,
+        agent_id: str | None = None,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        if limit <= 0:
+            return []
+
+        query = "SELECT * FROM agent_runs WHERE 1 = 1"
+        params: list[Any] = []
+        if user_id:
+            query += " AND user_id = ?"
+            params.append(user_id)
+        if agent_id:
+            query += " AND agent_id = ?"
+            params.append(agent_id)
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+
+        with self._lock:
+            rows = self._conn.execute(query, tuple(params)).fetchall()
+        return [self._decode_agent_run_row(dict(row)) for row in rows]
+
+    def _decode_agent_run_row(self, row: dict[str, Any]) -> dict[str, Any]:
+        try:
+            row["result"] = json.loads(row["result_json"]) if row.get("result_json") else None
+        except Exception:
+            row["result"] = None
+
+        try:
+            checkpoints = json.loads(row.get("checkpoints_json") or "[]")
+            row["checkpoints"] = checkpoints if isinstance(checkpoints, list) else []
+        except Exception:
+            row["checkpoints"] = []
+        row.pop("result_json", None)
+        row.pop("checkpoints_json", None)
+        return row
+
     def upsert_agent(self, agent: dict[str, Any]) -> None:
         with self._lock:
             self._conn.execute(

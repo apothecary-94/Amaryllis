@@ -27,6 +27,8 @@ class AppConfig:
     anthropic_api_key: str | None
     openrouter_base_url: str
     openrouter_api_key: str | None
+    run_workers: int
+    run_max_attempts: int
 
     @classmethod
     def from_env(cls) -> "AppConfig":
@@ -108,6 +110,8 @@ class AppConfig:
             anthropic_api_key=(os.getenv("AMARYLLIS_ANTHROPIC_API_KEY") or "").strip() or None,
             openrouter_base_url=os.getenv("AMARYLLIS_OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/"),
             openrouter_api_key=(os.getenv("AMARYLLIS_OPENROUTER_API_KEY") or "").strip() or None,
+            run_workers=max(1, int(os.getenv("AMARYLLIS_RUN_WORKERS", "2"))),
+            run_max_attempts=max(1, int(os.getenv("AMARYLLIS_RUN_MAX_ATTEMPTS", "2"))),
         )
 
     def ensure_directories(self) -> None:
