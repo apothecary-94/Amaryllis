@@ -58,11 +58,97 @@ MIGRATIONS: list[Migration] = [
         );
         """,
     ),
+    Migration(
+        version=2,
+        name="memory_v2_layers",
+        sql="""
+        ALTER TABLE episodic_memory ADD COLUMN session_id TEXT;
+        ALTER TABLE episodic_memory ADD COLUMN kind TEXT NOT NULL DEFAULT 'interaction';
+        ALTER TABLE episodic_memory ADD COLUMN confidence REAL NOT NULL DEFAULT 1.0;
+        ALTER TABLE episodic_memory ADD COLUMN importance REAL NOT NULL DEFAULT 0.5;
+        ALTER TABLE episodic_memory ADD COLUMN fingerprint TEXT;
+        ALTER TABLE episodic_memory ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1;
+        ALTER TABLE episodic_memory ADD COLUMN superseded_by INTEGER;
+
+        ALTER TABLE semantic_memory ADD COLUMN kind TEXT NOT NULL DEFAULT 'fact';
+        ALTER TABLE semantic_memory ADD COLUMN confidence REAL NOT NULL DEFAULT 0.8;
+        ALTER TABLE semantic_memory ADD COLUMN importance REAL NOT NULL DEFAULT 0.5;
+        ALTER TABLE semantic_memory ADD COLUMN fingerprint TEXT;
+        ALTER TABLE semantic_memory ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1;
+        ALTER TABLE semantic_memory ADD COLUMN superseded_by INTEGER;
+
+        ALTER TABLE user_memory ADD COLUMN confidence REAL NOT NULL DEFAULT 0.9;
+        ALTER TABLE user_memory ADD COLUMN importance REAL NOT NULL DEFAULT 0.7;
+        ALTER TABLE user_memory ADD COLUMN source TEXT;
+
+        CREATE TABLE IF NOT EXISTS working_memory (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            key TEXT NOT NULL,
+            value TEXT NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'note',
+            confidence REAL NOT NULL DEFAULT 0.5,
+            importance REAL NOT NULL DEFAULT 0.5,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            updated_at TEXT NOT NULL,
+            UNIQUE(user_id, session_id, key)
+        );
+
+        CREATE TABLE IF NOT EXISTS memory_extractions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            agent_id TEXT,
+            session_id TEXT,
+            source_role TEXT NOT NULL,
+            source_text TEXT NOT NULL,
+            extracted_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS memory_conflicts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            layer TEXT NOT NULL,
+            key TEXT NOT NULL,
+            previous_value TEXT,
+            incoming_value TEXT,
+            resolution TEXT NOT NULL,
+            confidence_prev REAL,
+            confidence_new REAL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_episodic_user_agent_time
+            ON episodic_memory(user_id, agent_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_episodic_user_session_time
+            ON episodic_memory(user_id, session_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_semantic_user_time
+            ON semantic_memory(user_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_working_user_session
+            ON working_memory(user_id, session_id, updated_at);
+        CREATE INDEX IF NOT EXISTS idx_conflicts_user_time
+            ON memory_conflicts(user_id, created_at);
+        """,
+    ),
 ]
 
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _run_migration_sql(conn: sqlite3.Connection, sql: str) -> None:
+    statements = [item.strip() for item in sql.split(";") if item.strip()]
+    for statement in statements:
+        try:
+            conn.execute(statement)
+        except sqlite3.OperationalError as exc:
+            message = str(exc).lower()
+            if "duplicate column name" in message or "already exists" in message:
+                continue
+            raise
+    conn.commit()
 
 
 def apply_migrations(conn: sqlite3.Connection) -> list[int]:
@@ -85,7 +171,7 @@ def apply_migrations(conn: sqlite3.Connection) -> list[int]:
         if migration.version in applied_versions:
             continue
 
-        conn.executescript(migration.sql)
+        _run_migration_sql(conn, migration.sql)
         conn.execute(
             "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
             (migration.version, migration.name, _utc_now()),

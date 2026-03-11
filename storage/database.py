@@ -60,14 +60,47 @@ class Database:
         agent_id: str | None,
         role: str,
         content: str,
+        session_id: str | None = None,
+        kind: str = "interaction",
+        confidence: float = 1.0,
+        importance: float = 0.5,
+        fingerprint: str | None = None,
+        is_active: bool = True,
+        superseded_by: int | None = None,
     ) -> None:
         with self._lock:
             self._conn.execute(
                 """
-                INSERT INTO episodic_memory(user_id, agent_id, role, content, created_at)
-                VALUES(?, ?, ?, ?, ?)
+                INSERT INTO episodic_memory(
+                    user_id,
+                    agent_id,
+                    session_id,
+                    role,
+                    content,
+                    kind,
+                    confidence,
+                    importance,
+                    fingerprint,
+                    is_active,
+                    superseded_by,
+                    created_at
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (user_id, agent_id, role, content, self._utc_now()),
+                (
+                    user_id,
+                    agent_id,
+                    session_id,
+                    role,
+                    content,
+                    kind,
+                    confidence,
+                    importance,
+                    fingerprint,
+                    1 if is_active else 0,
+                    superseded_by,
+                    self._utc_now(),
+                ),
             )
             self._conn.commit()
 
@@ -75,29 +108,52 @@ class Database:
         self,
         user_id: str,
         agent_id: str | None = None,
+        session_id: str | None = None,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
         if limit <= 0:
             return []
 
         with self._lock:
-            if agent_id:
+            if agent_id and session_id:
                 rows = self._conn.execute(
                     """
-                    SELECT role, content, created_at
+                    SELECT role, content, created_at, session_id, kind, confidence, importance, fingerprint
                     FROM episodic_memory
-                    WHERE user_id = ? AND agent_id = ?
+                    WHERE user_id = ? AND agent_id = ? AND session_id = ? AND is_active = 1
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """,
+                    (user_id, agent_id, session_id, limit),
+                ).fetchall()
+            elif agent_id:
+                rows = self._conn.execute(
+                    """
+                    SELECT role, content, created_at, session_id, kind, confidence, importance, fingerprint
+                    FROM episodic_memory
+                    WHERE user_id = ? AND agent_id = ? AND is_active = 1
                     ORDER BY id DESC
                     LIMIT ?
                     """,
                     (user_id, agent_id, limit),
                 ).fetchall()
+            elif session_id:
+                rows = self._conn.execute(
+                    """
+                    SELECT role, content, created_at, session_id, kind, confidence, importance, fingerprint
+                    FROM episodic_memory
+                    WHERE user_id = ? AND session_id = ? AND is_active = 1
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """,
+                    (user_id, session_id, limit),
+                ).fetchall()
             else:
                 rows = self._conn.execute(
                     """
-                    SELECT role, content, created_at
+                    SELECT role, content, created_at, session_id, kind, confidence, importance, fingerprint
                     FROM episodic_memory
-                    WHERE user_id = ?
+                    WHERE user_id = ? AND is_active = 1
                     ORDER BY id DESC
                     LIMIT ?
                     """,
@@ -113,30 +169,69 @@ class Database:
         user_id: str,
         text: str,
         metadata: dict[str, Any] | None = None,
+        kind: str = "fact",
+        confidence: float = 0.8,
+        importance: float = 0.5,
+        fingerprint: str | None = None,
+        is_active: bool = True,
+        superseded_by: int | None = None,
     ) -> int:
         metadata_json = json.dumps(metadata or {}, ensure_ascii=False)
         with self._lock:
             cursor = self._conn.execute(
                 """
-                INSERT INTO semantic_memory(user_id, text, metadata_json, created_at)
-                VALUES(?, ?, ?, ?)
+                INSERT INTO semantic_memory(
+                    user_id,
+                    text,
+                    metadata_json,
+                    kind,
+                    confidence,
+                    importance,
+                    fingerprint,
+                    is_active,
+                    superseded_by,
+                    created_at
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (user_id, text, metadata_json, self._utc_now()),
+                (
+                    user_id,
+                    text,
+                    metadata_json,
+                    kind,
+                    confidence,
+                    importance,
+                    fingerprint,
+                    1 if is_active else 0,
+                    superseded_by,
+                    self._utc_now(),
+                ),
             )
             self._conn.commit()
             return int(cursor.lastrowid)
 
-    def set_user_memory(self, user_id: str, key: str, value: str) -> None:
+    def set_user_memory(
+        self,
+        user_id: str,
+        key: str,
+        value: str,
+        confidence: float = 0.9,
+        importance: float = 0.7,
+        source: str | None = None,
+    ) -> None:
         with self._lock:
             self._conn.execute(
                 """
-                INSERT INTO user_memory(user_id, key, value, updated_at)
-                VALUES(?, ?, ?, ?)
+                INSERT INTO user_memory(user_id, key, value, confidence, importance, source, updated_at)
+                VALUES(?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(user_id, key) DO UPDATE SET
                     value=excluded.value,
+                    confidence=excluded.confidence,
+                    importance=excluded.importance,
+                    source=excluded.source,
                     updated_at=excluded.updated_at
                 """,
-                (user_id, key, value, self._utc_now()),
+                (user_id, key, value, confidence, importance, source, self._utc_now()),
             )
             self._conn.commit()
 
@@ -148,6 +243,229 @@ class Database:
             ).fetchall()
 
         return {row["key"]: row["value"] for row in rows}
+
+    def get_user_memory_items(self, user_id: str) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT key, value, updated_at, confidence, importance, source
+                FROM user_memory
+                WHERE user_id = ?
+                ORDER BY updated_at DESC
+                """,
+                (user_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def upsert_working_memory(
+        self,
+        user_id: str,
+        session_id: str,
+        key: str,
+        value: str,
+        kind: str = "note",
+        confidence: float = 0.5,
+        importance: float = 0.5,
+        is_active: bool = True,
+    ) -> None:
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO working_memory(
+                    user_id,
+                    session_id,
+                    key,
+                    value,
+                    kind,
+                    confidence,
+                    importance,
+                    is_active,
+                    updated_at
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, session_id, key) DO UPDATE SET
+                    value=excluded.value,
+                    kind=excluded.kind,
+                    confidence=excluded.confidence,
+                    importance=excluded.importance,
+                    is_active=excluded.is_active,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    user_id,
+                    session_id,
+                    key,
+                    value,
+                    kind,
+                    confidence,
+                    importance,
+                    1 if is_active else 0,
+                    self._utc_now(),
+                ),
+            )
+            self._conn.commit()
+
+    def list_working_memory(
+        self,
+        user_id: str,
+        session_id: str | None = None,
+        limit: int = 16,
+    ) -> list[dict[str, Any]]:
+        if limit <= 0:
+            return []
+
+        with self._lock:
+            if session_id:
+                rows = self._conn.execute(
+                    """
+                    SELECT key, value, session_id, kind, confidence, importance, updated_at
+                    FROM working_memory
+                    WHERE user_id = ? AND session_id = ? AND is_active = 1
+                    ORDER BY updated_at DESC
+                    LIMIT ?
+                    """,
+                    (user_id, session_id, limit),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    """
+                    SELECT key, value, session_id, kind, confidence, importance, updated_at
+                    FROM working_memory
+                    WHERE user_id = ? AND is_active = 1
+                    ORDER BY updated_at DESC
+                    LIMIT ?
+                    """,
+                    (user_id, limit),
+                ).fetchall()
+        return [dict(row) for row in rows]
+
+    def clear_working_memory_session(self, user_id: str, session_id: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                """
+                UPDATE working_memory
+                SET is_active = 0, updated_at = ?
+                WHERE user_id = ? AND session_id = ?
+                """,
+                (self._utc_now(), user_id, session_id),
+            )
+            self._conn.commit()
+
+    def add_extraction_record(
+        self,
+        user_id: str,
+        agent_id: str | None,
+        session_id: str | None,
+        source_role: str,
+        source_text: str,
+        extracted_json: dict[str, Any],
+    ) -> int:
+        payload = json.dumps(extracted_json, ensure_ascii=False)
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                INSERT INTO memory_extractions(
+                    user_id,
+                    agent_id,
+                    session_id,
+                    source_role,
+                    source_text,
+                    extracted_json,
+                    created_at
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?)
+                """,
+                (user_id, agent_id, session_id, source_role, source_text, payload, self._utc_now()),
+            )
+            self._conn.commit()
+            return int(cursor.lastrowid)
+
+    def list_extraction_records(self, user_id: str, limit: int = 50) -> list[dict[str, Any]]:
+        if limit <= 0:
+            return []
+
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT user_id, agent_id, session_id, source_role, source_text, extracted_json, created_at
+                FROM memory_extractions
+                WHERE user_id = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (user_id, limit),
+            ).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["extracted_json"] = json.loads(item.get("extracted_json", "{}"))
+            except Exception:
+                item["extracted_json"] = {}
+            result.append(item)
+        result.reverse()
+        return result
+
+    def add_conflict_record(
+        self,
+        user_id: str,
+        layer: str,
+        key: str,
+        previous_value: str | None,
+        incoming_value: str | None,
+        resolution: str,
+        confidence_prev: float | None = None,
+        confidence_new: float | None = None,
+    ) -> int:
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                INSERT INTO memory_conflicts(
+                    user_id,
+                    layer,
+                    key,
+                    previous_value,
+                    incoming_value,
+                    resolution,
+                    confidence_prev,
+                    confidence_new,
+                    created_at
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    user_id,
+                    layer,
+                    key,
+                    previous_value,
+                    incoming_value,
+                    resolution,
+                    confidence_prev,
+                    confidence_new,
+                    self._utc_now(),
+                ),
+            )
+            self._conn.commit()
+            return int(cursor.lastrowid)
+
+    def list_conflict_records(self, user_id: str, limit: int = 50) -> list[dict[str, Any]]:
+        if limit <= 0:
+            return []
+
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT layer, key, previous_value, incoming_value, resolution, confidence_prev, confidence_new, created_at
+                FROM memory_conflicts
+                WHERE user_id = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (user_id, limit),
+            ).fetchall()
+        result = [dict(row) for row in rows]
+        result.reverse()
+        return result
 
     def upsert_agent(self, agent: dict[str, Any]) -> None:
         with self._lock:

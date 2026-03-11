@@ -5,44 +5,41 @@ from typing import Any
 from storage.database import Database
 
 
-class EpisodicMemory:
+class WorkingMemory:
     def __init__(self, database: Database) -> None:
         self.database = database
 
-    def add(
+    def put(
         self,
         user_id: str,
-        agent_id: str | None,
-        role: str,
-        content: str,
-        session_id: str | None = None,
-        kind: str = "interaction",
-        confidence: float = 1.0,
+        session_id: str,
+        key: str,
+        value: str,
+        kind: str = "note",
+        confidence: float = 0.5,
         importance: float = 0.5,
-        fingerprint: str | None = None,
     ) -> None:
-        self.database.add_episodic_event(
+        self.database.upsert_working_memory(
             user_id=user_id,
-            agent_id=agent_id,
-            role=role,
-            content=content,
             session_id=session_id,
+            key=key,
+            value=value,
             kind=kind,
             confidence=confidence,
             importance=importance,
-            fingerprint=fingerprint,
         )
 
-    def recent(
+    def list(
         self,
         user_id: str,
-        agent_id: str | None = None,
         session_id: str | None = None,
-        limit: int = 20,
+        limit: int = 16,
     ) -> list[dict[str, Any]]:
-        return self.database.list_episodic_events(
+        return self.database.list_working_memory(
             user_id=user_id,
-            agent_id=agent_id,
             session_id=session_id,
             limit=limit,
         )
+
+    def clear_session(self, user_id: str, session_id: str) -> None:
+        self.database.clear_working_memory_session(user_id=user_id, session_id=session_id)

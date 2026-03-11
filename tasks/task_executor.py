@@ -48,12 +48,14 @@ class TaskExecutor:
             agent_id=agent.id,
             role="user",
             content=user_message,
+            session_id=session_id,
         )
 
         memory_context = self.memory_manager.get_context(
             user_id=user_id,
             agent_id=agent.id,
             query=user_message,
+            session_id=session_id,
         )
 
         messages = self._build_messages(
@@ -75,6 +77,7 @@ class TaskExecutor:
             agent_id=agent.id,
             role="assistant",
             content=response_text,
+            session_id=session_id,
         )
         self.memory_manager.remember_fact(
             user_id=user_id,
@@ -207,10 +210,14 @@ class TaskExecutor:
     def _render_memory_note(memory_context: dict[str, Any], session_id: str | None) -> str:
         user_profile = memory_context.get("user", {})
         semantic = memory_context.get("semantic", [])
+        working = memory_context.get("working", [])
+        profile = memory_context.get("profile", [])
 
         payload = {
             "session_id": session_id,
+            "working_memory": working,
             "user_profile": user_profile,
+            "profile_memory": profile,
             "semantic_memory": semantic,
         }
         return "Memory context: " + json.dumps(payload, ensure_ascii=False)

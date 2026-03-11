@@ -27,7 +27,7 @@ Implemented in this version:
 - model manager with MLX primary provider, Ollama fallback, and optional cloud providers (OpenAI / Anthropic / OpenRouter)
 - model APIs: list/download/load/capabilities
 - agent APIs: create/list/chat
-- memory layer: episodic + semantic + user memory
+- memory layer v2 foundation: working + episodic + semantic + profile memory
 - SQLite persistence
 - vector search via FAISS (with local fallback behavior)
 - tool registry/executor with builtin tools
@@ -350,6 +350,23 @@ curl -X POST http://localhost:8000/agents/<agent_id>/chat \
     "message": "Find 3 sources about MLX and summarize them."
   }'
 ```
+
+## Memory 2.0 Foundation (Current)
+
+Implemented now:
+- four memory layers in runtime context:
+  - `working` (session-scoped short-term memory)
+  - `episodic` (interaction timeline)
+  - `semantic` (retrieval memory)
+  - `profile` (user preferences/profile)
+- typed memory context models (`memory/models.py`)
+- extraction records and conflict audit tables in SQLite
+- backward-compatible memory manager API for existing agent loop
+
+SQLite tables added in migration `v2`:
+- `working_memory`
+- `memory_extractions`
+- `memory_conflicts`
 
 ## Plugins
 

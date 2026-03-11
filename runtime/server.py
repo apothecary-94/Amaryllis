@@ -19,6 +19,7 @@ from memory.episodic_memory import EpisodicMemory
 from memory.memory_manager import MemoryManager
 from memory.semantic_memory import SemanticMemory
 from memory.user_memory import UserMemory
+from memory.working_memory import WorkingMemory
 from models.model_manager import ModelManager
 from planner.planner import Planner
 from runtime.config import AppConfig
@@ -64,7 +65,13 @@ def create_services() -> ServiceContainer:
     episodic = EpisodicMemory(database)
     semantic = SemanticMemory(database, vector_store)
     user_memory = UserMemory(database)
-    memory_manager = MemoryManager(episodic=episodic, semantic=semantic, user_memory=user_memory)
+    working_memory = WorkingMemory(database)
+    memory_manager = MemoryManager(
+        episodic=episodic,
+        semantic=semantic,
+        user_memory=user_memory,
+        working_memory=working_memory,
+    )
 
     tool_registry = ToolRegistry()
     tool_registry.load_builtin_tools()

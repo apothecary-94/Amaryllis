@@ -11,16 +11,36 @@ class SemanticMemory:
         self.database = database
         self.vector_store = vector_store
 
-    def add(self, user_id: str, text: str, metadata: dict[str, Any] | None = None) -> int:
+    def add(
+        self,
+        user_id: str,
+        text: str,
+        metadata: dict[str, Any] | None = None,
+        kind: str = "fact",
+        confidence: float = 0.8,
+        importance: float = 0.5,
+        fingerprint: str | None = None,
+    ) -> int:
         entry_metadata = {**(metadata or {}), "user_id": user_id}
         semantic_id = self.database.add_semantic_entry(
             user_id=user_id,
             text=text,
             metadata=entry_metadata,
+            kind=kind,
+            confidence=confidence,
+            importance=importance,
+            fingerprint=fingerprint,
         )
         self.vector_store.add_text(
             text=text,
-            metadata={**entry_metadata, "semantic_id": semantic_id},
+            metadata={
+                **entry_metadata,
+                "semantic_id": semantic_id,
+                "kind": kind,
+                "confidence": confidence,
+                "importance": importance,
+                "fingerprint": fingerprint,
+            },
         )
         return semantic_id
 
