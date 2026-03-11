@@ -21,19 +21,40 @@ enum AmaryllisTheme {
     private static let terminalFontName: String = AmaryllisFontRegistry.resolvedFontName()
 
     static func titleFont(size: CGFloat = 24) -> Font {
-        Font.custom(terminalFontName, size: size)
+        pixelFont(size: size)
     }
 
     static func sectionFont(size: CGFloat = 17) -> Font {
-        Font.custom(terminalFontName, size: size)
+        pixelFont(size: size)
     }
 
     static func bodyFont(size: CGFloat = 13, weight: Font.Weight = .regular) -> Font {
-        Font.custom(terminalFontName, size: size).weight(weight)
+        _ = weight
+        return pixelFont(size: size)
     }
 
     static func monoFont(size: CGFloat = 11, weight: Font.Weight = .regular) -> Font {
-        Font.custom(terminalFontName, size: size).weight(weight)
+        _ = weight
+        return pixelFont(size: size)
+    }
+
+    private static func pixelFont(size: CGFloat) -> Font {
+        Font.custom(terminalFontName, size: snappedPixelSize(size))
+    }
+
+    private static func snappedPixelSize(_ value: CGFloat) -> CGFloat {
+        let allowed: [CGFloat] = [9, 10, 12, 14, 16, 18, 20, 24, 28, 32]
+        let clamped = max(9, min(32, value))
+        var nearest = allowed[0]
+        var nearestDistance = abs(allowed[0] - clamped)
+        for candidate in allowed.dropFirst() {
+            let distance = abs(candidate - clamped)
+            if distance < nearestDistance {
+                nearest = candidate
+                nearestDistance = distance
+            }
+        }
+        return nearest
     }
 }
 

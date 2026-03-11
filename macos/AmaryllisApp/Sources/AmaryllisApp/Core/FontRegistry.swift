@@ -3,7 +3,7 @@ import CoreText
 import Foundation
 
 enum AmaryllisFontRegistry {
-    static let preferredPostScriptName = "Px437_OlivettiThin_9x14"
+    static let preferredPostScriptName = "Mx437_OlivettiThin_9x14"
 
     private static var didRegister = false
 
@@ -20,6 +20,11 @@ enum AmaryllisFontRegistry {
     static func resolvedFontName() -> String {
         let candidates = [
             preferredPostScriptName,
+            "Mx437_OlivettiThin_9x14",
+            "Ac437_OlivettiThin_9x14",
+            "Px437_OlivettiThin_9x14",
+            "Mx437 OlivettiThin 9x14",
+            "Ac437 OlivettiThin 9x14",
             "Px437 OlivettiThin 9x14",
             "Px437_OlivettiThin_9x14",
         ]

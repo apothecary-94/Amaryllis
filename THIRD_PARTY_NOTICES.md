@@ -4,6 +4,8 @@
 
 The macOS UI includes the font:
 
+- `Mx437_OlivettiThin_9x14.ttf`
+- `Ac437_OlivettiThin_9x14.ttf`
 - `Px437_OlivettiThin_9x14.ttf`
 
 Source:
