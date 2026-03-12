@@ -572,7 +572,7 @@ struct APIAgentRunListResponse: Codable {
     }
 }
 
-struct APIAgentRunReplayTimelineItem: Decodable, Identifiable {
+struct APIAgentRunReplayTimelineItem: Codable, Identifiable {
     let index: Int
     let timestamp: String
     let stage: String
@@ -583,7 +583,7 @@ struct APIAgentRunReplayTimelineItem: Decodable, Identifiable {
     var id: String { "\(index):\(stage)" }
 }
 
-struct APIAgentRunReplayAttemptSummary: Decodable, Identifiable {
+struct APIAgentRunReplayAttemptSummary: Codable, Identifiable {
     let attempt: Int
     let stageCounts: [String: Int]
     let startedAt: String?
@@ -605,7 +605,7 @@ struct APIAgentRunReplayAttemptSummary: Decodable, Identifiable {
     }
 }
 
-struct APIAgentRunReplaySnapshot: Decodable, Identifiable {
+struct APIAgentRunReplaySnapshot: Codable, Identifiable {
     let timestamp: String
     let attempt: Int?
     let completedSteps: [String]
@@ -619,7 +619,7 @@ struct APIAgentRunReplaySnapshot: Decodable, Identifiable {
     }
 }
 
-struct APIAgentRunReplayPayload: Decodable {
+struct APIAgentRunReplayPayload: Codable {
     let runId: String
     let agentId: String?
     let userId: String?
@@ -653,7 +653,7 @@ struct APIAgentRunReplayPayload: Decodable {
     }
 }
 
-struct APIAgentRunReplayResponse: Decodable {
+struct APIAgentRunReplayResponse: Codable {
     let replay: APIAgentRunReplayPayload
     let requestId: String?
 

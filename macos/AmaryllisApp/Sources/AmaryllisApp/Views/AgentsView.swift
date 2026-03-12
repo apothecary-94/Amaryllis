@@ -1,5 +1,7 @@
 import Foundation
+import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct AgentsView: View {
     @EnvironmentObject private var appState: AppState
@@ -24,6 +26,9 @@ struct AgentsView: View {
     @State private var selectedRunReplay: APIAgentRunReplayPayload?
     @State private var replayStatusMessage: String = "Replay not loaded."
     @State private var isLoadingReplay: Bool = false
+    @State private var replaySearchQuery: String = ""
+    @State private var replayStageFilter: String = "all"
+    @State private var replayAttemptFilter: String = "all"
 
     @State private var newAutomationMessage: String = "Check recent updates and summarize key points."
     @State private var newAutomationScheduleType: String = "interval"
@@ -148,6 +153,9 @@ struct AgentsView: View {
                             selectedRunID = nil
                             selectedRunReplay = nil
                             replayStatusMessage = "Replay not loaded."
+                            replaySearchQuery = ""
+                            replayStageFilter = "all"
+                            replayAttemptFilter = "all"
                             runStatusMessage = "Agent switched. Refreshing runs..."
                         } label: {
                             VStack(alignment: .leading, spacing: 4) {
@@ -377,7 +385,7 @@ struct AgentsView: View {
 
                 if let run = selectedRun {
                     VStack(alignment: .leading, spacing: 6) {
-                        HStack(spacing: 8) {
+                        HStack(spacing: 6) {
                             Text("Selected Run")
                                 .font(AmaryllisTheme.bodyFont(size: 12, weight: .semibold))
                                 .foregroundStyle(AmaryllisTheme.textPrimary)
@@ -394,6 +402,11 @@ struct AgentsView: View {
                             }
                             .buttonStyle(AmaryllisSecondaryButtonStyle())
                             .disabled(isLoadingReplay || isRunActionLoading)
+                            Button("Export Replay") {
+                                Task { await exportReplay(runID: run.id) }
+                            }
+                            .buttonStyle(AmaryllisSecondaryButtonStyle())
+                            .disabled(isLoadingReplay || selectedRunReplay?.runId != run.id)
                         }
                         Text("id: \(run.id)")
                             .font(AmaryllisTheme.monoFont(size: 10, weight: .regular))
@@ -457,14 +470,37 @@ struct AgentsView: View {
                             Text("Replay Timeline (\(replay.timeline.count))")
                                 .font(AmaryllisTheme.bodyFont(size: 11, weight: .semibold))
                                 .foregroundStyle(AmaryllisTheme.textSecondary)
+                            HStack(spacing: 8) {
+                                TextField("Search stage/message", text: $replaySearchQuery)
+                                    .textFieldStyle(AmaryllisTerminalTextFieldStyle())
+                                    .frame(minWidth: 180, maxWidth: .infinity)
+                                Picker("Stage", selection: $replayStageFilter) {
+                                    Text("all").tag("all")
+                                    ForEach(availableReplayStages(replay), id: \.self) { stage in
+                                        Text(stage).tag(stage)
+                                    }
+                                }
+                                .pickerStyle(.menu)
+                                .frame(width: 130)
+                                Picker("Attempt", selection: $replayAttemptFilter) {
+                                    Text("all").tag("all")
+                                    ForEach(availableReplayAttempts(replay), id: \.self) { attempt in
+                                        Text(String(attempt)).tag(String(attempt))
+                                    }
+                                }
+                                .pickerStyle(.menu)
+                                .frame(width: 110)
+                            }
                             ScrollView {
                                 LazyVStack(alignment: .leading, spacing: 4) {
-                                    ForEach(Array(replay.timeline.suffix(40))) { event in
+                                    ForEach(Array(filteredReplayTimeline(replay).suffix(80))) { event in
                                         HStack(spacing: 6) {
                                             Circle()
                                                 .fill(replayStageColor(event.stage))
                                                 .frame(width: 6, height: 6)
-                                            Text("[\(event.timestamp)] \(event.stage) \(event.message)")
+                                            Text(
+                                                "[\(event.timestamp)] a\(renderReplayAttempt(event.attempt)) \(event.stage) \(event.message)"
+                                            )
                                                 .font(AmaryllisTheme.monoFont(size: 10, weight: .regular))
                                                 .foregroundStyle(AmaryllisTheme.textSecondary)
                                                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -956,6 +992,9 @@ struct AgentsView: View {
             selectedRunReplay = nil
             runStatusMessage = "No agent selected."
             replayStatusMessage = "Replay not loaded."
+            replaySearchQuery = ""
+            replayStageFilter = "all"
+            replayAttemptFilter = "all"
             return
         }
 
@@ -1011,6 +1050,9 @@ struct AgentsView: View {
         do {
             let replay = try await appState.apiClient.getAgentRunReplay(runId: runID)
             selectedRunReplay = replay
+            replaySearchQuery = ""
+            replayStageFilter = "all"
+            replayAttemptFilter = "all"
             replayStatusMessage =
                 "Replay loaded: \(replay.checkpointCount) events, \(replay.attemptSummary.count) attempts."
             appState.clearError()
@@ -1166,6 +1208,73 @@ struct AgentsView: View {
             .prefix(3)
             .map { "\($0.key)=\($0.value)" }
         return parts.joined(separator: " | ")
+    }
+
+    private func availableReplayStages(_ replay: APIAgentRunReplayPayload) -> [String] {
+        Array(Set(replay.timeline.map { $0.stage })).sorted()
+    }
+
+    private func availableReplayAttempts(_ replay: APIAgentRunReplayPayload) -> [Int] {
+        Array(Set(replay.timeline.compactMap { $0.attempt })).sorted()
+    }
+
+    private func filteredReplayTimeline(_ replay: APIAgentRunReplayPayload) -> [APIAgentRunReplayTimelineItem] {
+        let query = replaySearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return replay.timeline.filter { event in
+            if replayStageFilter != "all", event.stage != replayStageFilter {
+                return false
+            }
+            if replayAttemptFilter != "all" {
+                guard let attempt = event.attempt, String(attempt) == replayAttemptFilter else {
+                    return false
+                }
+            }
+            if query.isEmpty {
+                return true
+            }
+            let attemptText = event.attempt.map(String.init) ?? ""
+            let haystack = "\(event.timestamp) \(event.stage) \(attemptText) \(event.message)".lowercased()
+            return haystack.contains(query)
+        }
+    }
+
+    private func renderReplayAttempt(_ attempt: Int?) -> String {
+        guard let attempt else { return "-" }
+        return String(attempt)
+    }
+
+    @MainActor
+    private func exportReplay(runID: String) async {
+        guard let replay = selectedRunReplay, replay.runId == runID else {
+            replayStatusMessage = "Load replay before export."
+            return
+        }
+
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(replay)
+
+            let panel = NSSavePanel()
+            panel.title = "Export Run Replay"
+            panel.nameFieldStringValue = "amaryllis-run-\(runID)-replay.json"
+            panel.allowedContentTypes = [UTType.json]
+            panel.canCreateDirectories = true
+            panel.isExtensionHidden = false
+
+            let result = panel.runModal()
+            guard result == .OK, let destination = panel.url else {
+                replayStatusMessage = "Replay export canceled."
+                return
+            }
+
+            try data.write(to: destination, options: .atomic)
+            replayStatusMessage = "Replay exported: \(destination.lastPathComponent)"
+            appState.clearError()
+        } catch {
+            replayStatusMessage = "Replay export failed."
+            appState.lastError = error.localizedDescription
+        }
     }
 
     private func createAutomation() async {
