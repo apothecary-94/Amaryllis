@@ -341,6 +341,10 @@ struct ChatView: View {
                     if !firstTrace.isEmpty {
                         content += "\n\n\(firstTrace)"
                     }
+                    let firstPolicyWarning = renderPolicyWarning(events: response.toolEvents, errorText: nil)
+                    if !firstPolicyWarning.isEmpty {
+                        content += "\n\n\(firstPolicyWarning)"
+                    }
 
                     await MainActor.run {
                         appState.updateCurrentChatMessage(id: assistantID, content: content)
@@ -370,6 +374,10 @@ struct ChatView: View {
                             if !retryTrace.isEmpty {
                                 retriedContent += "\n\n\(retryTrace)"
                             }
+                            let retryPolicyWarning = renderPolicyWarning(events: response.toolEvents, errorText: nil)
+                            if !retryPolicyWarning.isEmpty {
+                                retriedContent += "\n\n\(retryPolicyWarning)"
+                            }
                             await MainActor.run {
                                 appState.updateCurrentChatMessage(id: assistantID, content: retriedContent)
                                 appState.lastError = nil
@@ -389,8 +397,9 @@ struct ChatView: View {
                 await appState.refreshHealth()
             } catch {
                 await MainActor.run {
-                    appState.updateCurrentChatMessage(id: assistantID, content: "Error: \(error.localizedDescription)")
-                    appState.lastError = error.localizedDescription
+                    let message = renderUserFacingError(error.localizedDescription)
+                    appState.updateCurrentChatMessage(id: assistantID, content: message)
+                    appState.lastError = message
                 }
             }
 
@@ -482,5 +491,56 @@ struct ChatView: View {
             lines.append("Fallbacks: \(preview.joined(separator: ", "))")
         }
         return lines.joined(separator: "\n")
+    }
+
+    private func renderPolicyWarning(events: [APIChatToolEvent]?, errorText: String?) -> String {
+        var blockedByPolicy = false
+
+        if let events {
+            for event in events {
+                let status = (event.status ?? "").lowercased()
+                let detail = (event.error ?? "").lowercased()
+                if status == "blocked" {
+                    blockedByPolicy = true
+                }
+                if detail.contains("blocked by policy")
+                    || detail.contains("isolation profile")
+                    || detail.contains("high-risk")
+                    || detail.contains("filesystem write is disabled")
+                    || detail.contains("timeout exceeds limit")
+                    || detail.contains("code size exceeds limit")
+                    || detail.contains("tool budget limit reached")
+                    || detail.contains("high-risk tool budget limit reached") {
+                    blockedByPolicy = true
+                }
+            }
+        }
+
+        if !blockedByPolicy, let errorText {
+            let lower = errorText.lowercased()
+            if lower.contains("blocked by policy")
+                || lower.contains("isolation profile")
+                || lower.contains("high-risk")
+                || lower.contains("filesystem write is disabled")
+                || lower.contains("timeout exceeds limit")
+                || lower.contains("code size exceeds limit")
+                || lower.contains("tool budget limit reached")
+                || lower.contains("high-risk tool budget limit reached") {
+                blockedByPolicy = true
+            }
+        }
+
+        if blockedByPolicy {
+            return "Policy warning: tool request was blocked by runtime isolation policy. Review Settings -> Tools & MCP (Isolation Profile, Allowed High-Risk Tools, filesystem write, python_exec limits), then restart runtime."
+        }
+        return ""
+    }
+
+    private func renderUserFacingError(_ raw: String) -> String {
+        let warning = renderPolicyWarning(events: nil, errorText: raw)
+        if warning.isEmpty {
+            return "Error: \(raw)"
+        }
+        return "Error: \(raw)\n\n\(warning)"
     }
 }

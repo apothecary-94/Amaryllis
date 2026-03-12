@@ -14,7 +14,16 @@ final class AppState: ObservableObject {
     @Published var openRouterBaseURL: String
     @Published var openRouterAPIKey: String
     @Published var toolApprovalEnforcement: String
+    @Published var toolIsolationProfile: String
     @Published var blockedTools: String
+    @Published var allowedHighRiskTools: String
+    @Published var toolPythonExecMaxTimeoutSec: String
+    @Published var toolPythonExecMaxCodeChars: String
+    @Published var toolFilesystemAllowWrite: Bool
+    @Published var toolBudgetWindowSec: String
+    @Published var toolBudgetMaxCallsPerTool: String
+    @Published var toolBudgetMaxTotalCalls: String
+    @Published var toolBudgetMaxHighRiskCalls: String
     @Published var pluginSigningKey: String
     @Published var mcpEndpoints: String
     @Published var mcpTimeoutSec: String
@@ -33,7 +42,16 @@ final class AppState: ObservableObject {
     private let openAIBaseURLKey = "amaryllis.openai.baseURL"
     private let openRouterBaseURLKey = "amaryllis.openrouter.baseURL"
     private let toolApprovalEnforcementKey = "amaryllis.tools.approvalEnforcement"
+    private let toolIsolationProfileKey = "amaryllis.tools.isolationProfile"
     private let blockedToolsKey = "amaryllis.tools.blockedTools"
+    private let allowedHighRiskToolsKey = "amaryllis.tools.allowedHighRiskTools"
+    private let toolPythonExecMaxTimeoutSecKey = "amaryllis.tools.pythonExecMaxTimeoutSec"
+    private let toolPythonExecMaxCodeCharsKey = "amaryllis.tools.pythonExecMaxCodeChars"
+    private let toolFilesystemAllowWriteKey = "amaryllis.tools.filesystemAllowWrite"
+    private let toolBudgetWindowSecKey = "amaryllis.tools.budget.windowSec"
+    private let toolBudgetMaxCallsPerToolKey = "amaryllis.tools.budget.maxCallsPerTool"
+    private let toolBudgetMaxTotalCallsKey = "amaryllis.tools.budget.maxTotalCalls"
+    private let toolBudgetMaxHighRiskCallsKey = "amaryllis.tools.budget.maxHighRiskCalls"
     private let pluginSigningKeyKey = "amaryllis.tools.pluginSigningKey"
     private let mcpEndpointsKey = "amaryllis.mcp.endpoints"
     private let mcpTimeoutSecKey = "amaryllis.mcp.timeoutSec"
@@ -53,7 +71,20 @@ final class AppState: ObservableObject {
         self.openAIAPIKey = KeychainStore.get(service: keychainService, account: openAIKeychainAccount) ?? ""
         self.openRouterAPIKey = KeychainStore.get(service: keychainService, account: openRouterKeychainAccount) ?? ""
         self.toolApprovalEnforcement = defaults.string(forKey: toolApprovalEnforcementKey) ?? "prompt_and_allow"
+        self.toolIsolationProfile = defaults.string(forKey: toolIsolationProfileKey) ?? "balanced"
         self.blockedTools = defaults.string(forKey: blockedToolsKey) ?? ""
+        self.allowedHighRiskTools = defaults.string(forKey: allowedHighRiskToolsKey) ?? ""
+        self.toolPythonExecMaxTimeoutSec = defaults.string(forKey: toolPythonExecMaxTimeoutSecKey) ?? "10"
+        self.toolPythonExecMaxCodeChars = defaults.string(forKey: toolPythonExecMaxCodeCharsKey) ?? "4000"
+        if defaults.object(forKey: toolFilesystemAllowWriteKey) == nil {
+            self.toolFilesystemAllowWrite = true
+        } else {
+            self.toolFilesystemAllowWrite = defaults.bool(forKey: toolFilesystemAllowWriteKey)
+        }
+        self.toolBudgetWindowSec = defaults.string(forKey: toolBudgetWindowSecKey) ?? "60"
+        self.toolBudgetMaxCallsPerTool = defaults.string(forKey: toolBudgetMaxCallsPerToolKey) ?? "12"
+        self.toolBudgetMaxTotalCalls = defaults.string(forKey: toolBudgetMaxTotalCallsKey) ?? "40"
+        self.toolBudgetMaxHighRiskCalls = defaults.string(forKey: toolBudgetMaxHighRiskCallsKey) ?? "4"
         self.pluginSigningKey = defaults.string(forKey: pluginSigningKeyKey) ?? ""
         self.mcpEndpoints = defaults.string(forKey: mcpEndpointsKey) ?? ""
         self.mcpTimeoutSec = defaults.string(forKey: mcpTimeoutSecKey) ?? "10"
@@ -77,7 +108,16 @@ final class AppState: ObservableObject {
         defaults.set(openAIBaseURL.trimmingCharacters(in: .whitespacesAndNewlines), forKey: openAIBaseURLKey)
         defaults.set(openRouterBaseURL.trimmingCharacters(in: .whitespacesAndNewlines), forKey: openRouterBaseURLKey)
         defaults.set(normalizedApprovalMode(), forKey: toolApprovalEnforcementKey)
+        defaults.set(normalizedIsolationProfile(), forKey: toolIsolationProfileKey)
         defaults.set(blockedTools.trimmingCharacters(in: .whitespacesAndNewlines), forKey: blockedToolsKey)
+        defaults.set(allowedHighRiskTools.trimmingCharacters(in: .whitespacesAndNewlines), forKey: allowedHighRiskToolsKey)
+        defaults.set(normalizedPythonExecMaxTimeout(), forKey: toolPythonExecMaxTimeoutSecKey)
+        defaults.set(normalizedPythonExecMaxCodeChars(), forKey: toolPythonExecMaxCodeCharsKey)
+        defaults.set(toolFilesystemAllowWrite, forKey: toolFilesystemAllowWriteKey)
+        defaults.set(normalizedToolBudgetWindow(), forKey: toolBudgetWindowSecKey)
+        defaults.set(normalizedToolBudgetMaxCallsPerTool(), forKey: toolBudgetMaxCallsPerToolKey)
+        defaults.set(normalizedToolBudgetMaxTotalCalls(), forKey: toolBudgetMaxTotalCallsKey)
+        defaults.set(normalizedToolBudgetMaxHighRiskCalls(), forKey: toolBudgetMaxHighRiskCallsKey)
         defaults.set(pluginSigningKey.trimmingCharacters(in: .whitespacesAndNewlines), forKey: pluginSigningKeyKey)
         defaults.set(mcpEndpoints.trimmingCharacters(in: .whitespacesAndNewlines), forKey: mcpEndpointsKey)
         defaults.set(normalizedMCPTimeout(), forKey: mcpTimeoutSecKey)
@@ -485,6 +525,7 @@ final class AppState: ObservableObject {
         let trimmedOpenRouterBase = openRouterBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedOpenRouterKey = openRouterAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedBlockedTools = blockedTools.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedAllowedHighRiskTools = allowedHighRiskTools.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedPluginSigningKey = pluginSigningKey.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedMCPEndpoints = mcpEndpoints.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -501,8 +542,17 @@ final class AppState: ObservableObject {
             env["AMARYLLIS_OPENROUTER_API_KEY"] = trimmedOpenRouterKey
         }
         env["AMARYLLIS_TOOL_APPROVAL_ENFORCEMENT"] = normalizedApprovalMode()
+        env["AMARYLLIS_TOOL_ISOLATION_PROFILE"] = normalizedIsolationProfile()
+        env["AMARYLLIS_TOOL_PYTHON_EXEC_MAX_TIMEOUT_SEC"] = normalizedPythonExecMaxTimeout()
+        env["AMARYLLIS_TOOL_PYTHON_EXEC_MAX_CODE_CHARS"] = normalizedPythonExecMaxCodeChars()
+        env["AMARYLLIS_TOOL_FILESYSTEM_ALLOW_WRITE"] = toolFilesystemAllowWrite ? "true" : "false"
+        env["AMARYLLIS_TOOL_BUDGET_WINDOW_SEC"] = normalizedToolBudgetWindow()
+        env["AMARYLLIS_TOOL_BUDGET_MAX_CALLS_PER_TOOL"] = normalizedToolBudgetMaxCallsPerTool()
+        env["AMARYLLIS_TOOL_BUDGET_MAX_TOTAL_CALLS"] = normalizedToolBudgetMaxTotalCalls()
+        env["AMARYLLIS_TOOL_BUDGET_MAX_HIGH_RISK_CALLS"] = normalizedToolBudgetMaxHighRiskCalls()
         env["AMARYLLIS_MCP_TIMEOUT_SEC"] = normalizedMCPTimeout()
         env["AMARYLLIS_BLOCKED_TOOLS"] = trimmedBlockedTools
+        env["AMARYLLIS_ALLOWED_HIGH_RISK_TOOLS"] = trimmedAllowedHighRiskTools
         env["AMARYLLIS_PLUGIN_SIGNING_KEY"] = trimmedPluginSigningKey
         env["AMARYLLIS_MCP_ENDPOINTS"] = trimmedMCPEndpoints
         return env
@@ -516,6 +566,52 @@ final class AppState: ObservableObject {
             return "strict"
         }
         return "prompt_and_allow"
+    }
+
+    private func normalizedIsolationProfile() -> String {
+        let raw = toolIsolationProfile
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if raw == "strict" {
+            return "strict"
+        }
+        return "balanced"
+    }
+
+    private func normalizedPythonExecMaxTimeout() -> String {
+        let raw = toolPythonExecMaxTimeoutSec.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parsed = Int(raw) ?? 10
+        return String(max(1, parsed))
+    }
+
+    private func normalizedPythonExecMaxCodeChars() -> String {
+        let raw = toolPythonExecMaxCodeChars.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parsed = Int(raw) ?? 4000
+        return String(max(100, parsed))
+    }
+
+    private func normalizedToolBudgetWindow() -> String {
+        let raw = toolBudgetWindowSec.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parsed = Double(raw) ?? 60.0
+        return String(max(1.0, parsed))
+    }
+
+    private func normalizedToolBudgetMaxCallsPerTool() -> String {
+        let raw = toolBudgetMaxCallsPerTool.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parsed = Int(raw) ?? 12
+        return String(max(1, parsed))
+    }
+
+    private func normalizedToolBudgetMaxTotalCalls() -> String {
+        let raw = toolBudgetMaxTotalCalls.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parsed = Int(raw) ?? 40
+        return String(max(1, parsed))
+    }
+
+    private func normalizedToolBudgetMaxHighRiskCalls() -> String {
+        let raw = toolBudgetMaxHighRiskCalls.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parsed = Int(raw) ?? 4
+        return String(max(1, parsed))
     }
 
     private func normalizedMCPTimeout() -> String {

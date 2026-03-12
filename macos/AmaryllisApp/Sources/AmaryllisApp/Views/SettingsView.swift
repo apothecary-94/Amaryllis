@@ -121,6 +121,18 @@ struct SettingsView: View {
                     }
 
                     VStack(alignment: .leading, spacing: 4) {
+                        Text("Isolation Profile")
+                            .font(AmaryllisTheme.bodyFont(size: 11, weight: .semibold))
+                            .foregroundStyle(AmaryllisTheme.textSecondary)
+                        Picker("Isolation Profile", selection: $appState.toolIsolationProfile) {
+                            Text("balanced").tag("balanced")
+                            Text("strict").tag("strict")
+                        }
+                        .pickerStyle(.menu)
+                        .frame(width: 180)
+                    }
+
+                    VStack(alignment: .leading, spacing: 4) {
                         Text("MCP Timeout (sec)")
                             .font(AmaryllisTheme.bodyFont(size: 11, weight: .semibold))
                             .foregroundStyle(AmaryllisTheme.textSecondary)
@@ -141,6 +153,85 @@ struct SettingsView: View {
                 }
 
                 VStack(alignment: .leading, spacing: 4) {
+                    Text("Allowed High-Risk Tools (comma-separated)")
+                        .font(AmaryllisTheme.bodyFont(size: 11, weight: .semibold))
+                        .foregroundStyle(AmaryllisTheme.textSecondary)
+                    TextField("python_exec", text: $appState.allowedHighRiskTools)
+                        .textFieldStyle(AmaryllisTerminalTextFieldStyle())
+                }
+
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("python_exec max timeout (sec)")
+                            .font(AmaryllisTheme.bodyFont(size: 11, weight: .semibold))
+                            .foregroundStyle(AmaryllisTheme.textSecondary)
+                        TextField("10", text: $appState.toolPythonExecMaxTimeoutSec)
+                            .textFieldStyle(AmaryllisTerminalTextFieldStyle())
+                            .frame(width: 180)
+                    }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("python_exec max code chars")
+                            .font(AmaryllisTheme.bodyFont(size: 11, weight: .semibold))
+                            .foregroundStyle(AmaryllisTheme.textSecondary)
+                        TextField("4000", text: $appState.toolPythonExecMaxCodeChars)
+                            .textFieldStyle(AmaryllisTerminalTextFieldStyle())
+                            .frame(width: 220)
+                    }
+
+                    Toggle("Allow filesystem write", isOn: $appState.toolFilesystemAllowWrite)
+                        .toggleStyle(.switch)
+                        .font(AmaryllisTheme.bodyFont(size: 11, weight: .semibold))
+                        .frame(width: 190)
+
+                    Spacer()
+                }
+
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Tool budget window (sec)")
+                            .font(AmaryllisTheme.bodyFont(size: 11, weight: .semibold))
+                            .foregroundStyle(AmaryllisTheme.textSecondary)
+                        TextField("60", text: $appState.toolBudgetWindowSec)
+                            .textFieldStyle(AmaryllisTerminalTextFieldStyle())
+                            .frame(width: 170)
+                    }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Max calls per tool")
+                            .font(AmaryllisTheme.bodyFont(size: 11, weight: .semibold))
+                            .foregroundStyle(AmaryllisTheme.textSecondary)
+                        TextField("12", text: $appState.toolBudgetMaxCallsPerTool)
+                            .textFieldStyle(AmaryllisTerminalTextFieldStyle())
+                            .frame(width: 140)
+                    }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Max total tool calls")
+                            .font(AmaryllisTheme.bodyFont(size: 11, weight: .semibold))
+                            .foregroundStyle(AmaryllisTheme.textSecondary)
+                        TextField("40", text: $appState.toolBudgetMaxTotalCalls)
+                            .textFieldStyle(AmaryllisTerminalTextFieldStyle())
+                            .frame(width: 160)
+                    }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Max high-risk calls")
+                            .font(AmaryllisTheme.bodyFont(size: 11, weight: .semibold))
+                            .foregroundStyle(AmaryllisTheme.textSecondary)
+                        TextField("4", text: $appState.toolBudgetMaxHighRiskCalls)
+                            .textFieldStyle(AmaryllisTerminalTextFieldStyle())
+                            .frame(width: 150)
+                    }
+
+                    Spacer()
+                }
+
+                Text(isolationHintText())
+                    .font(AmaryllisTheme.bodyFont(size: 11, weight: .medium))
+                    .foregroundStyle(AmaryllisTheme.textSecondary)
+
+                VStack(alignment: .leading, spacing: 4) {
                     Text("MCP Endpoints (comma-separated)")
                         .font(AmaryllisTheme.bodyFont(size: 11, weight: .semibold))
                         .foregroundStyle(AmaryllisTheme.textSecondary)
@@ -159,7 +250,7 @@ struct SettingsView: View {
                 HStack(spacing: 8) {
                     Button("Save + Restart Hint") {
                         appState.persistSettings()
-                        appState.lastError = "Tools/MCP settings saved. Restart runtime to apply."
+                        appState.lastError = "Tools/MCP isolation settings saved. Restart runtime to apply policy changes."
                     }
                     .buttonStyle(AmaryllisSecondaryButtonStyle())
 
@@ -718,5 +809,12 @@ struct SettingsView: View {
             return "{}"
         }
         return text
+    }
+
+    private func isolationHintText() -> String {
+        if appState.toolIsolationProfile.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "strict" {
+            return "Strict profile: high-risk tools are denied by default unless listed in Allowed High-Risk Tools. Filesystem write can be disabled and tool budgets cap bursty execution."
+        }
+        return "Balanced profile: tools follow approval mode, per-tool guards, and tool budgets (window/per-tool/total/high-risk). Use strict profile for deny-by-default behavior."
     }
 }

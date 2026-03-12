@@ -59,7 +59,16 @@ class AppConfig:
     chat_max_input_chars: int
     chat_max_tokens: int
     tool_approval_enforcement: str
+    tool_isolation_profile: str
+    tool_budget_window_sec: float
+    tool_budget_max_calls_per_tool: int
+    tool_budget_max_total_calls: int
+    tool_budget_max_high_risk_calls: int
     blocked_tools: tuple[str, ...]
+    allowed_high_risk_tools: tuple[str, ...]
+    tool_python_exec_max_timeout_sec: int
+    tool_python_exec_max_code_chars: int
+    tool_filesystem_allow_write: bool
     plugin_signing_key: str | None
     mcp_endpoints: tuple[str, ...]
     mcp_timeout_sec: float
@@ -128,6 +137,7 @@ class AppConfig:
             os.getenv("AMARYLLIS_MEMORY_CONSOLIDATION_ENABLED", "true")
         )
         blocked_tools = tuple(_csv_items(os.getenv("AMARYLLIS_BLOCKED_TOOLS", "")))
+        allowed_high_risk_tools = tuple(_csv_items(os.getenv("AMARYLLIS_ALLOWED_HIGH_RISK_TOOLS", "")))
         mcp_endpoints = tuple(_csv_items(os.getenv("AMARYLLIS_MCP_ENDPOINTS", "")))
         tool_approval_enforcement = os.getenv(
             "AMARYLLIS_TOOL_APPROVAL_ENFORCEMENT",
@@ -135,6 +145,12 @@ class AppConfig:
         ).strip().lower()
         if tool_approval_enforcement not in {"strict", "prompt_and_allow"}:
             tool_approval_enforcement = "prompt_and_allow"
+        tool_isolation_profile = os.getenv(
+            "AMARYLLIS_TOOL_ISOLATION_PROFILE",
+            "balanced",
+        ).strip().lower()
+        if tool_isolation_profile not in {"balanced", "strict"}:
+            tool_isolation_profile = "balanced"
 
         return cls(
             app_name="Amaryllis",
@@ -214,7 +230,28 @@ class AppConfig:
             chat_max_input_chars=max(2000, int(os.getenv("AMARYLLIS_CHAT_MAX_INPUT_CHARS", "50000"))),
             chat_max_tokens=max(64, int(os.getenv("AMARYLLIS_CHAT_MAX_TOKENS", "4096"))),
             tool_approval_enforcement=tool_approval_enforcement,
+            tool_isolation_profile=tool_isolation_profile,
+            tool_budget_window_sec=max(1.0, float(os.getenv("AMARYLLIS_TOOL_BUDGET_WINDOW_SEC", "60"))),
+            tool_budget_max_calls_per_tool=max(
+                1, int(os.getenv("AMARYLLIS_TOOL_BUDGET_MAX_CALLS_PER_TOOL", "12"))
+            ),
+            tool_budget_max_total_calls=max(
+                1, int(os.getenv("AMARYLLIS_TOOL_BUDGET_MAX_TOTAL_CALLS", "40"))
+            ),
+            tool_budget_max_high_risk_calls=max(
+                1, int(os.getenv("AMARYLLIS_TOOL_BUDGET_MAX_HIGH_RISK_CALLS", "4"))
+            ),
             blocked_tools=blocked_tools,
+            allowed_high_risk_tools=allowed_high_risk_tools,
+            tool_python_exec_max_timeout_sec=max(
+                1, int(os.getenv("AMARYLLIS_TOOL_PYTHON_EXEC_MAX_TIMEOUT_SEC", "10"))
+            ),
+            tool_python_exec_max_code_chars=max(
+                100, int(os.getenv("AMARYLLIS_TOOL_PYTHON_EXEC_MAX_CODE_CHARS", "4000"))
+            ),
+            tool_filesystem_allow_write=_parse_bool(
+                os.getenv("AMARYLLIS_TOOL_FILESYSTEM_ALLOW_WRITE", "true")
+            ),
             plugin_signing_key=(os.getenv("AMARYLLIS_PLUGIN_SIGNING_KEY") or "").strip() or None,
             mcp_endpoints=mcp_endpoints,
             mcp_timeout_sec=max(1.0, float(os.getenv("AMARYLLIS_MCP_TIMEOUT_SEC", "10"))),

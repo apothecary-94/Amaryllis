@@ -6,7 +6,7 @@ from fastapi import APIRouter, Path, Query, Request
 from pydantic import BaseModel, Field
 
 from runtime.errors import NotFoundError, PermissionDeniedError, ProviderError, ValidationError
-from tools.tool_executor import PermissionRequiredError
+from tools.tool_executor import PermissionRequiredError, ToolBudgetLimitError
 
 router = APIRouter(tags=["tools"])
 
@@ -239,6 +239,21 @@ def invoke_mcp_tool(
             "request_id": _request_id(request),
         }
     except PermissionRequiredError as exc:
+        _sign_action(
+            request,
+            action="tool_invoke",
+            payload={
+                "tool_name": tool_name,
+                "arguments": payload.arguments,
+            },
+            actor=payload.user_id,
+            target_type="tool",
+            target_id=tool_name,
+            status="failed",
+            details={"error": str(exc), "session_id": payload.session_id},
+        )
+        raise PermissionDeniedError(str(exc)) from exc
+    except ToolBudgetLimitError as exc:
         _sign_action(
             request,
             action="tool_invoke",

@@ -40,6 +40,7 @@ from tasks.task_executor import TaskExecutor
 from tools.mcp_client_registry import MCPClientRegistry
 from tools.permission_manager import ToolPermissionManager
 from tools.policy import ToolIsolationPolicy
+from tools.tool_budget import ToolBudgetGuard
 from tools.tool_executor import ToolExecutor
 from tools.tool_registry import ToolRegistry
 
@@ -110,11 +111,25 @@ def create_services() -> ServiceContainer:
         logger.info("mcp_tools_discovered count=%s", discovered)
 
     tool_permission_manager = ToolPermissionManager()
-    tool_policy = ToolIsolationPolicy(blocked_tools=list(config.blocked_tools))
+    tool_budget_guard = ToolBudgetGuard(
+        window_sec=config.tool_budget_window_sec,
+        max_calls_per_tool=config.tool_budget_max_calls_per_tool,
+        max_total_calls=config.tool_budget_max_total_calls,
+        max_high_risk_calls=config.tool_budget_max_high_risk_calls,
+    )
+    tool_policy = ToolIsolationPolicy(
+        blocked_tools=list(config.blocked_tools),
+        profile=config.tool_isolation_profile,
+        allowed_high_risk_tools=list(config.allowed_high_risk_tools),
+        python_exec_max_timeout_sec=config.tool_python_exec_max_timeout_sec,
+        python_exec_max_code_chars=config.tool_python_exec_max_code_chars,
+        filesystem_allow_write=config.tool_filesystem_allow_write,
+    )
     tool_executor = ToolExecutor(
         tool_registry,
         policy=tool_policy,
         permission_manager=tool_permission_manager,
+        budget_guard=tool_budget_guard,
         approval_enforcement_mode=config.tool_approval_enforcement,
     )
 

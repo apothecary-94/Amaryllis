@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any
 
 from tools.permission_manager import ToolPermissionManager
 from tools.policy import ToolIsolationPolicy
+from tools.tool_budget import ToolBudgetExceededError, ToolBudgetGuard
 from tools.tool_registry import ToolRegistry
 
 TOOL_CALL_PATTERN = re.compile(r"<tool_call>(.*?)</tool_call>", flags=re.DOTALL)
@@ -21,18 +23,25 @@ class PermissionRequiredError(ToolExecutionError):
         self.prompt_id = prompt_id
 
 
+class ToolBudgetLimitError(ToolExecutionError):
+    pass
+
+
 class ToolExecutor:
     def __init__(
         self,
         registry: ToolRegistry,
         policy: ToolIsolationPolicy | None = None,
         permission_manager: ToolPermissionManager | None = None,
+        budget_guard: ToolBudgetGuard | None = None,
         approval_enforcement_mode: str = "prompt_and_allow",
     ) -> None:
         self.registry = registry
         self.policy = policy or ToolIsolationPolicy()
         self.permission_manager = permission_manager or ToolPermissionManager()
+        self.budget_guard = budget_guard or ToolBudgetGuard()
         self.approval_enforcement_mode = approval_enforcement_mode
+        self.logger = logging.getLogger("amaryllis.tools.executor")
 
     def execute(
         self,
@@ -88,6 +97,28 @@ class ToolExecutor:
                         f"Permission required for tool '{name}'. prompt_id={prompt_id}",
                         prompt_id=prompt_id,
                     )
+
+        try:
+            budget_status = self.budget_guard.check_and_record(
+                tool_name=name,
+                risk_level=tool.risk_level,
+                request_id=request_id,
+                user_id=user_id,
+                session_id=session_id,
+            )
+            self.logger.info(
+                "tool_budget_recorded tool=%s scope=%s total=%s/%s per_tool=%s/%s high_risk=%s/%s",
+                name,
+                budget_status.scope,
+                budget_status.total_calls,
+                budget_status.max_total_calls,
+                budget_status.per_tool_calls,
+                budget_status.max_calls_per_tool,
+                budget_status.high_risk_calls,
+                budget_status.max_high_risk_calls,
+            )
+        except ToolBudgetExceededError as exc:
+            raise ToolBudgetLimitError(str(exc)) from exc
 
         try:
             result = tool.handler(arguments)
