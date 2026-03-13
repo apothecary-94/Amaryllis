@@ -97,6 +97,10 @@ def create_services() -> ServiceContainer:
         user_memory=user_memory,
         working_memory=working_memory,
         telemetry=telemetry,
+        profile_decay_enabled=config.memory_profile_decay_enabled,
+        profile_decay_half_life_days=config.memory_profile_decay_half_life_days,
+        profile_decay_floor=config.memory_profile_decay_floor,
+        profile_decay_min_delta=config.memory_profile_decay_min_delta,
     )
 
     tool_registry = ToolRegistry(plugin_signing_key=config.plugin_signing_key)

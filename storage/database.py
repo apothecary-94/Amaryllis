@@ -398,7 +398,9 @@ class Database:
         confidence: float = 0.9,
         importance: float = 0.7,
         source: str | None = None,
+        updated_at: str | None = None,
     ) -> None:
+        timestamp = updated_at or self._utc_now()
         with self._lock:
             self._conn.execute(
                 """
@@ -411,7 +413,7 @@ class Database:
                     source=excluded.source,
                     updated_at=excluded.updated_at
                 """,
-                (user_id, key, value, confidence, importance, source, self._utc_now()),
+                (user_id, key, value, confidence, importance, source, timestamp),
             )
             self._conn.commit()
 

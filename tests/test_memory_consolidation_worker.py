@@ -63,6 +63,7 @@ class MemoryConsolidationWorkerTests(unittest.TestCase):
         payload = self.worker.run_once()
         self.assertGreaterEqual(int(payload.get("users_processed", 0)), 1)
         self.assertGreaterEqual(int(payload.get("semantic_deactivated_total", 0)), 1)
+        self.assertIn("profile_decay_candidates_total", payload)
 
         active = self.database.list_semantic_entries(
             user_id="user-1",

@@ -17,6 +17,7 @@ class UserMemory:
         confidence: float = 0.9,
         importance: float = 0.7,
         source: str | None = None,
+        updated_at: str | None = None,
     ) -> None:
         self.database.set_user_memory(
             user_id=user_id,
@@ -25,6 +26,7 @@ class UserMemory:
             confidence=confidence,
             importance=importance,
             source=source,
+            updated_at=updated_at,
         )
 
     def get_all(self, user_id: str) -> dict[str, str]:

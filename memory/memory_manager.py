@@ -35,6 +35,10 @@ class MemoryManager:
         working_memory: WorkingMemory | None = None,
         telemetry: TelemetrySink | None = None,
         extraction_service: ExtractionService | None = None,
+        profile_decay_enabled: bool = True,
+        profile_decay_half_life_days: float = 45.0,
+        profile_decay_floor: float = 0.35,
+        profile_decay_min_delta: float = 0.05,
     ) -> None:
         self.logger = logging.getLogger("amaryllis.memory.manager")
         self.episodic = episodic
@@ -43,6 +47,10 @@ class MemoryManager:
         self.working_memory = working_memory
         self.telemetry = telemetry
         self.extraction_service = extraction_service or ExtractionService()
+        self.profile_decay_enabled = bool(profile_decay_enabled)
+        self.profile_decay_half_life_days = max(1.0, float(profile_decay_half_life_days))
+        self.profile_decay_floor = max(0.0, min(1.0, float(profile_decay_floor)))
+        self.profile_decay_min_delta = max(0.0, float(profile_decay_min_delta))
 
         self._database = episodic.database
 
@@ -173,7 +181,14 @@ class MemoryManager:
                 )
             )
 
-        profile = [ProfileMemoryItem(**item) for item in profile_raw]
+        profile: list[ProfileMemoryItem] = []
+        profile_decayed_count = 0
+        for item in profile_raw:
+            projected, decayed = self._profile_item_with_decay(item)
+            if decayed:
+                profile_decayed_count += 1
+            profile.append(ProfileMemoryItem(**projected))
+
         context = MemoryContext(
             working=working,
             episodic=episodic,
@@ -190,6 +205,7 @@ class MemoryManager:
                 "episodic_count": len(context.episodic),
                 "semantic_count": len(context.semantic),
                 "profile_count": len(context.profile),
+                "profile_decayed_count": profile_decayed_count,
                 "top_semantic_scores": [round(item.score, 4) for item in context.semantic[:3]],
             },
         )
@@ -272,20 +288,25 @@ class MemoryManager:
 
         previous_value = str(previous.get("value", ""))
         previous_confidence = float(previous.get("confidence", 0.5))
+        previous_effective_confidence, _, _ = self._profile_decay_metrics(
+            confidence=previous_confidence,
+            updated_at=previous.get("updated_at"),
+            source=previous.get("source"),
+        )
         if previous_value == value:
-            # Refresh confidence/importance only when new signal is stronger.
-            if confidence > previous_confidence:
+            # Refresh confidence/importance when reinforcement is stronger than effective confidence.
+            if confidence > previous_effective_confidence + 0.01:
                 self.user_memory.set(
                     user_id=user_id,
                     key=key,
                     value=value,
-                    confidence=confidence,
+                    confidence=max(confidence, previous_confidence),
                     importance=importance,
                     source=source,
                 )
             return "same_value"
 
-        if confidence + 0.05 < previous_confidence:
+        if confidence + 0.05 < previous_effective_confidence:
             resolution = "kept_previous_higher_confidence"
             self._record_conflict(
                 user_id=user_id,
@@ -294,7 +315,7 @@ class MemoryManager:
                 previous_value=previous_value,
                 incoming_value=value,
                 resolution=resolution,
-                confidence_prev=previous_confidence,
+                confidence_prev=previous_effective_confidence,
                 confidence_new=confidence,
             )
             return resolution
@@ -315,7 +336,7 @@ class MemoryManager:
             previous_value=previous_value,
             incoming_value=value,
             resolution=resolution,
-            confidence_prev=previous_confidence,
+            confidence_prev=previous_effective_confidence,
             confidence_new=confidence,
         )
         return resolution
@@ -348,6 +369,32 @@ class MemoryManager:
     def list_conflicts(self, user_id: str, limit: int = 50) -> list[dict[str, Any]]:
         return self._database.list_conflict_records(user_id=user_id, limit=limit)
 
+    def debug_profile_decay(self, user_id: str, limit: int = 100) -> list[dict[str, Any]]:
+        limit_value = max(1, min(int(limit), 500))
+        items = self.user_memory.items(user_id=user_id)[:limit_value]
+        result: list[dict[str, Any]] = []
+        for item in items:
+            raw_confidence = float(item.get("confidence", 0.0))
+            effective_confidence, decay_factor, age_days = self._profile_decay_metrics(
+                confidence=raw_confidence,
+                updated_at=item.get("updated_at"),
+                source=item.get("source"),
+            )
+            result.append(
+                {
+                    "key": str(item.get("key", "")),
+                    "value": str(item.get("value", "")),
+                    "source": item.get("source"),
+                    "updated_at": item.get("updated_at"),
+                    "confidence_raw": raw_confidence,
+                    "confidence_effective": effective_confidence,
+                    "confidence_decay_factor": decay_factor,
+                    "age_days": age_days,
+                    "decayed": (raw_confidence - effective_confidence) >= self.profile_decay_min_delta,
+                }
+            )
+        return result
+
     def consolidate_user_memory(
         self,
         *,
@@ -371,20 +418,58 @@ class MemoryManager:
         semantic_deactivated = 0
         groups_with_duplicates = 0
         conflicts_recorded = 0
+        semantic_redundant_value_deactivated = 0
 
         for group_key, items in grouped.items():
             if len(items) <= 1:
                 continue
             groups_with_duplicates += 1
-            ranked = sorted(items, key=self._semantic_rank_key, reverse=True)
-            winner = ranked[0]
+            value_groups: dict[str, list[dict[str, Any]]] = {}
+            for item in items:
+                value_groups.setdefault(self._semantic_value_key(item), []).append(item)
+
+            value_winners: list[dict[str, Any]] = []
+            for value_items in value_groups.values():
+                ranked_value = sorted(value_items, key=self._semantic_rank_key, reverse=True)
+                winner_value_entry = ranked_value[0]
+                value_winners.append(winner_value_entry)
+                winner_id = int(winner_value_entry.get("id", 0))
+                winner_value = self._fact_value_from_entry(winner_value_entry)
+                winner_confidence = float(winner_value_entry.get("confidence", 0.0))
+
+                for redundant in ranked_value[1:]:
+                    redundant_id = int(redundant.get("id", 0))
+                    if redundant_id <= 0 or redundant_id == winner_id:
+                        continue
+                    redundant_value = self._fact_value_from_entry(redundant)
+                    redundant_confidence = float(redundant.get("confidence", 0.0))
+                    self._database.deactivate_semantic_entry(
+                        semantic_id=redundant_id,
+                        superseded_by=winner_id if winner_id > 0 else None,
+                    )
+                    semantic_deactivated += 1
+                    semantic_redundant_value_deactivated += 1
+                    conflicts_recorded += 1
+                    self._record_conflict(
+                        user_id=user_id,
+                        layer="semantic",
+                        key=group_key,
+                        previous_value=redundant_value,
+                        incoming_value=winner_value,
+                        resolution="consolidated_redundant_value",
+                        confidence_prev=redundant_confidence,
+                        confidence_new=winner_confidence,
+                    )
+
+            ranked_group = sorted(value_winners, key=self._semantic_rank_key, reverse=True)
+            winner = ranked_group[0]
             winner_id = int(winner.get("id", 0))
             winner_value = self._fact_value_from_entry(winner)
             winner_confidence = float(winner.get("confidence", 0.0))
 
-            for loser in ranked[1:]:
+            for loser in ranked_group[1:]:
                 loser_id = int(loser.get("id", 0))
-                if loser_id <= 0:
+                if loser_id <= 0 or loser_id == winner_id:
                     continue
                 loser_value = self._fact_value_from_entry(loser)
                 loser_confidence = float(loser.get("confidence", 0.0))
@@ -413,6 +498,26 @@ class MemoryManager:
                 limit=128,
             )
 
+        profile_items = self.user_memory.items(user_id=user_id)
+        profile_decay_candidates = 0
+        profile_decay_delta_total = 0.0
+        for item in profile_items:
+            raw_confidence = float(item.get("confidence", 0.0))
+            effective_confidence, _, _ = self._profile_decay_metrics(
+                confidence=raw_confidence,
+                updated_at=item.get("updated_at"),
+                source=item.get("source"),
+            )
+            delta = max(0.0, raw_confidence - effective_confidence)
+            if delta >= self.profile_decay_min_delta:
+                profile_decay_candidates += 1
+                profile_decay_delta_total += delta
+        profile_decay_avg_delta = (
+            round(profile_decay_delta_total / profile_decay_candidates, 6)
+            if profile_decay_candidates > 0
+            else 0.0
+        )
+
         summary = {
             "user_id": user_id,
             "session_id": session_id,
@@ -421,7 +526,11 @@ class MemoryManager:
             "semantic_groups": len(grouped),
             "semantic_groups_with_duplicates": groups_with_duplicates,
             "semantic_deactivated": semantic_deactivated,
+            "semantic_redundant_value_deactivated": semantic_redundant_value_deactivated,
             "working_items_scanned": len(working_items),
+            "profile_items_scanned": len(profile_items),
+            "profile_decay_candidates": profile_decay_candidates,
+            "profile_decay_avg_delta": profile_decay_avg_delta,
             "conflicts_recorded": conflicts_recorded,
         }
         self._emit(
@@ -431,6 +540,9 @@ class MemoryManager:
                 "session_id": session_id,
                 "semantic_scanned": len(semantic_items),
                 "semantic_deactivated": semantic_deactivated,
+                "semantic_redundant_value_deactivated": semantic_redundant_value_deactivated,
+                "profile_items_scanned": len(profile_items),
+                "profile_decay_candidates": profile_decay_candidates,
                 "conflicts_recorded": conflicts_recorded,
             },
         )
@@ -667,12 +779,109 @@ class MemoryManager:
         return f"id:{entry.get('id')}"
 
     @staticmethod
-    def _semantic_rank_key(entry: dict[str, Any]) -> tuple[float, float, str, int]:
+    def _semantic_value_key(entry: dict[str, Any]) -> str:
+        metadata = entry.get("metadata", {})
+        if isinstance(metadata, dict):
+            fact_value = metadata.get("fact_value")
+            if fact_value is not None:
+                return f"value:{str(fact_value).strip().lower()}"
+        text = str(entry.get("text", "")).strip().lower()
+        return f"text:{text[:160]}"
+
+    @staticmethod
+    def _semantic_rank_key(entry: dict[str, Any]) -> tuple[float, float, float, str, int]:
         confidence = float(entry.get("confidence", 0.0))
         importance = float(entry.get("importance", 0.0))
         created_at = str(entry.get("created_at", ""))
+        recency = MemoryManager._semantic_recency_score(created_at)
+        score = 0.55 * confidence + 0.25 * importance + 0.20 * recency
         entry_id = int(entry.get("id", 0))
-        return confidence, importance, created_at, entry_id
+        return score, confidence, importance, created_at, entry_id
+
+    @staticmethod
+    def _semantic_recency_score(created_at: str) -> float:
+        timestamp = MemoryManager._parse_iso_datetime(created_at)
+        if timestamp is None:
+            return 0.5
+        age_days = max(
+            0.0,
+            (datetime.now(timezone.utc) - timestamp.astimezone(timezone.utc)).total_seconds() / 86400.0,
+        )
+        return 1.0 / (1.0 + (age_days / 7.0))
+
+    def _profile_item_with_decay(self, item: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+        key = str(item.get("key", ""))
+        value = str(item.get("value", ""))
+        updated_at = str(item.get("updated_at", ""))
+        confidence_raw = float(item.get("confidence", 0.0))
+        importance = float(item.get("importance", 0.0))
+        source = item.get("source")
+        effective_confidence, decay_factor, age_days = self._profile_decay_metrics(
+            confidence=confidence_raw,
+            updated_at=updated_at,
+            source=source,
+        )
+        decayed = (confidence_raw - effective_confidence) >= self.profile_decay_min_delta
+        payload = {
+            "key": key,
+            "value": value,
+            "updated_at": updated_at,
+            "confidence": effective_confidence,
+            "confidence_base": confidence_raw,
+            "confidence_decay_factor": decay_factor,
+            "confidence_age_days": age_days,
+            "importance": importance,
+            "source": source,
+        }
+        return payload, decayed
+
+    def _profile_decay_metrics(
+        self,
+        *,
+        confidence: float,
+        updated_at: Any,
+        source: Any,
+    ) -> tuple[float, float, float]:
+        base = max(0.0, min(1.0, float(confidence)))
+        if not self.profile_decay_enabled:
+            return base, 1.0, 0.0
+
+        timestamp = self._parse_iso_datetime(updated_at)
+        if timestamp is None:
+            return base, 1.0, 0.0
+
+        age_days = max(
+            0.0,
+            (datetime.now(timezone.utc) - timestamp.astimezone(timezone.utc)).total_seconds() / 86400.0,
+        )
+        normalized_source = str(source or "").strip().lower()
+        sensitivity = 1.0
+        if normalized_source.startswith("extraction:"):
+            sensitivity = 1.35
+        elif "user_preference" in normalized_source or "manual" in normalized_source:
+            sensitivity = 0.6
+        elif normalized_source.startswith("system:"):
+            sensitivity = 0.85
+
+        effective_half_life = max(1.0, self.profile_decay_half_life_days / sensitivity)
+        decay_factor = 0.5 ** (age_days / effective_half_life)
+        floor_value = min(base, self.profile_decay_floor)
+        effective = max(floor_value, base * decay_factor)
+        return max(0.0, min(1.0, effective)), max(0.0, min(1.0, decay_factor)), age_days
+
+    @staticmethod
+    def _parse_iso_datetime(value: Any) -> datetime | None:
+        if not isinstance(value, str) or not value.strip():
+            return None
+        raw = value.strip()
+        normalized = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
+        try:
+            parsed = datetime.fromisoformat(normalized)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed
 
     def _record_conflict(
         self,

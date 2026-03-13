@@ -70,6 +70,7 @@ class MemoryConsolidationWorker:
         processed = 0
         deactivated_total = 0
         conflicts_total = 0
+        profile_decay_candidates_total = 0
 
         for user_id in users:
             try:
@@ -80,6 +81,7 @@ class MemoryConsolidationWorker:
                 processed += 1
                 deactivated_total += int(summary.get("semantic_deactivated", 0))
                 conflicts_total += int(summary.get("conflicts_recorded", 0))
+                profile_decay_candidates_total += int(summary.get("profile_decay_candidates", 0))
             except Exception as exc:  # noqa: BLE001
                 self.logger.warning("memory_consolidation_user_failed user_id=%s error=%s", user_id, exc)
 
@@ -88,6 +90,7 @@ class MemoryConsolidationWorker:
             "users_processed": processed,
             "semantic_deactivated_total": deactivated_total,
             "conflicts_recorded_total": conflicts_total,
+            "profile_decay_candidates_total": profile_decay_candidates_total,
         }
         self._emit("memory_consolidation_tick", payload)
         return payload

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from memory.episodic_memory import EpisodicMemory
@@ -191,6 +192,106 @@ class MemoryManagerTests(unittest.TestCase):
                 for item in conflicts
             )
         )
+
+    def test_profile_decay_enables_overwrite_for_stale_preference(self) -> None:
+        old_timestamp = (datetime.now(timezone.utc) - timedelta(days=240)).isoformat()
+        self.manager.user_memory.set(
+            user_id="user-1",
+            key="language",
+            value="english",
+            confidence=0.95,
+            importance=0.8,
+            source="extraction:user",
+            updated_at=old_timestamp,
+        )
+
+        decay_items = self.manager.debug_profile_decay(user_id="user-1", limit=10)
+        self.assertGreaterEqual(len(decay_items), 1)
+        effective_before = float(decay_items[0]["confidence_effective"])
+        self.assertLess(effective_before, 0.60)
+
+        resolution = self.manager.set_user_preference(
+            user_id="user-1",
+            key="language",
+            value="german",
+            confidence=0.6,
+            source="extraction:user",
+        )
+        self.assertEqual(resolution, "incoming_overwrites_previous")
+
+        stored = self.manager.user_memory.get("user-1", "language")
+        self.assertIsNotNone(stored)
+        assert stored is not None
+        self.assertEqual(stored["value"], "german")
+
+    def test_context_profile_exposes_decay_projection(self) -> None:
+        old_timestamp = (datetime.now(timezone.utc) - timedelta(days=180)).isoformat()
+        self.manager.user_memory.set(
+            user_id="user-1",
+            key="timezone",
+            value="UTC",
+            confidence=0.9,
+            importance=0.8,
+            source="extraction:user",
+            updated_at=old_timestamp,
+        )
+
+        context = self.manager.build_context(
+            user_id="user-1",
+            agent_id="agent-1",
+            query="timezone",
+            session_id="session-1",
+        )
+        self.assertGreaterEqual(len(context.profile), 1)
+        item = context.profile[0]
+        self.assertLess(float(item.confidence), 0.9)
+        self.assertIsNotNone(item.confidence_base)
+        self.assertIsNotNone(item.confidence_decay_factor)
+        self.assertIsNotNone(item.confidence_age_days)
+
+    def test_consolidation_reports_profile_decay_and_redundant_value_stats(self) -> None:
+        self.manager.semantic.add(
+            user_id="user-1",
+            text="timezone=UTC",
+            metadata={"fact_key": "timezone", "fact_value": "UTC"},
+            kind="fact",
+            confidence=0.9,
+            importance=0.8,
+            fingerprint="tz-1",
+        )
+        self.manager.semantic.add(
+            user_id="user-1",
+            text="timezone=UTC",
+            metadata={"fact_key": "timezone", "fact_value": "UTC"},
+            kind="fact",
+            confidence=0.5,
+            importance=0.4,
+            fingerprint="tz-2",
+        )
+        self.manager.semantic.add(
+            user_id="user-1",
+            text="timezone=CET",
+            metadata={"fact_key": "timezone", "fact_value": "CET"},
+            kind="fact",
+            confidence=0.6,
+            importance=0.5,
+            fingerprint="tz-3",
+        )
+        old_timestamp = (datetime.now(timezone.utc) - timedelta(days=220)).isoformat()
+        self.manager.user_memory.set(
+            user_id="user-1",
+            key="tone",
+            value="formal",
+            confidence=0.9,
+            importance=0.7,
+            source="extraction:user",
+            updated_at=old_timestamp,
+        )
+
+        summary = self.manager.consolidate_user_memory(user_id="user-1")
+        self.assertGreaterEqual(int(summary.get("semantic_redundant_value_deactivated", 0)), 1)
+        self.assertGreaterEqual(int(summary.get("profile_decay_candidates", 0)), 1)
+        self.assertIn("profile_decay_avg_delta", summary)
 
 
 if __name__ == "__main__":

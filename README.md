@@ -48,6 +48,27 @@ Out of scope for MVP:
 - multi-node orchestration
 - full production hardening
 
+## Roadmap and Current Plan
+
+Detailed plan to Osaurus-level quality is tracked in:
+- `ROADMAP.md`
+
+Current progress snapshot:
+- Foundation Hardening: `82%`
+- Provider-Agnostic Core: `76%`
+- Memory 2.0: `88%`
+- Agents + Work Mode: `68%`
+- Tools + MCP Layer: `64%`
+- Automation Layer: `58%`
+- Desktop UX Parity: `62%`
+- Security / Identity / Relay: `24%`
+
+Current priority queue:
+1. Memory 2.0 completion quality gate (CI eval runs + larger eval corpus + drift metrics).
+2. Agents Work Mode reliability (stage SLOs + retry policy by failure class + run budget limits).
+3. Tool/MCP reliability (signed manifests modes, sandbox presets, endpoint quarantine).
+4. Desktop UX operator diagnostics and export bundles.
+
 ## Target Platform
 
 Primary target:
@@ -86,6 +107,7 @@ Local telemetry log:
 │   └── meta_controller.py
 ├── memory
 │   ├── extraction_service.py
+│   ├── eval_suite.py
 │   ├── episodic_memory.py
 │   ├── memory_manager.py
 │   ├── models.py
@@ -128,6 +150,7 @@ Local telemetry log:
 │   ├── test_automation_schedule.py
 │   ├── test_automation_scheduler.py
 │   ├── test_memory_manager.py
+│   ├── test_memory_quality_eval.py
 │   ├── test_model_routing.py
 │   └── test_tools_mcp.py
 ├── tools
@@ -141,6 +164,7 @@ Local telemetry log:
 │   ├── tool_executor.py
 │   └── tool_registry.py
 ├── LICENSE
+├── ROADMAP.md
 ├── README.md
 └── requirements.txt
 ```
@@ -533,6 +557,12 @@ Implemented now:
 - extraction records and conflict audit tables in SQLite
 - conflict policy (`latest/high-confidence wins`) for profile and semantic facts
 - semantic retrieval scoring (vector + recency + confidence + importance)
+- stronger consolidation:
+  - same-value semantic redundancy collapse (`consolidated_redundant_value`)
+  - cross-value winner selection with rank-aware dedup (`consolidated_duplicate`)
+- profile confidence decay projection (source-aware, age-aware) in context/debug
+- profile decay-aware preference overwrite policy (stale profile entries can be replaced safely)
+- memory quality eval suites (`core`, `extended`) for regression checks
 - local telemetry events for memory (`memory_extract`, `memory_conflict`, `memory_retrieval`, `memory_retrieval_debug`)
 - backward-compatible memory manager API for existing agent loop
 
@@ -758,6 +788,28 @@ Get conflict audit log:
 curl "http://localhost:8000/debug/memory/conflicts?user_id=user-001&limit=20"
 ```
 
+Run consolidation manually:
+
+```bash
+curl -X POST "http://localhost:8000/debug/memory/consolidate" \
+  -H "Content-Type: application/json" \
+  -d '{"user_id":"user-001","session_id":"session-001","semantic_limit":1000}'
+```
+
+Inspect profile confidence decay projection:
+
+```bash
+curl "http://localhost:8000/debug/memory/profile-decay?user_id=user-001&limit=100"
+```
+
+Run memory quality eval suite:
+
+```bash
+curl -X POST "http://localhost:8000/debug/memory/eval" \
+  -H "Content-Type: application/json" \
+  -d '{"suite":"extended"}'
+```
+
 ## Plugins
 
 Plugins are auto-discovered from:
@@ -797,6 +849,10 @@ Run unit tests (memory + work mode + tools/MCP + automation):
   - `AMARYLLIS_RUN_MAX_ATTEMPTS=2`
   - `AMARYLLIS_AUTOMATION_POLL_SEC=2`
   - `AMARYLLIS_AUTOMATION_BATCH_SIZE=10`
+  - `AMARYLLIS_MEMORY_PROFILE_DECAY_ENABLED=true`
+  - `AMARYLLIS_MEMORY_PROFILE_DECAY_HALF_LIFE_DAYS=45`
+  - `AMARYLLIS_MEMORY_PROFILE_DECAY_FLOOR=0.35`
+  - `AMARYLLIS_MEMORY_PROFILE_DECAY_MIN_DELTA=0.05`
   - `AMARYLLIS_TOOL_APPROVAL_ENFORCEMENT=prompt_and_allow|strict`
   - `AMARYLLIS_BLOCKED_TOOLS=python_exec,filesystem`
   - `AMARYLLIS_PLUGIN_SIGNING_KEY=<hmac_secret>`
@@ -823,6 +879,10 @@ export AMARYLLIS_RUN_WORKERS=2
 export AMARYLLIS_RUN_MAX_ATTEMPTS=2
 export AMARYLLIS_AUTOMATION_POLL_SEC=2
 export AMARYLLIS_AUTOMATION_BATCH_SIZE=10
+export AMARYLLIS_MEMORY_PROFILE_DECAY_ENABLED=true
+export AMARYLLIS_MEMORY_PROFILE_DECAY_HALF_LIFE_DAYS=45
+export AMARYLLIS_MEMORY_PROFILE_DECAY_FLOOR=0.35
+export AMARYLLIS_MEMORY_PROFILE_DECAY_MIN_DELTA=0.05
 export AMARYLLIS_TOOL_APPROVAL_ENFORCEMENT=prompt_and_allow
 export AMARYLLIS_BLOCKED_TOOLS=
 export AMARYLLIS_PLUGIN_SIGNING_KEY=

@@ -5,6 +5,7 @@ from typing import Any
 from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, Field
 
+from memory.eval_suite import MemoryQualityEvaluator
 from memory.models import ExtractionResult, MemoryContext
 
 router = APIRouter(tags=["memory"])
@@ -85,6 +86,48 @@ class MemoryConsolidateRequest(BaseModel):
 class MemoryConsolidateResponse(BaseModel):
     request_id: str
     summary: dict[str, Any]
+
+
+class ProfileDecayDebugItem(BaseModel):
+    key: str
+    value: str
+    source: str | None = None
+    updated_at: str
+    confidence_raw: float
+    confidence_effective: float
+    confidence_decay_factor: float
+    age_days: float
+    decayed: bool
+
+
+class ProfileDecayDebugResponse(BaseModel):
+    request_id: str
+    user_id: str
+    count: int
+    items: list[ProfileDecayDebugItem]
+
+
+class MemoryEvalRequest(BaseModel):
+    suite: str = Field(default="core", min_length=1)
+
+
+class MemoryEvalCaseResult(BaseModel):
+    id: str
+    description: str
+    passed: bool
+    score: float
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class MemoryEvalResponse(BaseModel):
+    request_id: str
+    suite: str
+    total_cases: int
+    passed_cases: int
+    failed_cases: int
+    pass_rate: float
+    average_score: float
+    cases: list[MemoryEvalCaseResult]
 
 
 @router.get("/debug/memory/context", response_model=MemoryContextResponse)
@@ -179,6 +222,24 @@ def debug_memory_conflicts(
     )
 
 
+@router.get("/debug/memory/profile-decay", response_model=ProfileDecayDebugResponse)
+def debug_memory_profile_decay(
+    request: Request,
+    user_id: str = Query(..., min_length=1),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> ProfileDecayDebugResponse:
+    services = request.app.state.services
+    request_id = str(getattr(request.state, "request_id", ""))
+    items = services.memory_manager.debug_profile_decay(user_id=user_id, limit=limit)
+    typed_items = [ProfileDecayDebugItem(**item) for item in items]
+    return ProfileDecayDebugResponse(
+        request_id=request_id,
+        user_id=user_id,
+        count=len(typed_items),
+        items=typed_items,
+    )
+
+
 @router.post("/debug/memory/consolidate", response_model=MemoryConsolidateResponse)
 def debug_memory_consolidate(
     payload: MemoryConsolidateRequest,
@@ -194,4 +255,31 @@ def debug_memory_consolidate(
     return MemoryConsolidateResponse(
         request_id=request_id,
         summary=summary,
+    )
+
+
+@router.post("/debug/memory/eval", response_model=MemoryEvalResponse)
+def debug_memory_eval(
+    payload: MemoryEvalRequest,
+    request: Request,
+) -> MemoryEvalResponse:
+    services = request.app.state.services
+    request_id = str(getattr(request.state, "request_id", ""))
+    evaluator = MemoryQualityEvaluator(
+        profile_decay_enabled=services.config.memory_profile_decay_enabled,
+        profile_decay_half_life_days=services.config.memory_profile_decay_half_life_days,
+        profile_decay_floor=services.config.memory_profile_decay_floor,
+        profile_decay_min_delta=services.config.memory_profile_decay_min_delta,
+    )
+    summary = evaluator.run(suite=payload.suite)
+    typed_cases = [MemoryEvalCaseResult(**item) for item in summary.get("cases", [])]
+    return MemoryEvalResponse(
+        request_id=request_id,
+        suite=str(summary.get("suite", payload.suite)),
+        total_cases=int(summary.get("total_cases", len(typed_cases))),
+        passed_cases=int(summary.get("passed_cases", 0)),
+        failed_cases=int(summary.get("failed_cases", 0)),
+        pass_rate=float(summary.get("pass_rate", 0.0)),
+        average_score=float(summary.get("average_score", 0.0)),
+        cases=typed_cases,
     )

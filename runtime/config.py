@@ -49,6 +49,10 @@ class AppConfig:
     memory_consolidation_interval_sec: float
     memory_consolidation_semantic_limit: int
     memory_consolidation_max_users_per_tick: int
+    memory_profile_decay_enabled: bool
+    memory_profile_decay_half_life_days: float
+    memory_profile_decay_floor: float
+    memory_profile_decay_min_delta: float
     provider_retry_attempts: int
     provider_retry_backoff_sec: float
     provider_retry_jitter_sec: float
@@ -214,6 +218,18 @@ class AppConfig:
             ),
             memory_consolidation_max_users_per_tick=max(
                 1, int(os.getenv("AMARYLLIS_MEMORY_CONSOLIDATION_MAX_USERS_PER_TICK", "20"))
+            ),
+            memory_profile_decay_enabled=_parse_bool(
+                os.getenv("AMARYLLIS_MEMORY_PROFILE_DECAY_ENABLED", "true")
+            ),
+            memory_profile_decay_half_life_days=max(
+                1.0, float(os.getenv("AMARYLLIS_MEMORY_PROFILE_DECAY_HALF_LIFE_DAYS", "45"))
+            ),
+            memory_profile_decay_floor=max(
+                0.0, min(1.0, float(os.getenv("AMARYLLIS_MEMORY_PROFILE_DECAY_FLOOR", "0.35")))
+            ),
+            memory_profile_decay_min_delta=max(
+                0.0, float(os.getenv("AMARYLLIS_MEMORY_PROFILE_DECAY_MIN_DELTA", "0.05"))
             ),
             provider_retry_attempts=max(1, int(os.getenv("AMARYLLIS_PROVIDER_RETRY_ATTEMPTS", "2"))),
             provider_retry_backoff_sec=max(0.0, float(os.getenv("AMARYLLIS_PROVIDER_RETRY_BACKOFF_SEC", "0.5"))),

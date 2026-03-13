@@ -42,6 +42,9 @@ class ProfileMemoryItem(BaseModel):
     value: str
     updated_at: str
     confidence: float = Field(default=0.9, ge=0.0, le=1.0)
+    confidence_base: float | None = Field(default=None, ge=0.0, le=1.0)
+    confidence_decay_factor: float | None = Field(default=None, ge=0.0, le=1.0)
+    confidence_age_days: float | None = Field(default=None, ge=0.0)
     importance: float = Field(default=0.7, ge=0.0, le=1.0)
     source: str | None = None
 
