@@ -48,27 +48,6 @@ Out of scope for MVP:
 - multi-node orchestration
 - full production hardening
 
-## Roadmap and Current Plan
-
-Detailed plan to Osaurus-level quality is tracked in:
-- `ROADMAP.md`
-
-Current progress snapshot:
-- Foundation Hardening: `82%`
-- Provider-Agnostic Core: `76%`
-- Memory 2.0: `88%`
-- Agents + Work Mode: `68%`
-- Tools + MCP Layer: `64%`
-- Automation Layer: `58%`
-- Desktop UX Parity: `62%`
-- Security / Identity / Relay: `24%`
-
-Current priority queue:
-1. Memory 2.0 completion quality gate (CI eval runs + larger eval corpus + drift metrics).
-2. Agents Work Mode reliability (stage SLOs + retry policy by failure class + run budget limits).
-3. Tool/MCP reliability (signed manifests modes, sandbox presets, endpoint quarantine).
-4. Desktop UX operator diagnostics and export bundles.
-
 ## Target Platform
 
 Primary target:
@@ -164,7 +143,6 @@ Local telemetry log:
 │   ├── tool_executor.py
 │   └── tool_registry.py
 ├── LICENSE
-├── ROADMAP.md
 ├── README.md
 └── requirements.txt
 ```
