@@ -181,6 +181,11 @@ class AgentRunManagerTests(unittest.TestCase):
         self.assertIn("running", stages)
         self.assertIn("fake_executor", stages)
         self.assertIn("succeeded", stages)
+        issues = final.get("issues", [])
+        self.assertIsInstance(issues, list)
+        self.assertGreaterEqual(len(issues), 3)
+        issue_statuses = {str(item.get("status")) for item in issues}
+        self.assertEqual(issue_statuses, {"done"})
 
     def test_run_retries_then_succeeds(self) -> None:
         self.executor.fail_first = True
@@ -269,6 +274,9 @@ class AgentRunManagerTests(unittest.TestCase):
         assert isinstance(self.executor.last_resume_state, dict)
         completed = self.executor.last_resume_state.get("completed_steps", [])
         self.assertIn("prepare_context", completed)
+        issues = final.get("issues", [])
+        self.assertTrue(any(item.get("issue_id") == "prepare_context" for item in issues))
+        self.assertTrue(any(item.get("issue_id") == "reasoning" for item in issues))
 
     def test_replay_returns_timeline_and_attempt_summary(self) -> None:
         self.manager.start()
@@ -311,6 +319,31 @@ class AgentRunManagerTests(unittest.TestCase):
         completed_steps = latest_resume_state.get("completed_steps", [])
         self.assertIn("prepare_context", completed_steps)
         self.assertIn("reasoning", completed_steps)
+        issue_summary = replay.get("issue_summary", {})
+        self.assertIsInstance(issue_summary, dict)
+        status_breakdown = issue_summary.get("status_breakdown", {})
+        self.assertIsInstance(status_breakdown, dict)
+        self.assertGreaterEqual(int(status_breakdown.get("done", 0)), 1)
+
+    def test_list_run_issues_returns_persisted_states(self) -> None:
+        self.manager.start()
+        run = self.manager.create_run(
+            agent=self.agent,
+            user_id="user-1",
+            session_id="session-issues",
+            user_message="track issues",
+            max_attempts=1,
+        )
+        final = self._wait_for_status(run["id"], {"succeeded"})
+        self.assertIsNotNone(final)
+
+        items = self.manager.list_run_issues(run["id"], limit=200)
+        self.assertGreaterEqual(len(items), 3)
+        ids = {str(item.get("issue_id")) for item in items}
+        self.assertIn("prepare_context", ids)
+        self.assertIn("reasoning", ids)
+        self.assertIn("persist", ids)
+        self.assertTrue(all(str(item.get("status")) == "done" for item in items))
 
     def test_replay_missing_run_raises(self) -> None:
         with self.assertRaises(ValueError):

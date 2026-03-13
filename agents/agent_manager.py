@@ -128,6 +128,14 @@ class AgentManager:
             raise ValueError("Run manager is not configured")
         return self.run_manager.replay_run(run_id)
 
+    def list_run_issues(self, run_id: str, limit: int = 200) -> list[dict[str, Any]]:
+        if self.run_manager is None:
+            raise ValueError("Run manager is not configured")
+        run = self.run_manager.get_run(run_id)
+        if run is None:
+            raise ValueError(f"Run not found: {run_id}")
+        return self.run_manager.list_run_issues(run_id=run_id, limit=limit)
+
     def run_health(
         self,
         *,

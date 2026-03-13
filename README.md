@@ -529,6 +529,12 @@ curl "http://localhost:8000/agents/runs/<run_id>"
 curl "http://localhost:8000/agents/runs/<run_id>/replay"
 ```
 
+### Work Mode: list issue states for run
+
+```bash
+curl "http://localhost:8000/agents/runs/<run_id>/issues?limit=200"
+```
+
 ### Work Mode: debug run health/SLO snapshot
 
 ```bash
@@ -590,6 +596,7 @@ Implemented now:
 Implemented now:
 - async run queue for agents (`queued` -> `running` -> `succeeded|failed|canceled`)
 - persistent run state in SQLite (`agent_runs`)
+- persistent issue-level state in SQLite (`agent_run_issues`)
 - deterministic run outcomes: `failure_class` + terminal `stop_reason`
 - failure-class retry policy (retry only for transient classes)
 - run-level execution budgets:
@@ -602,10 +609,16 @@ Implemented now:
   - `reasoning_started`, `llm_response`, `tool_call_*`, `llm_followup_response`
   - `verification_*` (response verifier + repair loop)
   - `reasoning_completed`, `memory_updated`
+- issue-based state machine per run:
+  - statuses: `planned|running|blocked|done|failed`
+  - core issues: `prepare_context`, `reasoning`, `persist`
+  - planner issues: `plan_step:<n>` with dependency chain
+- run resume restores issue/checkpoint state and continues from unfinished issues
 - deterministic tool-call argument contract validation before tool execution
 - automatic retry until `max_attempts`
 - manual cancel and resume APIs
 - checkpoint replay API (`GET /agents/runs/{run_id}/replay`) with timeline + attempt summary
+- run issues API (`GET /agents/runs/{run_id}/issues`)
 - run health/SLO debug API (`GET /debug/agents/runs/health`)
 - status validation for run filters in API (`queued|running|succeeded|failed|canceled`)
 - desktop Agents tab run monitor:

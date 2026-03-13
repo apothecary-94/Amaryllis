@@ -18,6 +18,13 @@ STEP_PREPARE_CONTEXT = "prepare_context"
 STEP_REASONING = "reasoning"
 STEP_PERSIST = "persist"
 
+ISSUE_PLANNED = "planned"
+ISSUE_RUNNING = "running"
+ISSUE_BLOCKED = "blocked"
+ISSUE_DONE = "done"
+ISSUE_FAILED = "failed"
+ISSUE_STATUSES = {ISSUE_PLANNED, ISSUE_RUNNING, ISSUE_BLOCKED, ISSUE_DONE, ISSUE_FAILED}
+
 
 class TaskGuardrailError(RuntimeError):
     pass
@@ -87,6 +94,28 @@ class TaskExecutor:
 
         state = self._normalize_resume_state(resume_state)
         completed_steps = set(state.get("completed_steps", []))
+        issue_states = self._normalize_issue_states(state.get("issues"))
+        self._ensure_issue(
+            issue_states=issue_states,
+            issue_id=STEP_PREPARE_CONTEXT,
+            title="Prepare context",
+            issue_order=10,
+            depends_on=[],
+        )
+        self._ensure_issue(
+            issue_states=issue_states,
+            issue_id=STEP_REASONING,
+            title="Reasoning",
+            issue_order=20,
+            depends_on=[STEP_PREPARE_CONTEXT],
+        )
+        self._ensure_issue(
+            issue_states=issue_states,
+            issue_id=STEP_PERSIST,
+            title="Persist memory",
+            issue_order=30,
+            depends_on=[STEP_REASONING],
+        )
 
         used_tokens_baseline = int(run_budget_limits.get("used_tokens", 0))
         used_tool_calls_baseline = int(run_budget_limits.get("used_tool_calls", 0))
@@ -113,61 +142,90 @@ class TaskExecutor:
         tools_available = bool(agent.tools)
 
         if STEP_PREPARE_CONTEXT not in completed_steps:
-            strategy = self.meta_controller.choose_strategy(
-                user_message=user_message,
-                tools_available=tools_available,
+            self._set_issue_status(
+                issue_states=issue_states,
+                issue_id=STEP_PREPARE_CONTEXT,
+                status=ISSUE_RUNNING,
+                checkpoint=checkpoint,
+                attempt=1,
+                payload={"message": "Preparation step started."},
             )
-            self._emit_checkpoint(
-                checkpoint,
-                stage="strategy_selected",
-                message=f"Strategy selected: {strategy}",
-                strategy=strategy,
-                tools_available=tools_available,
-            )
+            try:
+                strategy = self.meta_controller.choose_strategy(
+                    user_message=user_message,
+                    tools_available=tools_available,
+                )
+                self._emit_checkpoint(
+                    checkpoint,
+                    stage="strategy_selected",
+                    message=f"Strategy selected: {strategy}",
+                    strategy=strategy,
+                    tools_available=tools_available,
+                )
 
-            created_plan = self.planner.create_plan(task=user_message, strategy=strategy)
-            plan = [step.__dict__ for step in created_plan]
-            self._emit_checkpoint(
-                checkpoint,
-                stage="plan_created",
-                message=f"Plan created with {len(plan)} steps.",
-                plan_steps=plan,
-            )
+                created_plan = self.planner.create_plan(task=user_message, strategy=strategy)
+                plan = [step.__dict__ for step in created_plan]
+                self._emit_checkpoint(
+                    checkpoint,
+                    stage="plan_created",
+                    message=f"Plan created with {len(plan)} steps.",
+                    plan_steps=plan,
+                )
 
-            self.memory_manager.add_interaction(
-                user_id=user_id,
-                agent_id=agent.id,
-                role="user",
-                content=user_message,
-                session_id=session_id,
-            )
+                self.memory_manager.add_interaction(
+                    user_id=user_id,
+                    agent_id=agent.id,
+                    role="user",
+                    content=user_message,
+                    session_id=session_id,
+                )
 
-            self._check_runtime(started=started, run_deadline_monotonic=run_deadline_monotonic)
-            memory_context = self.memory_manager.get_context(
-                user_id=user_id,
-                agent_id=agent.id,
-                query=user_message,
-                session_id=session_id,
-            )
-            self._emit_checkpoint(
-                checkpoint,
-                stage="memory_loaded",
-                message="Memory context loaded.",
-                working_count=len(memory_context.get("working", [])),
-                episodic_count=len(memory_context.get("episodic", [])),
-                semantic_count=len(memory_context.get("semantic", [])),
-                profile_count=len(memory_context.get("profile", [])),
-            )
+                self._check_runtime(started=started, run_deadline_monotonic=run_deadline_monotonic)
+                memory_context = self.memory_manager.get_context(
+                    user_id=user_id,
+                    agent_id=agent.id,
+                    query=user_message,
+                    session_id=session_id,
+                )
+                self._emit_checkpoint(
+                    checkpoint,
+                    stage="memory_loaded",
+                    message="Memory context loaded.",
+                    working_count=len(memory_context.get("working", [])),
+                    episodic_count=len(memory_context.get("episodic", [])),
+                    semantic_count=len(memory_context.get("semantic", [])),
+                    profile_count=len(memory_context.get("profile", [])),
+                )
 
-            messages = self._build_messages(
-                agent=agent,
-                user_message=user_message,
-                memory_context=memory_context,
-                session_id=session_id,
-            )
-            self._check_prompt_size(messages)
+                messages = self._build_messages(
+                    agent=agent,
+                    user_message=user_message,
+                    memory_context=memory_context,
+                    session_id=session_id,
+                )
+                self._check_prompt_size(messages)
+            except Exception as exc:
+                self._set_issue_status(
+                    issue_states=issue_states,
+                    issue_id=STEP_PREPARE_CONTEXT,
+                    status=ISSUE_FAILED,
+                    checkpoint=checkpoint,
+                    attempt=1,
+                    last_error=str(exc),
+                    payload={"error": str(exc)},
+                )
+                raise
 
             completed_steps.add(STEP_PREPARE_CONTEXT)
+            self._set_issue_status(
+                issue_states=issue_states,
+                issue_id=STEP_PREPARE_CONTEXT,
+                status=ISSUE_DONE,
+                checkpoint=checkpoint,
+                attempt=1,
+                last_error=None,
+                payload={"message": "Preparation step completed."},
+            )
             snapshot = self._build_resume_snapshot(
                 completed_steps=completed_steps,
                 strategy=strategy,
@@ -180,6 +238,7 @@ class TaskExecutor:
                 provider_used=provider_used,
                 model_used=model_used,
                 tool_events=tool_events,
+                issues=issue_states,
             )
             self._emit_checkpoint(
                 checkpoint,
@@ -212,6 +271,14 @@ class TaskExecutor:
                 session_id=session_id,
             )
             self._check_prompt_size(messages)
+            self._set_issue_status(
+                issue_states=issue_states,
+                issue_id=STEP_PREPARE_CONTEXT,
+                status=ISSUE_DONE,
+                checkpoint=checkpoint,
+                attempt=1,
+                payload={"message": "Preparation step resumed from checkpoint."},
+            )
             self._emit_checkpoint(
                 checkpoint,
                 stage="step_resumed",
@@ -220,36 +287,71 @@ class TaskExecutor:
                 completed_steps=sorted(completed_steps),
             )
 
+        plan_issue_ids = self._register_plan_issues(
+            issue_states=issue_states,
+            plan=plan,
+            checkpoint=checkpoint,
+        )
+        if plan_issue_ids:
+            self._execute_plan_issues(
+                plan=plan,
+                plan_issue_ids=plan_issue_ids,
+                issue_states=issue_states,
+                completed_steps=completed_steps,
+                tools_available=tools_available,
+                checkpoint=checkpoint,
+            )
+
         if STEP_REASONING not in completed_steps:
+            self._set_issue_status(
+                issue_states=issue_states,
+                issue_id=STEP_REASONING,
+                status=ISSUE_RUNNING,
+                checkpoint=checkpoint,
+                attempt=1,
+                payload={"message": "Reasoning step started."},
+            )
             self._emit_checkpoint(
                 checkpoint,
                 stage="reasoning_started",
                 message="LLM reasoning started.",
                 tools_allowed=agent.tools,
             )
-            (
-                response_text,
-                provider_used,
-                model_used,
-                model_calls,
-                tool_rounds,
-                estimated_tokens,
-                tool_errors,
-            ) = self._reason_with_optional_tools(
-                messages=messages,
-                agent=agent,
-                tool_events=tool_events,
-                user_id=user_id,
-                session_id=session_id,
-                checkpoint=checkpoint,
-                model_calls=model_calls,
-                tool_rounds=tool_rounds,
-                tool_errors=tool_errors,
-                estimated_tokens=estimated_tokens,
-                started=started,
-                run_deadline_monotonic=run_deadline_monotonic,
-                run_budget=run_budget_limits,
-            )
+            try:
+                (
+                    response_text,
+                    provider_used,
+                    model_used,
+                    model_calls,
+                    tool_rounds,
+                    estimated_tokens,
+                    tool_errors,
+                ) = self._reason_with_optional_tools(
+                    messages=messages,
+                    agent=agent,
+                    tool_events=tool_events,
+                    user_id=user_id,
+                    session_id=session_id,
+                    checkpoint=checkpoint,
+                    model_calls=model_calls,
+                    tool_rounds=tool_rounds,
+                    tool_errors=tool_errors,
+                    estimated_tokens=estimated_tokens,
+                    started=started,
+                    run_deadline_monotonic=run_deadline_monotonic,
+                    run_budget=run_budget_limits,
+                )
+            except Exception as exc:
+                self._set_issue_status(
+                    issue_states=issue_states,
+                    issue_id=STEP_REASONING,
+                    status=ISSUE_FAILED,
+                    checkpoint=checkpoint,
+                    attempt=1,
+                    last_error=str(exc),
+                    payload={"error": str(exc)},
+                )
+                raise
             self._emit_checkpoint(
                 checkpoint,
                 stage="reasoning_completed",
@@ -262,6 +364,15 @@ class TaskExecutor:
             )
 
             completed_steps.add(STEP_REASONING)
+            self._set_issue_status(
+                issue_states=issue_states,
+                issue_id=STEP_REASONING,
+                status=ISSUE_DONE,
+                checkpoint=checkpoint,
+                attempt=1,
+                last_error=None,
+                payload={"message": "Reasoning step completed."},
+            )
             snapshot = self._build_resume_snapshot(
                 completed_steps=completed_steps,
                 strategy=strategy,
@@ -274,6 +385,7 @@ class TaskExecutor:
                 provider_used=provider_used,
                 model_used=model_used,
                 tool_events=tool_events,
+                issues=issue_states,
             )
             self._emit_checkpoint(
                 checkpoint,
@@ -321,6 +433,14 @@ class TaskExecutor:
                 model_calls=model_calls,
                 tool_rounds=tool_rounds,
             )
+            self._set_issue_status(
+                issue_states=issue_states,
+                issue_id=STEP_REASONING,
+                status=ISSUE_DONE,
+                checkpoint=checkpoint,
+                attempt=1,
+                payload={"message": "Reasoning step resumed from checkpoint."},
+            )
 
         response_text, provider_used, model_used, model_calls, estimated_tokens = self._verify_and_repair_response(
             messages=messages,
@@ -339,23 +459,52 @@ class TaskExecutor:
         )
 
         if STEP_PERSIST not in completed_steps:
+            self._set_issue_status(
+                issue_states=issue_states,
+                issue_id=STEP_PERSIST,
+                status=ISSUE_RUNNING,
+                checkpoint=checkpoint,
+                attempt=1,
+                payload={"message": "Persist step started."},
+            )
             self._check_runtime(started=started, run_deadline_monotonic=run_deadline_monotonic)
-            self.memory_manager.add_interaction(
-                user_id=user_id,
-                agent_id=agent.id,
-                role="assistant",
-                content=response_text,
-                session_id=session_id,
-            )
-            self.memory_manager.remember_fact(
-                user_id=user_id,
-                text=f"Agent {agent.name} response: {response_text[:1000]}",
-                metadata={
-                    "agent_id": agent.id,
-                    "kind": "response",
-                },
-            )
+            try:
+                self.memory_manager.add_interaction(
+                    user_id=user_id,
+                    agent_id=agent.id,
+                    role="assistant",
+                    content=response_text,
+                    session_id=session_id,
+                )
+                self.memory_manager.remember_fact(
+                    user_id=user_id,
+                    text=f"Agent {agent.name} response: {response_text[:1000]}",
+                    metadata={
+                        "agent_id": agent.id,
+                        "kind": "response",
+                    },
+                )
+            except Exception as exc:
+                self._set_issue_status(
+                    issue_states=issue_states,
+                    issue_id=STEP_PERSIST,
+                    status=ISSUE_FAILED,
+                    checkpoint=checkpoint,
+                    attempt=1,
+                    last_error=str(exc),
+                    payload={"error": str(exc)},
+                )
+                raise
             completed_steps.add(STEP_PERSIST)
+            self._set_issue_status(
+                issue_states=issue_states,
+                issue_id=STEP_PERSIST,
+                status=ISSUE_DONE,
+                checkpoint=checkpoint,
+                attempt=1,
+                last_error=None,
+                payload={"message": "Persist step completed."},
+            )
             snapshot = self._build_resume_snapshot(
                 completed_steps=completed_steps,
                 strategy=strategy,
@@ -368,6 +517,7 @@ class TaskExecutor:
                 provider_used=provider_used,
                 model_used=model_used,
                 tool_events=tool_events,
+                issues=issue_states,
             )
             self._emit_checkpoint(
                 checkpoint,
@@ -382,6 +532,14 @@ class TaskExecutor:
                 stage="step_resumed",
                 step=STEP_PERSIST,
                 message="Persist step already completed in previous attempt.",
+            )
+            self._set_issue_status(
+                issue_states=issue_states,
+                issue_id=STEP_PERSIST,
+                status=ISSUE_DONE,
+                checkpoint=checkpoint,
+                attempt=1,
+                payload={"message": "Persist step resumed from checkpoint."},
             )
 
         duration_ms = round((time.monotonic() - started) * 1000.0, 2)
@@ -1144,7 +1302,7 @@ class TaskExecutor:
         if isinstance(raw_steps, list):
             for item in raw_steps:
                 step = str(item).strip()
-                if step in {STEP_PREPARE_CONTEXT, STEP_REASONING, STEP_PERSIST} and step not in completed_steps:
+                if step and step not in completed_steps:
                     completed_steps.append(step)
 
         normalized: dict[str, Any] = {
@@ -1161,6 +1319,7 @@ class TaskExecutor:
             "provider",
             "model",
             "tool_events",
+            "issues",
         ):
             if key in resume_state:
                 normalized[key] = resume_state[key]
@@ -1180,9 +1339,10 @@ class TaskExecutor:
         provider_used: str,
         model_used: str,
         tool_events: list[dict[str, Any]],
+        issues: dict[str, dict[str, Any]],
     ) -> dict[str, Any]:
         return {
-            "version": 1,
+            "version": 2,
             "completed_steps": sorted(completed_steps),
             "strategy": strategy,
             "plan": plan,
@@ -1194,7 +1354,240 @@ class TaskExecutor:
             "provider": provider_used,
             "model": model_used,
             "tool_events": tool_events,
+            "issues": issues,
         }
+
+    def _register_plan_issues(
+        self,
+        *,
+        issue_states: dict[str, dict[str, Any]],
+        plan: list[dict[str, Any]],
+        checkpoint: CheckpointWriter | None,
+    ) -> list[str]:
+        result: list[str] = []
+        previous_issue = STEP_PREPARE_CONTEXT
+        for index, item in enumerate(plan, start=1):
+            issue_id = self._plan_issue_id(index=index)
+            description = str(item.get("description") or f"Plan step {index}").strip() or f"Plan step {index}"
+            depends_on = [previous_issue]
+            created = self._ensure_issue(
+                issue_states=issue_states,
+                issue_id=issue_id,
+                title=description,
+                issue_order=100 + index,
+                depends_on=depends_on,
+                payload={"plan_step": item},
+            )
+            if created:
+                self._emit_checkpoint(
+                    checkpoint,
+                    stage="issue_registered",
+                    message=f"Issue registered: {issue_id}",
+                    issue={
+                        "id": issue_id,
+                        "title": description,
+                        "order": 100 + index,
+                        "status": ISSUE_PLANNED,
+                        "depends_on": depends_on,
+                        "payload": {"plan_step": item},
+                    },
+                )
+            result.append(issue_id)
+            previous_issue = issue_id
+
+        if result:
+            reasoning = issue_states.get(STEP_REASONING)
+            if isinstance(reasoning, dict):
+                reasoning["depends_on"] = [result[-1]]
+            persist = issue_states.get(STEP_PERSIST)
+            if isinstance(persist, dict):
+                persist["depends_on"] = [STEP_REASONING]
+        return result
+
+    def _execute_plan_issues(
+        self,
+        *,
+        plan: list[dict[str, Any]],
+        plan_issue_ids: list[str],
+        issue_states: dict[str, dict[str, Any]],
+        completed_steps: set[str],
+        tools_available: bool,
+        checkpoint: CheckpointWriter | None,
+    ) -> None:
+        for index, issue_id in enumerate(plan_issue_ids, start=1):
+            if issue_id in completed_steps:
+                self._set_issue_status(
+                    issue_states=issue_states,
+                    issue_id=issue_id,
+                    status=ISSUE_DONE,
+                    checkpoint=checkpoint,
+                    attempt=1,
+                    payload={"message": "Plan issue resumed from checkpoint."},
+                )
+                continue
+
+            step_payload = plan[index - 1] if index - 1 < len(plan) else {}
+            description = str(step_payload.get("description") or issue_id)
+            self._set_issue_status(
+                issue_states=issue_states,
+                issue_id=issue_id,
+                status=ISSUE_RUNNING,
+                checkpoint=checkpoint,
+                attempt=1,
+                payload={
+                    "message": "Plan issue started.",
+                    "plan_step": step_payload,
+                },
+            )
+            if ("tool" in description.lower() or "tool" in issue_id.lower()) and not tools_available:
+                error_message = "Plan step requires tools but agent has no tools configured."
+                self._set_issue_status(
+                    issue_states=issue_states,
+                    issue_id=issue_id,
+                    status=ISSUE_BLOCKED,
+                    checkpoint=checkpoint,
+                    attempt=1,
+                    last_error=error_message,
+                    payload={"error": error_message, "plan_step": step_payload},
+                )
+                raise TaskGuardrailError(error_message)
+
+            self._emit_checkpoint(
+                checkpoint,
+                stage="plan_step_executed",
+                message=f"Plan issue executed: {issue_id}",
+                issue_id=issue_id,
+                plan_step=step_payload,
+            )
+            completed_steps.add(issue_id)
+            self._set_issue_status(
+                issue_states=issue_states,
+                issue_id=issue_id,
+                status=ISSUE_DONE,
+                checkpoint=checkpoint,
+                attempt=1,
+                payload={
+                    "message": "Plan issue completed.",
+                    "plan_step": step_payload,
+                },
+            )
+
+    def _normalize_issue_states(self, raw: Any) -> dict[str, dict[str, Any]]:
+        if not isinstance(raw, dict):
+            return {}
+        result: dict[str, dict[str, Any]] = {}
+        for key, value in raw.items():
+            issue_id = str(key).strip()
+            if not issue_id or not isinstance(value, dict):
+                continue
+            status = str(value.get("status") or ISSUE_PLANNED).strip().lower() or ISSUE_PLANNED
+            if status not in ISSUE_STATUSES:
+                status = ISSUE_PLANNED
+            depends_on_raw = value.get("depends_on")
+            depends_on = (
+                [str(item) for item in depends_on_raw if str(item).strip()]
+                if isinstance(depends_on_raw, list)
+                else []
+            )
+            result[issue_id] = {
+                "id": issue_id,
+                "title": str(value.get("title") or issue_id).strip() or issue_id,
+                "order": max(0, self._safe_int_or_none(value.get("order")) or 0),
+                "status": status,
+                "depends_on": depends_on,
+                "attempt": max(0, self._safe_int_or_none(value.get("attempt")) or 0),
+                "last_error": str(value.get("last_error")) if value.get("last_error") is not None else None,
+                "payload": dict(value.get("payload") or {}) if isinstance(value.get("payload"), dict) else {},
+            }
+        return result
+
+    def _ensure_issue(
+        self,
+        *,
+        issue_states: dict[str, dict[str, Any]],
+        issue_id: str,
+        title: str,
+        issue_order: int,
+        depends_on: list[str],
+        payload: dict[str, Any] | None = None,
+    ) -> bool:
+        if issue_id in issue_states:
+            issue = issue_states[issue_id]
+            issue.setdefault("id", issue_id)
+            issue.setdefault("title", title)
+            issue.setdefault("order", issue_order)
+            issue.setdefault("status", ISSUE_PLANNED)
+            issue.setdefault("depends_on", list(depends_on))
+            issue.setdefault("attempt", 0)
+            issue.setdefault("last_error", None)
+            issue.setdefault("payload", dict(payload or {}))
+            return False
+        issue_states[issue_id] = {
+            "id": issue_id,
+            "title": title,
+            "order": max(0, int(issue_order)),
+            "status": ISSUE_PLANNED,
+            "depends_on": list(depends_on),
+            "attempt": 0,
+            "last_error": None,
+            "payload": dict(payload or {}),
+        }
+        return True
+
+    def _set_issue_status(
+        self,
+        *,
+        issue_states: dict[str, dict[str, Any]],
+        issue_id: str,
+        status: str,
+        checkpoint: CheckpointWriter | None,
+        attempt: int,
+        payload: dict[str, Any] | None = None,
+        last_error: str | None = None,
+    ) -> None:
+        issue = issue_states.get(issue_id)
+        if not isinstance(issue, dict):
+            title = issue_id.replace("_", " ").strip().title() or "Issue"
+            self._ensure_issue(
+                issue_states=issue_states,
+                issue_id=issue_id,
+                title=title,
+                issue_order=1000,
+                depends_on=[],
+            )
+            issue = issue_states[issue_id]
+
+        normalized_status = str(status or ISSUE_PLANNED).strip().lower() or ISSUE_PLANNED
+        if normalized_status not in ISSUE_STATUSES:
+            normalized_status = ISSUE_PLANNED
+        issue["status"] = normalized_status
+        issue["attempt"] = max(int(issue.get("attempt", 0)), int(attempt))
+        if last_error is not None:
+            issue["last_error"] = str(last_error)
+        elif normalized_status == ISSUE_DONE:
+            issue["last_error"] = None
+        if payload is not None:
+            issue["payload"] = dict(payload)
+
+        self._emit_checkpoint(
+            checkpoint,
+            stage="issue_state",
+            message=f"Issue state updated: {issue_id} -> {normalized_status}",
+            issue={
+                "id": issue_id,
+                "title": str(issue.get("title") or issue_id),
+                "order": max(0, int(issue.get("order", 0))),
+                "status": normalized_status,
+                "depends_on": list(issue.get("depends_on", [])),
+                "attempt": int(issue.get("attempt", 0)),
+                "last_error": issue.get("last_error"),
+                "payload": dict(issue.get("payload") or {}),
+            },
+        )
+
+    @staticmethod
+    def _plan_issue_id(*, index: int) -> str:
+        return f"plan_step:{max(1, int(index))}"
 
     @staticmethod
     def _emit_checkpoint(

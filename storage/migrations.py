@@ -314,6 +314,34 @@ MIGRATIONS: list[Migration] = [
             ON automation_dispatches(automation_id, created_at);
         """,
     ),
+    Migration(
+        version=10,
+        name="agent_run_issues_work_mode_v3",
+        sql="""
+        CREATE TABLE IF NOT EXISTS agent_run_issues (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL,
+            issue_id TEXT NOT NULL,
+            issue_order INTEGER NOT NULL DEFAULT 0,
+            title TEXT NOT NULL,
+            status TEXT NOT NULL,
+            depends_on_json TEXT NOT NULL DEFAULT '[]',
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT,
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            started_at TEXT,
+            finished_at TEXT,
+            UNIQUE(run_id, issue_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_agent_run_issues_run_order
+            ON agent_run_issues(run_id, issue_order, updated_at);
+        CREATE INDEX IF NOT EXISTS idx_agent_run_issues_status_updated
+            ON agent_run_issues(status, updated_at);
+        """,
+    ),
 ]
 
 

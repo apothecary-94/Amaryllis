@@ -896,7 +896,7 @@ class Database:
             )
             self._conn.commit()
 
-    def get_agent_run(self, run_id: str) -> dict[str, Any] | None:
+    def get_agent_run(self, run_id: str, include_issues: bool = False) -> dict[str, Any] | None:
         with self._lock:
             row = self._conn.execute(
                 "SELECT * FROM agent_runs WHERE id = ?",
@@ -904,7 +904,10 @@ class Database:
             ).fetchone()
         if not row:
             return None
-        return self._decode_agent_run_row(dict(row))
+        decoded = self._decode_agent_run_row(dict(row))
+        if include_issues:
+            decoded["issues"] = self.list_agent_run_issues(run_id=run_id, limit=500)
+        return decoded
 
     def list_agent_runs(
         self,
@@ -933,6 +936,135 @@ class Database:
         with self._lock:
             rows = self._conn.execute(query, tuple(params)).fetchall()
         return [self._decode_agent_run_row(dict(row)) for row in rows]
+
+    def upsert_agent_run_issue(
+        self,
+        *,
+        run_id: str,
+        issue_id: str,
+        issue_order: int,
+        title: str,
+        status: str,
+        depends_on: list[str] | None = None,
+        attempt_count: int = 0,
+        last_error: str | None = None,
+        payload: dict[str, Any] | None = None,
+        started_at: str | None = None,
+        finished_at: str | None = None,
+    ) -> None:
+        now = self._utc_now()
+        normalized_issue_order = max(0, int(issue_order))
+        normalized_attempt_count = max(0, int(attempt_count))
+        normalized_status = str(status or "planned").strip().lower() or "planned"
+        if normalized_status not in {"planned", "running", "blocked", "done", "failed"}:
+            normalized_status = "planned"
+        normalized_title = str(title or issue_id).strip() or issue_id
+        depends_on_json = json.dumps(depends_on or [], ensure_ascii=False)
+        payload_json = json.dumps(payload or {}, ensure_ascii=False)
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO agent_run_issues(
+                    run_id,
+                    issue_id,
+                    issue_order,
+                    title,
+                    status,
+                    depends_on_json,
+                    attempt_count,
+                    last_error,
+                    payload_json,
+                    created_at,
+                    updated_at,
+                    started_at,
+                    finished_at
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(run_id, issue_id) DO UPDATE SET
+                    issue_order=excluded.issue_order,
+                    title=excluded.title,
+                    status=excluded.status,
+                    depends_on_json=excluded.depends_on_json,
+                    attempt_count=excluded.attempt_count,
+                    last_error=excluded.last_error,
+                    payload_json=excluded.payload_json,
+                    updated_at=excluded.updated_at,
+                    started_at=excluded.started_at,
+                    finished_at=excluded.finished_at
+                """,
+                (
+                    run_id,
+                    issue_id,
+                    normalized_issue_order,
+                    normalized_title,
+                    normalized_status,
+                    depends_on_json,
+                    normalized_attempt_count,
+                    last_error,
+                    payload_json,
+                    now,
+                    now,
+                    started_at,
+                    finished_at,
+                ),
+            )
+            self._conn.commit()
+
+    def get_agent_run_issue(self, *, run_id: str, issue_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT
+                    run_id,
+                    issue_id,
+                    issue_order,
+                    title,
+                    status,
+                    depends_on_json,
+                    attempt_count,
+                    last_error,
+                    payload_json,
+                    created_at,
+                    updated_at,
+                    started_at,
+                    finished_at
+                FROM agent_run_issues
+                WHERE run_id = ? AND issue_id = ?
+                """,
+                (run_id, issue_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._decode_agent_run_issue_row(dict(row))
+
+    def list_agent_run_issues(self, *, run_id: str, limit: int = 200) -> list[dict[str, Any]]:
+        if limit <= 0:
+            return []
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT
+                    run_id,
+                    issue_id,
+                    issue_order,
+                    title,
+                    status,
+                    depends_on_json,
+                    attempt_count,
+                    last_error,
+                    payload_json,
+                    created_at,
+                    updated_at,
+                    started_at,
+                    finished_at
+                FROM agent_run_issues
+                WHERE run_id = ?
+                ORDER BY issue_order ASC, updated_at ASC
+                LIMIT ?
+                """,
+                (run_id, limit),
+            ).fetchall()
+        return [self._decode_agent_run_issue_row(dict(row)) for row in rows]
 
     def create_automation(
         self,
@@ -1521,6 +1653,34 @@ class Database:
         row.pop("checkpoints_json", None)
         row.pop("budget_json", None)
         row.pop("metrics_json", None)
+        return row
+
+    @staticmethod
+    def _decode_agent_run_issue_row(row: dict[str, Any]) -> dict[str, Any]:
+        depends_on_json = row.pop("depends_on_json", "[]")
+        payload_json = row.pop("payload_json", "{}")
+        try:
+            depends_on = json.loads(depends_on_json or "[]")
+            row["depends_on"] = [str(item) for item in depends_on] if isinstance(depends_on, list) else []
+        except Exception:
+            row["depends_on"] = []
+        try:
+            payload = json.loads(payload_json or "{}")
+            row["payload"] = payload if isinstance(payload, dict) else {}
+        except Exception:
+            row["payload"] = {}
+        try:
+            row["issue_order"] = max(0, int(row.get("issue_order", 0)))
+        except Exception:
+            row["issue_order"] = 0
+        try:
+            row["attempt_count"] = max(0, int(row.get("attempt_count", 0)))
+        except Exception:
+            row["attempt_count"] = 0
+        status = str(row.get("status") or "planned").strip().lower() or "planned"
+        if status not in {"planned", "running", "blocked", "done", "failed"}:
+            status = "planned"
+        row["status"] = status
         return row
 
     @staticmethod

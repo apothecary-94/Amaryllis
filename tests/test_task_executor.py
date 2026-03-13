@@ -94,6 +94,70 @@ class _FakeMemoryManager:
 
 
 class TaskExecutorTests(unittest.TestCase):
+    def test_issue_state_machine_checkpoints_and_resume_snapshot(self) -> None:
+        model_manager = _FakeModelManager(
+            responses=[
+                {
+                    "content": "Final stable answer.",
+                    "provider": "fake",
+                    "model": "fake-model",
+                }
+            ]
+        )
+        memory_manager = _FakeMemoryManager()
+        registry = ToolRegistry()
+        executor = TaskExecutor(
+            model_manager=model_manager,  # type: ignore[arg-type]
+            memory_manager=memory_manager,  # type: ignore[arg-type]
+            tool_registry=registry,
+            tool_executor=ToolExecutor(registry),
+            meta_controller=MetaController(),
+            planner=Planner(),
+            max_model_calls=4,
+            verifier_enabled=False,
+        )
+        agent = Agent.create(
+            name="Issue Agent",
+            system_prompt="Respond directly.",
+            model="fake-model",
+            tools=[],
+            user_id="user-1",
+        )
+
+        checkpoints: list[dict[str, Any]] = []
+
+        def _checkpoint(payload: dict[str, Any]) -> None:
+            checkpoints.append(dict(payload))
+
+        result = executor.execute(
+            agent=agent,
+            user_id="user-1",
+            session_id="session-issue",
+            user_message="Hello",
+            checkpoint=_checkpoint,
+        )
+
+        self.assertEqual(result["response"], "Final stable answer.")
+        issue_events = [item for item in checkpoints if item.get("stage") == "issue_state"]
+        self.assertGreaterEqual(len(issue_events), 4)
+        issue_ids = {str(item.get("issue", {}).get("id")) for item in issue_events if isinstance(item.get("issue"), dict)}
+        self.assertIn("prepare_context", issue_ids)
+        self.assertIn("reasoning", issue_ids)
+        self.assertIn("persist", issue_ids)
+        self.assertIn("plan_step:1", issue_ids)
+
+        step_completed = [item for item in checkpoints if item.get("stage") == "step_completed"]
+        self.assertGreaterEqual(len(step_completed), 3)
+        latest_resume = step_completed[-1].get("resume_state")
+        self.assertIsInstance(latest_resume, dict)
+        assert isinstance(latest_resume, dict)
+        issues = latest_resume.get("issues")
+        self.assertIsInstance(issues, dict)
+        assert isinstance(issues, dict)
+        self.assertEqual(str(issues.get("prepare_context", {}).get("status")), "done")
+        self.assertEqual(str(issues.get("reasoning", {}).get("status")), "done")
+        self.assertEqual(str(issues.get("persist", {}).get("status")), "done")
+
     def test_invalid_tool_arguments_are_rejected_before_execution(self) -> None:
         call_counter = {"count": 0}
 

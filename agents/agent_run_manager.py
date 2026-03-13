@@ -12,7 +12,14 @@ from uuid import uuid4
 from agents.agent import Agent
 from models.provider_errors import ProviderOperationError, classify_provider_error
 from storage.database import Database
-from tasks.task_executor import TaskExecutor, TaskGuardrailError, TaskTimeoutError
+from tasks.task_executor import (
+    STEP_PERSIST,
+    STEP_PREPARE_CONTEXT,
+    STEP_REASONING,
+    TaskExecutor,
+    TaskGuardrailError,
+    TaskTimeoutError,
+)
 
 
 class TelemetrySink(Protocol):
@@ -32,6 +39,12 @@ RUN_RETRYABLE_FAILURE_CLASSES: set[str] = {
     "unavailable",
     "circuit_open",
 }
+
+CORE_ISSUE_DEFINITIONS: tuple[tuple[str, str, int, list[str]], ...] = (
+    (STEP_PREPARE_CONTEXT, "Prepare context", 10, []),
+    (STEP_REASONING, "Reasoning", 20, [STEP_PREPARE_CONTEXT]),
+    (STEP_PERSIST, "Persist memory", 30, [STEP_REASONING]),
+)
 
 
 class AgentRunManager:
@@ -130,6 +143,7 @@ class AgentRunManager:
                 "budget": effective_budget,
             },
         )
+        self._ensure_core_issue_records(run_id=run_id)
         self._queue.put(run_id)
         self._emit(
             "agent_run_queued",
@@ -161,7 +175,10 @@ class AgentRunManager:
         )
 
     def get_run(self, run_id: str) -> dict[str, Any] | None:
-        return self.database.get_agent_run(run_id)
+        return self.database.get_agent_run(run_id, include_issues=True)
+
+    def list_run_issues(self, run_id: str, limit: int = 200) -> list[dict[str, Any]]:
+        return self.database.list_agent_run_issues(run_id=run_id, limit=max(1, min(int(limit), 1000)))
 
     def cancel_run(self, run_id: str) -> dict[str, Any]:
         run = self.database.get_agent_run(run_id)
@@ -187,6 +204,12 @@ class AgentRunManager:
                     "failure_class": "canceled",
                 },
             )
+            self._finalize_open_issues(
+                run_id=run_id,
+                target_status="blocked",
+                attempt=max(1, int(run.get("attempts", 0))),
+                message="Run canceled by user before execution.",
+            )
         else:
             self.database.append_agent_run_checkpoint(
                 run_id=run_id,
@@ -195,6 +218,12 @@ class AgentRunManager:
                     "message": "Cancel requested.",
                     "stop_reason": "cancel_requested",
                 },
+            )
+            self._finalize_open_issues(
+                run_id=run_id,
+                target_status="blocked",
+                attempt=max(1, int(run.get("attempts", 0))),
+                message="Run cancel requested by user.",
             )
         updated = self.database.get_agent_run(run_id)
         assert updated is not None
@@ -238,6 +267,7 @@ class AgentRunManager:
                 "resume_state": resume_state or {},
             },
         )
+        self._reset_issue_states_for_resume(run_id=run_id)
         self._queue.put(run_id)
 
         updated = self.database.get_agent_run(run_id)
@@ -337,6 +367,11 @@ class AgentRunManager:
                 errors.append(message)
 
         latest_resume_state = self._extract_resume_state(run)
+        issue_items = self.database.list_agent_run_issues(run_id=run_id, limit=500)
+        issue_status_breakdown: dict[str, int] = {}
+        for issue in issue_items:
+            status = str(issue.get("status") or "planned").strip().lower() or "planned"
+            issue_status_breakdown[status] = int(issue_status_breakdown.get(status, 0)) + 1
         return {
             "run_id": str(run.get("id", run_id)),
             "agent_id": run.get("agent_id"),
@@ -354,6 +389,11 @@ class AgentRunManager:
             "attempt_summary": attempt_summary,
             "resume_snapshots": resume_snapshots,
             "latest_resume_state": latest_resume_state or None,
+            "issues": issue_items,
+            "issue_summary": {
+                "count": len(issue_items),
+                "status_breakdown": issue_status_breakdown,
+            },
             "has_result": run.get("result") is not None,
             "error_message": run.get("error_message"),
         }
@@ -389,6 +429,8 @@ class AgentRunManager:
         tool_call_successes = 0
         tool_call_total = 0
         verification_repair_total = 0
+        issue_status_breakdown: dict[str, int] = {}
+        runs_with_blocked_issues = 0
 
         for run in runs:
             attempts_per_run.append(max(0, int(run.get("attempts", 0))))
@@ -400,6 +442,16 @@ class AgentRunManager:
             duration = self._duration_ms(started_at=run.get("started_at"), finished_at=run.get("finished_at"))
             if duration is not None:
                 run_durations_ms.append(duration)
+
+            run_issues = self.database.list_agent_run_issues(run_id=str(run.get("id")), limit=500)
+            blocked_for_run = False
+            for issue in run_issues:
+                issue_status = str(issue.get("status") or "planned").strip().lower() or "planned"
+                issue_status_breakdown[issue_status] = int(issue_status_breakdown.get(issue_status, 0)) + 1
+                if issue_status == "blocked":
+                    blocked_for_run = True
+            if blocked_for_run:
+                runs_with_blocked_issues += 1
 
             checkpoints = run.get("checkpoints")
             if not isinstance(checkpoints, list):
@@ -458,6 +510,8 @@ class AgentRunManager:
                 "failed": failed,
                 "canceled": canceled,
             },
+            "issue_status_breakdown": issue_status_breakdown,
+            "runs_with_blocked_issues": runs_with_blocked_issues,
             "success_rate": round(success_rate, 6),
             "retry_rate": round(retry_rate, 6),
             "stop_reason_breakdown": stop_reason_counts,
@@ -539,12 +593,13 @@ class AgentRunManager:
 
         agent_record = self.database.get_agent(str(run["agent_id"]))
         if agent_record is None:
+            error_message = f"Agent not found: {run['agent_id']}"
             self.database.update_agent_run_fields(
                 run_id,
                 status="failed",
                 stop_reason="agent_not_found",
                 failure_class="not_found",
-                error_message=f"Agent not found: {run['agent_id']}",
+                error_message=error_message,
                 metrics_json=metrics_base,
                 finished_at=self._utc_now(),
             )
@@ -552,11 +607,16 @@ class AgentRunManager:
                 run_id=run_id,
                 checkpoint={
                     "stage": "failed",
-                    "message": f"Agent not found: {run['agent_id']}",
+                    "message": error_message,
                     "stop_reason": "agent_not_found",
                     "failure_class": "not_found",
                     "retryable": False,
                 },
+            )
+            self._mark_issue_failed_from_error(
+                run_id=run_id,
+                attempt=max(1, int(run.get("attempts", 0)) + 1),
+                error_message=error_message,
             )
             return
 
@@ -631,6 +691,7 @@ class AgentRunManager:
                 self._merge_checkpoint_usage(live_usage=live_usage, checkpoint=data)
                 self._validate_live_budget_usage(budget=budget, usage=live_usage)
                 self.database.append_agent_run_checkpoint(run_id=run_id, checkpoint=data)
+                self._sync_issue_state_from_checkpoint(run_id=run_id, checkpoint=data, attempt=attempt)
 
             resume_state = self._extract_resume_state(run)
             result = self._run_task_executor(
@@ -667,6 +728,11 @@ class AgentRunManager:
                     "tool_calls_total": metrics_after_error["tool_calls"],
                     "tool_errors_total": metrics_after_error["tool_errors"],
                 },
+            )
+            self._mark_issue_failed_from_error(
+                run_id=run_id,
+                attempt=attempt,
+                error_message=error_message,
             )
 
             if attempt < max_attempts and int(run.get("cancel_requested", 0)) != 1 and retryable:
@@ -721,6 +787,13 @@ class AgentRunManager:
                         "stop_reason": final_stop_reason,
                     },
                 )
+                if final_status == "canceled":
+                    self._finalize_open_issues(
+                        run_id=run_id,
+                        target_status="blocked",
+                        attempt=attempt,
+                        message="Run canceled before issue completion.",
+                    )
             return
 
         latest = self.database.get_agent_run(run_id)
@@ -745,8 +818,20 @@ class AgentRunManager:
                     "stop_reason": "canceled_by_user",
                 },
             )
+            self._finalize_open_issues(
+                run_id=run_id,
+                target_status="blocked",
+                attempt=attempt,
+                message="Run canceled after task execution.",
+            )
             return
 
+        self._finalize_open_issues(
+            run_id=run_id,
+            target_status="done",
+            attempt=attempt,
+            message="Run succeeded.",
+        )
         self.database.update_agent_run_fields(
             run_id,
             status="succeeded",
@@ -777,6 +862,226 @@ class AgentRunManager:
                 "budget": budget,
             },
         )
+
+    def _ensure_core_issue_records(self, *, run_id: str) -> None:
+        for issue_id, title, issue_order, depends_on in CORE_ISSUE_DEFINITIONS:
+            self.database.upsert_agent_run_issue(
+                run_id=run_id,
+                issue_id=issue_id,
+                issue_order=issue_order,
+                title=title,
+                status="planned",
+                depends_on=list(depends_on),
+                attempt_count=0,
+                last_error=None,
+                payload={},
+                started_at=None,
+                finished_at=None,
+            )
+
+    def _reset_issue_states_for_resume(self, *, run_id: str) -> None:
+        items = self.database.list_agent_run_issues(run_id=run_id, limit=500)
+        if not items:
+            self._ensure_core_issue_records(run_id=run_id)
+            return
+        for item in items:
+            status = str(item.get("status") or "planned").strip().lower() or "planned"
+            if status == "done":
+                continue
+            self.database.upsert_agent_run_issue(
+                run_id=run_id,
+                issue_id=str(item.get("issue_id")),
+                issue_order=int(item.get("issue_order", 0)),
+                title=str(item.get("title") or item.get("issue_id") or "Issue"),
+                status="planned",
+                depends_on=[str(dep) for dep in item.get("depends_on", []) if str(dep).strip()],
+                attempt_count=max(0, int(item.get("attempt_count", 0))),
+                last_error=None,
+                payload=dict(item.get("payload") or {}),
+                started_at=None,
+                finished_at=None,
+            )
+
+    def _sync_issue_state_from_checkpoint(
+        self,
+        *,
+        run_id: str,
+        checkpoint: dict[str, Any],
+        attempt: int,
+    ) -> None:
+        stage = str(checkpoint.get("stage") or "").strip().lower()
+        timestamp = str(checkpoint.get("timestamp") or self._utc_now())
+
+        issue_payload: dict[str, Any] | None = None
+        if stage == "issue_state":
+            raw_issue = checkpoint.get("issue")
+            if isinstance(raw_issue, dict):
+                issue_payload = raw_issue
+        elif stage in {"step_completed", "step_resumed", "step_resume_fallback"}:
+            step = str(checkpoint.get("step") or "").strip()
+            if step:
+                mapped_status = "done" if stage in {"step_completed", "step_resumed"} else "running"
+                title, issue_order, depends_on = self._issue_meta_for_id(step)
+                issue_payload = {
+                    "id": step,
+                    "title": title,
+                    "order": issue_order,
+                    "depends_on": depends_on,
+                    "status": mapped_status,
+                    "attempt": attempt,
+                    "payload": {
+                        "stage": stage,
+                        "message": str(checkpoint.get("message") or ""),
+                    },
+                }
+        if issue_payload is None:
+            return
+
+        issue_id = str(issue_payload.get("id") or "").strip()
+        if not issue_id:
+            return
+        title, issue_order_default, depends_on_default = self._issue_meta_for_id(issue_id)
+        issue_order = self._safe_int(issue_payload.get("order"), issue_order_default)
+        status = str(issue_payload.get("status") or "planned").strip().lower() or "planned"
+        if status not in {"planned", "running", "blocked", "done", "failed"}:
+            status = "planned"
+        depends_on_raw = issue_payload.get("depends_on")
+        depends_on = (
+            [str(item) for item in depends_on_raw if str(item).strip()]
+            if isinstance(depends_on_raw, list)
+            else depends_on_default
+        )
+        attempt_count = max(0, self._safe_int(issue_payload.get("attempt"), attempt))
+        last_error = issue_payload.get("last_error")
+        if last_error is None:
+            payload = issue_payload.get("payload")
+            if isinstance(payload, dict):
+                payload_error = payload.get("error")
+                last_error = str(payload_error) if payload_error is not None else None
+        else:
+            last_error = str(last_error)
+
+        existing = self.database.get_agent_run_issue(run_id=run_id, issue_id=issue_id)
+        started_at = issue_payload.get("started_at")
+        finished_at = issue_payload.get("finished_at")
+        normalized_started_at = str(started_at) if started_at is not None else None
+        normalized_finished_at = str(finished_at) if finished_at is not None else None
+        if existing is not None:
+            if normalized_started_at is None:
+                normalized_started_at = str(existing.get("started_at") or "") or None
+            if normalized_finished_at is None:
+                normalized_finished_at = str(existing.get("finished_at") or "") or None
+
+        if status == "running" and normalized_started_at is None:
+            normalized_started_at = timestamp
+        if status in {"done", "failed", "blocked"} and normalized_finished_at is None:
+            normalized_finished_at = timestamp
+        if status in {"planned", "running"}:
+            normalized_finished_at = None
+        payload_raw = issue_payload.get("payload")
+        payload = dict(payload_raw) if isinstance(payload_raw, dict) else {}
+        self.database.upsert_agent_run_issue(
+            run_id=run_id,
+            issue_id=issue_id,
+            issue_order=max(0, int(issue_order)),
+            title=str(issue_payload.get("title") or title).strip() or title,
+            status=status,
+            depends_on=depends_on,
+            attempt_count=attempt_count,
+            last_error=last_error,
+            payload=payload,
+            started_at=normalized_started_at,
+            finished_at=normalized_finished_at,
+        )
+
+    def _mark_issue_failed_from_error(
+        self,
+        *,
+        run_id: str,
+        attempt: int,
+        error_message: str,
+    ) -> None:
+        items = self.database.list_agent_run_issues(run_id=run_id, limit=500)
+        target: dict[str, Any] | None = None
+        running = [item for item in items if str(item.get("status") or "").lower() == "running"]
+        if running:
+            target = sorted(running, key=lambda item: int(item.get("issue_order", 0)))[-1]
+        elif items:
+            non_done = [item for item in items if str(item.get("status") or "").lower() != "done"]
+            if non_done:
+                target = sorted(non_done, key=lambda item: int(item.get("issue_order", 0)))[0]
+        if target is None:
+            self._ensure_core_issue_records(run_id=run_id)
+            target = self.database.get_agent_run_issue(run_id=run_id, issue_id=STEP_REASONING)
+            if target is None:
+                return
+
+        now_iso = self._utc_now()
+        self.database.upsert_agent_run_issue(
+            run_id=run_id,
+            issue_id=str(target.get("issue_id")),
+            issue_order=int(target.get("issue_order", 0)),
+            title=str(target.get("title") or target.get("issue_id") or "Issue"),
+            status="failed",
+            depends_on=[str(dep) for dep in target.get("depends_on", []) if str(dep).strip()],
+            attempt_count=max(int(target.get("attempt_count", 0)), int(attempt)),
+            last_error=error_message,
+            payload=dict(target.get("payload") or {}),
+            started_at=str(target.get("started_at") or now_iso),
+            finished_at=now_iso,
+        )
+
+    def _finalize_open_issues(
+        self,
+        *,
+        run_id: str,
+        target_status: str,
+        attempt: int,
+        message: str,
+    ) -> None:
+        normalized = str(target_status or "done").strip().lower() or "done"
+        if normalized not in {"done", "blocked", "failed"}:
+            normalized = "done"
+        items = self.database.list_agent_run_issues(run_id=run_id, limit=500)
+        if not items:
+            self._ensure_core_issue_records(run_id=run_id)
+            items = self.database.list_agent_run_issues(run_id=run_id, limit=500)
+        now_iso = self._utc_now()
+        for item in items:
+            status = str(item.get("status") or "planned").strip().lower() or "planned"
+            if status == "done" and normalized == "done":
+                continue
+            if status in {"failed", "blocked"} and normalized in {"blocked", "failed"}:
+                continue
+            if status == "failed" and normalized == "done":
+                continue
+            payload = dict(item.get("payload") or {})
+            payload["terminal_message"] = message
+            self.database.upsert_agent_run_issue(
+                run_id=run_id,
+                issue_id=str(item.get("issue_id")),
+                issue_order=int(item.get("issue_order", 0)),
+                title=str(item.get("title") or item.get("issue_id") or "Issue"),
+                status=normalized if status != "done" else "done",
+                depends_on=[str(dep) for dep in item.get("depends_on", []) if str(dep).strip()],
+                attempt_count=max(int(item.get("attempt_count", 0)), int(attempt)),
+                last_error=item.get("last_error") if normalized != "done" else None,
+                payload=payload,
+                started_at=str(item.get("started_at") or now_iso),
+                finished_at=str(item.get("finished_at") or now_iso),
+            )
+
+    @staticmethod
+    def _issue_meta_for_id(issue_id: str) -> tuple[str, int, list[str]]:
+        normalized = str(issue_id or "").strip()
+        for known_id, title, issue_order, depends_on in CORE_ISSUE_DEFINITIONS:
+            if normalized == known_id:
+                return title, issue_order, list(depends_on)
+        if normalized.startswith("plan_step:"):
+            suffix = normalized.split(":", 1)[1].strip()
+            order = 100 + max(0, AgentRunManager._safe_int(suffix, 0))
+            return f"Plan step {suffix}", order, [STEP_PREPARE_CONTEXT]
+        return normalized.replace("_", " ").strip().title() or "Issue", 1000, []
 
     def _emit(self, event_type: str, payload: dict[str, Any]) -> None:
         if self.telemetry is None:
