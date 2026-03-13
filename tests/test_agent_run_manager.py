@@ -8,6 +8,7 @@ from typing import Any
 
 from agents.agent import Agent
 from agents.agent_run_manager import AgentRunManager
+from models.provider_errors import ProviderErrorInfo, ProviderOperationError
 from storage.database import Database
 from storage.vector_store import VectorStore
 
@@ -18,10 +19,16 @@ class _FakeTaskExecutor:
         fail_first: bool = False,
         always_fail: bool = False,
         fail_once_after_prepare: bool = False,
+        error_sequence: list[Exception] | None = None,
+        emit_tool_finished_count: int = 0,
+        emit_tool_error_count: int = 0,
     ) -> None:
         self.fail_first = fail_first
         self.always_fail = always_fail
         self.fail_once_after_prepare = fail_once_after_prepare
+        self.error_sequence = list(error_sequence or [])
+        self.emit_tool_finished_count = max(0, int(emit_tool_finished_count))
+        self.emit_tool_error_count = max(0, int(emit_tool_error_count))
         self.call_count = 0
         self.last_resume_state: dict[str, Any] | None = None
 
@@ -58,13 +65,16 @@ class _FakeTaskExecutor:
             )
             completed_steps.add("prepare_context")
 
+        if self.call_count <= len(self.error_sequence):
+            raise self.error_sequence[self.call_count - 1]
+
         if self.fail_once_after_prepare and self.call_count == 1:
             raise RuntimeError("fail after prepare")
 
         if self.always_fail:
             raise RuntimeError("forced failure")
         if self.fail_first and self.call_count == 1:
-            raise RuntimeError("fail first attempt")
+            raise RuntimeError("timeout on first attempt")
 
         if "reasoning" not in completed_steps and callable(checkpoint):
             checkpoint(
@@ -86,10 +96,22 @@ class _FakeTaskExecutor:
             )
 
         if callable(checkpoint):
+            for idx in range(self.emit_tool_finished_count):
+                status = "failed" if idx < self.emit_tool_error_count else "succeeded"
+                checkpoint(
+                    {
+                        "stage": "tool_call_finished",
+                        "status": status,
+                        "duration_ms": 12.0,
+                    }
+                )
+
+        if callable(checkpoint):
             checkpoint(
                 {
                     "stage": "fake_executor",
                     "message": "Fake executor produced response.",
+                    "estimated_tokens_total": 120,
                 }
             )
         return {
@@ -97,6 +119,15 @@ class _FakeTaskExecutor:
             "user_id": user_id,
             "session_id": session_id,
             "response": f"ok:{user_message}",
+            "metrics": {
+                "model_calls": 1,
+                "tool_calls": self.emit_tool_finished_count,
+                "tool_errors": self.emit_tool_error_count,
+                "estimated_tokens": 120,
+                "attempt_count": 1,
+                "duration_ms": 20.0,
+                "total_attempt_duration_ms": 20.0,
+            },
         }
 
 
@@ -142,6 +173,7 @@ class AgentRunManagerTests(unittest.TestCase):
         self.assertIsNotNone(final)
         assert final is not None
         self.assertEqual(final["status"], "succeeded")
+        self.assertEqual(final.get("stop_reason"), "completed")
         self.assertEqual(final["attempts"], 1)
         self.assertIsInstance(final["result"], dict)
         stages = {item.get("stage") for item in final["checkpoints"]}
@@ -181,6 +213,8 @@ class AgentRunManagerTests(unittest.TestCase):
         canceled = self.manager.cancel_run(run["id"])
         self.assertEqual(canceled["status"], "canceled")
         self.assertEqual(canceled["cancel_requested"], 1)
+        self.assertEqual(canceled.get("stop_reason"), "canceled_by_user")
+        self.assertEqual(canceled.get("failure_class"), "canceled")
 
     def test_resume_failed_run(self) -> None:
         self.executor.always_fail = True
@@ -281,6 +315,173 @@ class AgentRunManagerTests(unittest.TestCase):
     def test_replay_missing_run_raises(self) -> None:
         with self.assertRaises(ValueError):
             self.manager.replay_run("missing-run-id")
+
+    def test_rate_limit_failure_retries_then_succeeds_with_failure_class(self) -> None:
+        self.executor = _FakeTaskExecutor(
+            error_sequence=[
+                self._provider_error(
+                    error_class="rate_limit",
+                    message="429 Too Many Requests",
+                    retryable=True,
+                )
+            ]
+        )
+        self.manager = AgentRunManager(
+            database=self.database,
+            task_executor=self.executor,  # type: ignore[arg-type]
+            worker_count=1,
+            default_max_attempts=2,
+            retry_backoff_sec=0.0,
+            retry_max_backoff_sec=0.0,
+            retry_jitter_sec=0.0,
+        )
+        self.manager.start()
+        run = self.manager.create_run(
+            agent=self.agent,
+            user_id="user-1",
+            session_id="session-1",
+            user_message="rate limited",
+            max_attempts=2,
+        )
+        final = self._wait_for_status(run["id"], {"succeeded"})
+        self.assertIsNotNone(final)
+        assert final is not None
+        self.assertEqual(final["status"], "succeeded")
+        self.assertEqual(final["attempts"], 2)
+        checkpoints = final.get("checkpoints", [])
+        self.assertTrue(any(item.get("stage") == "retry_scheduled" for item in checkpoints))
+        errors = [item for item in checkpoints if item.get("stage") == "error"]
+        self.assertGreaterEqual(len(errors), 1)
+        self.assertEqual(errors[0].get("failure_class"), "rate_limit")
+        self.assertEqual(errors[0].get("stop_reason"), "provider_rate_limit")
+        self.assertEqual(errors[0].get("retryable"), True)
+
+    def test_quota_failure_is_non_retryable(self) -> None:
+        self.executor = _FakeTaskExecutor(
+            error_sequence=[
+                self._provider_error(
+                    error_class="quota",
+                    message="quota exceeded",
+                    retryable=False,
+                )
+            ]
+        )
+        self.manager = AgentRunManager(
+            database=self.database,
+            task_executor=self.executor,  # type: ignore[arg-type]
+            worker_count=1,
+            default_max_attempts=3,
+            retry_backoff_sec=0.0,
+            retry_max_backoff_sec=0.0,
+            retry_jitter_sec=0.0,
+        )
+        self.manager.start()
+        run = self.manager.create_run(
+            agent=self.agent,
+            user_id="user-1",
+            session_id="session-1",
+            user_message="quota fail",
+            max_attempts=3,
+        )
+        final = self._wait_for_status(run["id"], {"failed"})
+        self.assertIsNotNone(final)
+        assert final is not None
+        self.assertEqual(final["status"], "failed")
+        self.assertEqual(final["attempts"], 1)
+        self.assertEqual(final.get("failure_class"), "quota")
+        self.assertEqual(final.get("stop_reason"), "provider_quota")
+        stages = [str(item.get("stage")) for item in final.get("checkpoints", [])]
+        self.assertNotIn("retry_scheduled", stages)
+
+    def test_run_budget_tool_calls_exceeded_fails_fast(self) -> None:
+        self.executor = _FakeTaskExecutor(
+            emit_tool_finished_count=2,
+            emit_tool_error_count=0,
+        )
+        self.manager = AgentRunManager(
+            database=self.database,
+            task_executor=self.executor,  # type: ignore[arg-type]
+            worker_count=1,
+            default_max_attempts=1,
+            retry_backoff_sec=0.0,
+            retry_max_backoff_sec=0.0,
+            retry_jitter_sec=0.0,
+        )
+        self.manager.start()
+        run = self.manager.create_run(
+            agent=self.agent,
+            user_id="user-1",
+            session_id="session-1",
+            user_message="tool budget",
+            max_attempts=1,
+            budget={
+                "max_tokens": 10_000,
+                "max_duration_sec": 60,
+                "max_tool_calls": 1,
+                "max_tool_errors": 2,
+            },
+        )
+        final = self._wait_for_status(run["id"], {"failed"})
+        self.assertIsNotNone(final)
+        assert final is not None
+        self.assertEqual(final["status"], "failed")
+        self.assertEqual(final.get("failure_class"), "budget_exceeded")
+        self.assertEqual(final.get("stop_reason"), "budget_exceeded")
+
+    def test_run_health_snapshot_contains_slo_metrics(self) -> None:
+        self.manager.start()
+        run_ok = self.manager.create_run(
+            agent=self.agent,
+            user_id="user-1",
+            session_id="session-ok",
+            user_message="ok",
+            max_attempts=2,
+        )
+        self._wait_for_status(run_ok["id"], {"succeeded"})
+
+        self.executor.error_sequence = [RuntimeError("timeout")]
+        self.executor.call_count = 0
+        run_fail = self.manager.create_run(
+            agent=self.agent,
+            user_id="user-1",
+            session_id="session-fail",
+            user_message="fail",
+            max_attempts=1,
+        )
+        self._wait_for_status(run_fail["id"], {"failed"})
+
+        health = self.manager.get_run_health(user_id="user-1", limit=20)
+        self.assertGreaterEqual(int(health.get("sample_size", 0)), 2)
+        status_breakdown = health.get("status_breakdown", {})
+        self.assertIsInstance(status_breakdown, dict)
+        self.assertGreaterEqual(int(status_breakdown.get("succeeded", 0)), 1)
+        self.assertGreaterEqual(int(status_breakdown.get("failed", 0)), 1)
+        slo = health.get("slo", {})
+        self.assertIsInstance(slo, dict)
+        run_slo = slo.get("run", {})
+        self.assertIn("duration_ms", run_slo)
+        attempt_slo = slo.get("run_attempt", {})
+        self.assertIn("success_rate", attempt_slo)
+        tool_slo = slo.get("tool_call", {})
+        self.assertIn("duration_ms", tool_slo)
+
+    @staticmethod
+    def _provider_error(
+        *,
+        error_class: str,
+        message: str,
+        retryable: bool,
+    ) -> ProviderOperationError:
+        info = ProviderErrorInfo(
+            provider="openai",
+            operation="chat",
+            error_class=error_class,  # type: ignore[arg-type]
+            message=message,
+            raw_message=message,
+            retryable=retryable,
+            status_code=429 if error_class == "rate_limit" else 400,
+        )
+        return ProviderOperationError(info)
 
     def _wait_for_status(
         self,

@@ -773,8 +773,10 @@ class Database:
         input_message: str,
         status: str = "queued",
         max_attempts: int = 2,
+        budget: dict[str, Any] | None = None,
     ) -> None:
         now = self._utc_now()
+        budget_json = json.dumps(budget or {}, ensure_ascii=False)
         with self._lock:
             self._conn.execute(
                 """
@@ -788,13 +790,28 @@ class Database:
                     attempts,
                     max_attempts,
                     cancel_requested,
+                    stop_reason,
+                    failure_class,
                     checkpoints_json,
+                    budget_json,
+                    metrics_json,
                     created_at,
                     updated_at
                 )
-                VALUES(?, ?, ?, ?, ?, ?, 0, ?, 0, '[]', ?, ?)
+                VALUES(?, ?, ?, ?, ?, ?, 0, ?, 0, NULL, NULL, '[]', ?, '{}', ?, ?)
                 """,
-                (run_id, agent_id, user_id, session_id, input_message, status, max_attempts, now, now),
+                (
+                    run_id,
+                    agent_id,
+                    user_id,
+                    session_id,
+                    input_message,
+                    status,
+                    max_attempts,
+                    budget_json,
+                    now,
+                    now,
+                ),
             )
             self._conn.commit()
 
@@ -807,9 +824,13 @@ class Database:
             "attempts",
             "max_attempts",
             "cancel_requested",
+            "stop_reason",
+            "failure_class",
             "result_json",
             "error_message",
             "checkpoints_json",
+            "budget_json",
+            "metrics_json",
             "started_at",
             "finished_at",
             "updated_at",
@@ -818,7 +839,9 @@ class Database:
         for key, value in fields.items():
             if key not in allowed:
                 continue
-            if key in {"result_json", "checkpoints_json"} and isinstance(value, (dict, list)):
+            if key in {"result_json", "checkpoints_json", "budget_json", "metrics_json"} and isinstance(
+                value, (dict, list)
+            ):
                 sanitized[key] = json.dumps(value, ensure_ascii=False)
             elif key == "cancel_requested" and isinstance(value, bool):
                 sanitized[key] = 1 if value else 0
@@ -1269,8 +1292,20 @@ class Database:
             row["checkpoints"] = checkpoints if isinstance(checkpoints, list) else []
         except Exception:
             row["checkpoints"] = []
+        try:
+            budget = json.loads(row.get("budget_json") or "{}")
+            row["budget"] = budget if isinstance(budget, dict) else {}
+        except Exception:
+            row["budget"] = {}
+        try:
+            metrics = json.loads(row.get("metrics_json") or "{}")
+            row["metrics"] = metrics if isinstance(metrics, dict) else {}
+        except Exception:
+            row["metrics"] = {}
         row.pop("result_json", None)
         row.pop("checkpoints_json", None)
+        row.pop("budget_json", None)
+        row.pop("metrics_json", None)
         return row
 
     @staticmethod

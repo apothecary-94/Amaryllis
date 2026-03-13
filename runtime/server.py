@@ -167,6 +167,10 @@ def create_services() -> ServiceContainer:
         retry_backoff_sec=config.run_retry_backoff_sec,
         retry_max_backoff_sec=config.run_retry_max_backoff_sec,
         retry_jitter_sec=config.run_retry_jitter_sec,
+        run_budget_max_tokens=config.run_budget_max_tokens,
+        run_budget_max_duration_sec=config.run_budget_max_duration_sec,
+        run_budget_max_tool_calls=config.run_budget_max_tool_calls,
+        run_budget_max_tool_errors=config.run_budget_max_tool_errors,
         telemetry=telemetry,
     )
     agent_run_manager.start()

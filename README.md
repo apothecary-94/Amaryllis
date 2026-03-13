@@ -486,6 +486,25 @@ curl -X POST http://localhost:8000/agents/<agent_id>/runs \
   }'
 ```
 
+Work Mode with explicit run budgets:
+
+```bash
+curl -X POST http://localhost:8000/agents/<agent_id>/runs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_id": "user-001",
+    "session_id": "session-001",
+    "message": "Investigate errors and summarize remediation plan",
+    "max_attempts": 3,
+    "budget": {
+      "max_tokens": 18000,
+      "max_duration_sec": 240,
+      "max_tool_calls": 8,
+      "max_tool_errors": 2
+    }
+  }'
+```
+
 ### Work Mode: list runs for agent
 
 ```bash
@@ -508,6 +527,12 @@ curl "http://localhost:8000/agents/runs/<run_id>"
 
 ```bash
 curl "http://localhost:8000/agents/runs/<run_id>/replay"
+```
+
+### Work Mode: debug run health/SLO snapshot
+
+```bash
+curl "http://localhost:8000/debug/agents/runs/health?user_id=user-001&limit=200"
 ```
 
 ### Work Mode: cancel run
@@ -565,6 +590,13 @@ Implemented now:
 Implemented now:
 - async run queue for agents (`queued` -> `running` -> `succeeded|failed|canceled`)
 - persistent run state in SQLite (`agent_runs`)
+- deterministic run outcomes: `failure_class` + terminal `stop_reason`
+- failure-class retry policy (retry only for transient classes)
+- run-level execution budgets:
+  - `max_tokens`
+  - `max_duration_sec`
+  - `max_tool_calls`
+  - `max_tool_errors`
 - run checkpoints (stage history) including task-level phases:
   - `strategy_selected`, `plan_created`, `memory_loaded`
   - `reasoning_started`, `llm_response`, `tool_call_*`, `llm_followup_response`
@@ -574,6 +606,7 @@ Implemented now:
 - automatic retry until `max_attempts`
 - manual cancel and resume APIs
 - checkpoint replay API (`GET /agents/runs/{run_id}/replay`) with timeline + attempt summary
+- run health/SLO debug API (`GET /debug/agents/runs/health`)
 - status validation for run filters in API (`queued|running|succeeded|failed|canceled`)
 - desktop Agents tab run monitor:
   - queue run from message input
@@ -825,6 +858,10 @@ Run unit tests (memory + work mode + tools/MCP + automation):
   - `AMARYLLIS_OPENROUTER_API_KEY=<your_key>`
   - `AMARYLLIS_RUN_WORKERS=2`
   - `AMARYLLIS_RUN_MAX_ATTEMPTS=2`
+  - `AMARYLLIS_RUN_BUDGET_MAX_TOKENS=24000`
+  - `AMARYLLIS_RUN_BUDGET_MAX_DURATION_SEC=300`
+  - `AMARYLLIS_RUN_BUDGET_MAX_TOOL_CALLS=8`
+  - `AMARYLLIS_RUN_BUDGET_MAX_TOOL_ERRORS=3`
   - `AMARYLLIS_AUTOMATION_POLL_SEC=2`
   - `AMARYLLIS_AUTOMATION_BATCH_SIZE=10`
   - `AMARYLLIS_MEMORY_PROFILE_DECAY_ENABLED=true`
@@ -855,6 +892,10 @@ export AMARYLLIS_OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
 export AMARYLLIS_OPENROUTER_API_KEY=replace_me
 export AMARYLLIS_RUN_WORKERS=2
 export AMARYLLIS_RUN_MAX_ATTEMPTS=2
+export AMARYLLIS_RUN_BUDGET_MAX_TOKENS=24000
+export AMARYLLIS_RUN_BUDGET_MAX_DURATION_SEC=300
+export AMARYLLIS_RUN_BUDGET_MAX_TOOL_CALLS=8
+export AMARYLLIS_RUN_BUDGET_MAX_TOOL_ERRORS=3
 export AMARYLLIS_AUTOMATION_POLL_SEC=2
 export AMARYLLIS_AUTOMATION_BATCH_SIZE=10
 export AMARYLLIS_MEMORY_PROFILE_DECAY_ENABLED=true

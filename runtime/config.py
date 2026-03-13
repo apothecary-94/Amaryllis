@@ -33,6 +33,10 @@ class AppConfig:
     run_retry_backoff_sec: float
     run_retry_max_backoff_sec: float
     run_retry_jitter_sec: float
+    run_budget_max_tokens: int
+    run_budget_max_duration_sec: float
+    run_budget_max_tool_calls: int
+    run_budget_max_tool_errors: int
     automation_poll_sec: float
     automation_batch_size: int
     automation_escalation_warning: int
@@ -191,6 +195,12 @@ class AppConfig:
             run_retry_backoff_sec=max(0.0, float(os.getenv("AMARYLLIS_RUN_RETRY_BACKOFF_SEC", "0.3"))),
             run_retry_max_backoff_sec=max(0.0, float(os.getenv("AMARYLLIS_RUN_RETRY_MAX_BACKOFF_SEC", "2.0"))),
             run_retry_jitter_sec=max(0.0, float(os.getenv("AMARYLLIS_RUN_RETRY_JITTER_SEC", "0.15"))),
+            run_budget_max_tokens=max(256, int(os.getenv("AMARYLLIS_RUN_BUDGET_MAX_TOKENS", "24000"))),
+            run_budget_max_duration_sec=max(
+                10.0, float(os.getenv("AMARYLLIS_RUN_BUDGET_MAX_DURATION_SEC", "300"))
+            ),
+            run_budget_max_tool_calls=max(1, int(os.getenv("AMARYLLIS_RUN_BUDGET_MAX_TOOL_CALLS", "8"))),
+            run_budget_max_tool_errors=max(0, int(os.getenv("AMARYLLIS_RUN_BUDGET_MAX_TOOL_ERRORS", "3"))),
             automation_poll_sec=max(0.5, float(os.getenv("AMARYLLIS_AUTOMATION_POLL_SEC", "2"))),
             automation_batch_size=max(1, int(os.getenv("AMARYLLIS_AUTOMATION_BATCH_SIZE", "10"))),
             automation_escalation_warning=max(1, int(os.getenv("AMARYLLIS_AUTOMATION_ESCALATION_WARNING", "2"))),

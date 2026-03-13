@@ -71,6 +71,7 @@ class AgentManager:
         user_id: str,
         session_id: str | None,
         max_attempts: int | None = None,
+        budget: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if self.run_manager is None:
             raise ValueError("Run manager is not configured")
@@ -85,6 +86,7 @@ class AgentManager:
             session_id=session_id,
             user_message=user_message,
             max_attempts=max_attempts,
+            budget=budget,
         )
 
     def get_run(self, run_id: str) -> dict[str, Any]:
@@ -125,3 +127,18 @@ class AgentManager:
         if self.run_manager is None:
             raise ValueError("Run manager is not configured")
         return self.run_manager.replay_run(run_id)
+
+    def run_health(
+        self,
+        *,
+        user_id: str | None = None,
+        agent_id: str | None = None,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        if self.run_manager is None:
+            raise ValueError("Run manager is not configured")
+        return self.run_manager.get_run_health(
+            user_id=user_id,
+            agent_id=agent_id,
+            limit=limit,
+        )

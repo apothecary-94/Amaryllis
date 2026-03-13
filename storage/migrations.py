@@ -268,6 +268,21 @@ MIGRATIONS: list[Migration] = [
             ON security_audit_events(request_id, created_at);
         """,
     ),
+    Migration(
+        version=8,
+        name="agent_runs_reliability_v2",
+        sql="""
+        ALTER TABLE agent_runs ADD COLUMN stop_reason TEXT;
+        ALTER TABLE agent_runs ADD COLUMN failure_class TEXT;
+        ALTER TABLE agent_runs ADD COLUMN budget_json TEXT NOT NULL DEFAULT '{}';
+        ALTER TABLE agent_runs ADD COLUMN metrics_json TEXT NOT NULL DEFAULT '{}';
+
+        CREATE INDEX IF NOT EXISTS idx_agent_runs_failure_class
+            ON agent_runs(failure_class, updated_at);
+        CREATE INDEX IF NOT EXISTS idx_agent_runs_stop_reason
+            ON agent_runs(stop_reason, updated_at);
+        """,
+    ),
 ]
 
 

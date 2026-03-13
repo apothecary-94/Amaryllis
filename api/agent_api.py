@@ -56,11 +56,19 @@ class AgentChatRequest(BaseModel):
     session_id: str | None = None
 
 
+class RunBudgetRequest(BaseModel):
+    max_tokens: int | None = Field(default=None, ge=256, le=2_000_000)
+    max_duration_sec: float | None = Field(default=None, ge=10.0, le=86_400.0)
+    max_tool_calls: int | None = Field(default=None, ge=1, le=200)
+    max_tool_errors: int | None = Field(default=None, ge=0, le=200)
+
+
 class AgentRunCreateRequest(BaseModel):
     user_id: str = Field(min_length=1)
     message: str = Field(min_length=1)
     session_id: str | None = None
     max_attempts: int | None = Field(default=None, ge=1, le=10)
+    budget: RunBudgetRequest | None = None
 
 
 @router.post("/agents/create")
@@ -135,6 +143,7 @@ def create_agent_run(
             user_id=payload.user_id,
             session_id=payload.session_id,
             max_attempts=payload.max_attempts,
+            budget=payload.budget.model_dump(exclude_none=True) if payload.budget is not None else None,
         )
         receipt = _sign_action(
             request,
@@ -334,6 +343,30 @@ def resume_agent_run(
             status="failed",
             details={"error": str(exc)},
         )
+        raise ProviderError(str(exc)) from exc
+
+
+@router.get("/debug/agents/runs/health")
+def debug_agent_runs_health(
+    request: Request,
+    user_id: str | None = Query(default=None),
+    agent_id: str | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=2000),
+) -> dict[str, Any]:
+    services = request.app.state.services
+    try:
+        snapshot = services.agent_manager.run_health(
+            user_id=user_id,
+            agent_id=agent_id,
+            limit=limit,
+        )
+        return {
+            "health": snapshot,
+            "request_id": _request_id(request),
+        }
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
+    except Exception as exc:
         raise ProviderError(str(exc)) from exc
 
 

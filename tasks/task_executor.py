@@ -27,6 +27,10 @@ class TaskTimeoutError(RuntimeError):
     pass
 
 
+class TaskBudgetError(TaskGuardrailError):
+    pass
+
+
 class TaskExecutor:
     def __init__(
         self,
@@ -67,13 +71,26 @@ class TaskExecutor:
         checkpoint: CheckpointWriter | None = None,
         run_deadline_monotonic: float | None = None,
         resume_state: dict[str, Any] | None = None,
+        run_budget: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         started = time.monotonic()
+        run_budget_limits = self._normalize_run_budget(run_budget)
+        budget_duration_sec = run_budget_limits.get("max_duration_sec")
+        if budget_duration_sec is not None and budget_duration_sec > 0:
+            budget_deadline = started + budget_duration_sec
+            if run_deadline_monotonic is None:
+                run_deadline_monotonic = budget_deadline
+            else:
+                run_deadline_monotonic = min(run_deadline_monotonic, budget_deadline)
         self._check_runtime(started=started, run_deadline_monotonic=run_deadline_monotonic)
         self._check_message_size(user_message)
 
         state = self._normalize_resume_state(resume_state)
         completed_steps = set(state.get("completed_steps", []))
+
+        used_tokens_baseline = int(run_budget_limits.get("used_tokens", 0))
+        used_tool_calls_baseline = int(run_budget_limits.get("used_tool_calls", 0))
+        used_tool_errors_baseline = int(run_budget_limits.get("used_tool_errors", 0))
 
         strategy = str(state.get("strategy", "")).strip() or None
         plan: list[dict[str, Any]] = []
@@ -81,7 +98,9 @@ class TaskExecutor:
             plan = [item for item in state["plan"] if isinstance(item, dict)]
 
         model_calls = int(state.get("model_calls", 0))
-        tool_rounds = int(state.get("tool_rounds", 0))
+        tool_rounds = max(used_tool_calls_baseline, int(state.get("tool_rounds", used_tool_calls_baseline)))
+        tool_errors = max(used_tool_errors_baseline, int(state.get("tool_errors", used_tool_errors_baseline)))
+        estimated_tokens = max(used_tokens_baseline, int(state.get("estimated_tokens", used_tokens_baseline)))
         response_text = str(state.get("response_text", "")).strip() if state.get("response_text") is not None else ""
         provider_used = str(state.get("provider", "")).strip() if state.get("provider") is not None else ""
         model_used = str(state.get("model", "")).strip() if state.get("model") is not None else ""
@@ -155,6 +174,8 @@ class TaskExecutor:
                 plan=plan,
                 model_calls=model_calls,
                 tool_rounds=tool_rounds,
+                tool_errors=tool_errors,
+                estimated_tokens=estimated_tokens,
                 response_text=response_text,
                 provider_used=provider_used,
                 model_used=model_used,
@@ -206,7 +227,15 @@ class TaskExecutor:
                 message="LLM reasoning started.",
                 tools_allowed=agent.tools,
             )
-            response_text, provider_used, model_used, model_calls, tool_rounds = self._reason_with_optional_tools(
+            (
+                response_text,
+                provider_used,
+                model_used,
+                model_calls,
+                tool_rounds,
+                estimated_tokens,
+                tool_errors,
+            ) = self._reason_with_optional_tools(
                 messages=messages,
                 agent=agent,
                 tool_events=tool_events,
@@ -215,8 +244,11 @@ class TaskExecutor:
                 checkpoint=checkpoint,
                 model_calls=model_calls,
                 tool_rounds=tool_rounds,
+                tool_errors=tool_errors,
+                estimated_tokens=estimated_tokens,
                 started=started,
                 run_deadline_monotonic=run_deadline_monotonic,
+                run_budget=run_budget_limits,
             )
             self._emit_checkpoint(
                 checkpoint,
@@ -236,6 +268,8 @@ class TaskExecutor:
                 plan=plan,
                 model_calls=model_calls,
                 tool_rounds=tool_rounds,
+                tool_errors=tool_errors,
+                estimated_tokens=estimated_tokens,
                 response_text=response_text,
                 provider_used=provider_used,
                 model_used=model_used,
@@ -256,7 +290,15 @@ class TaskExecutor:
                     step=STEP_REASONING,
                     message="Checkpoint missing reasoning payload, recomputing reasoning.",
                 )
-                response_text, provider_used, model_used, model_calls, tool_rounds = self._reason_with_optional_tools(
+                (
+                    response_text,
+                    provider_used,
+                    model_used,
+                    model_calls,
+                    tool_rounds,
+                    estimated_tokens,
+                    tool_errors,
+                ) = self._reason_with_optional_tools(
                     messages=messages,
                     agent=agent,
                     tool_events=tool_events,
@@ -265,8 +307,11 @@ class TaskExecutor:
                     checkpoint=checkpoint,
                     model_calls=model_calls,
                     tool_rounds=tool_rounds,
+                    tool_errors=tool_errors,
+                    estimated_tokens=estimated_tokens,
                     started=started,
                     run_deadline_monotonic=run_deadline_monotonic,
+                    run_budget=run_budget_limits,
                 )
             self._emit_checkpoint(
                 checkpoint,
@@ -277,7 +322,7 @@ class TaskExecutor:
                 tool_rounds=tool_rounds,
             )
 
-        response_text, provider_used, model_used, model_calls = self._verify_and_repair_response(
+        response_text, provider_used, model_used, model_calls, estimated_tokens = self._verify_and_repair_response(
             messages=messages,
             agent=agent,
             session_id=session_id,
@@ -287,8 +332,10 @@ class TaskExecutor:
             tool_events=tool_events,
             checkpoint=checkpoint,
             model_calls=model_calls,
+            estimated_tokens=estimated_tokens,
             started=started,
             run_deadline_monotonic=run_deadline_monotonic,
+            run_budget=run_budget_limits,
         )
 
         if STEP_PERSIST not in completed_steps:
@@ -315,6 +362,8 @@ class TaskExecutor:
                 plan=plan,
                 model_calls=model_calls,
                 tool_rounds=tool_rounds,
+                tool_errors=tool_errors,
+                estimated_tokens=estimated_tokens,
                 response_text=response_text,
                 provider_used=provider_used,
                 model_used=model_used,
@@ -355,6 +404,11 @@ class TaskExecutor:
             "metrics": {
                 "model_calls": model_calls,
                 "tool_rounds": tool_rounds,
+                "tool_calls": tool_rounds,
+                "tool_errors": tool_errors,
+                "estimated_tokens": estimated_tokens,
+                "attempt_count": 1,
+                "total_attempt_duration_ms": duration_ms,
                 "duration_ms": duration_ms,
             },
         }
@@ -395,9 +449,12 @@ class TaskExecutor:
         checkpoint: CheckpointWriter | None = None,
         model_calls: int = 0,
         tool_rounds: int = 0,
+        tool_errors: int = 0,
+        estimated_tokens: int = 0,
         started: float | None = None,
         run_deadline_monotonic: float | None = None,
-    ) -> tuple[str, str, str, int, int]:
+        run_budget: dict[str, Any] | None = None,
+    ) -> tuple[str, str, str, int, int, int, int]:
         allowed_tools = [name for name in agent.tools if self.tool_registry.get(name) is not None]
 
         reasoning_messages = list(messages)
@@ -411,11 +468,13 @@ class TaskExecutor:
         self._check_prompt_size(reasoning_messages)
         self._check_runtime(started=started, run_deadline_monotonic=run_deadline_monotonic)
 
-        first, model_calls = self._chat_with_limits(
+        first, model_calls, estimated_tokens, usage = self._chat_with_limits(
             messages=reasoning_messages,
             model=agent.model,
             session_id=session_id,
             model_calls=model_calls,
+            estimated_tokens=estimated_tokens,
+            max_tokens_budget=self._budget_limit_int(run_budget, "max_tokens"),
             started=started,
             run_deadline_monotonic=run_deadline_monotonic,
         )
@@ -431,10 +490,14 @@ class TaskExecutor:
             model=model_used,
             preview=response_text[:240],
             model_calls=model_calls,
+            estimated_tokens_total=estimated_tokens,
+            estimated_tokens_delta=usage["delta_tokens_est"],
+            estimated_prompt_tokens=usage["prompt_tokens_est"],
+            estimated_completion_tokens=usage["completion_tokens_est"],
         )
 
         if not allowed_tools:
-            return response_text, provider_used, model_used, model_calls, tool_rounds
+            return response_text, provider_used, model_used, model_calls, tool_rounds, estimated_tokens, tool_errors
 
         for attempt in range(1, self.max_tool_rounds + 1):
             self._check_runtime(started=started, run_deadline_monotonic=run_deadline_monotonic)
@@ -447,6 +510,12 @@ class TaskExecutor:
                     attempt=attempt,
                 )
                 break
+
+            max_tool_calls_budget = self._budget_limit_int(run_budget, "max_tool_calls")
+            if max_tool_calls_budget is not None and (tool_rounds + 1) > max_tool_calls_budget:
+                raise TaskBudgetError(
+                    f"Run tool-call budget exceeded ({tool_rounds + 1} > {max_tool_calls_budget})."
+                )
 
             tool_rounds += 1
             tool_name = str(parsed["name"])
@@ -469,6 +538,7 @@ class TaskExecutor:
             if tool_name not in allowed_tools:
                 event["status"] = "blocked"
                 event["error"] = "Tool is not allowed for this agent"
+                tool_errors += 1
                 tool_events.append(event)
                 self._emit_checkpoint(
                     checkpoint,
@@ -476,6 +546,12 @@ class TaskExecutor:
                     message=f"Tool is not allowed: {tool_name}",
                     tool=tool_name,
                     attempt=attempt,
+                    estimated_tokens_total=estimated_tokens,
+                    tool_errors=tool_errors,
+                )
+                self._enforce_tool_error_budget(
+                    tool_errors=tool_errors,
+                    max_tool_errors_budget=self._budget_limit_int(run_budget, "max_tool_errors"),
                 )
                 break
 
@@ -489,6 +565,7 @@ class TaskExecutor:
                 event["status"] = "invalid_arguments"
                 event["error"] = validation_error
                 event["duration_ms"] = 0.0
+                tool_errors += 1
                 tool_events.append(event)
                 self._emit_checkpoint(
                     checkpoint,
@@ -497,6 +574,11 @@ class TaskExecutor:
                     tool=tool_name,
                     attempt=attempt,
                     error=validation_error,
+                    tool_errors=tool_errors,
+                )
+                self._enforce_tool_error_budget(
+                    tool_errors=tool_errors,
+                    max_tool_errors_budget=self._budget_limit_int(run_budget, "max_tool_errors"),
                 )
 
                 reasoning_messages.append({"role": "assistant", "content": response_text})
@@ -515,11 +597,13 @@ class TaskExecutor:
                 )
                 self._check_prompt_size(reasoning_messages)
 
-                followup, model_calls = self._chat_with_limits(
+                followup, model_calls, estimated_tokens, usage = self._chat_with_limits(
                     messages=reasoning_messages,
                     model=agent.model,
                     session_id=session_id,
                     model_calls=model_calls,
+                    estimated_tokens=estimated_tokens,
+                    max_tokens_budget=self._budget_limit_int(run_budget, "max_tokens"),
                     started=started,
                     run_deadline_monotonic=run_deadline_monotonic,
                 )
@@ -535,6 +619,10 @@ class TaskExecutor:
                     attempt=attempt,
                     preview=response_text[:240],
                     model_calls=model_calls,
+                    estimated_tokens_total=estimated_tokens,
+                    estimated_tokens_delta=usage["delta_tokens_est"],
+                    estimated_prompt_tokens=usage["prompt_tokens_est"],
+                    estimated_completion_tokens=usage["completion_tokens_est"],
                 )
                 continue
 
@@ -566,6 +654,7 @@ class TaskExecutor:
                 event["status"] = "permission_required"
                 event["error"] = str(exc)
                 event["permission_prompt_id"] = exc.prompt_id
+                tool_errors += 1
                 self._emit_checkpoint(
                     checkpoint,
                     stage="tool_call_permission_required",
@@ -573,6 +662,7 @@ class TaskExecutor:
                     tool=tool_name,
                     attempt=attempt,
                     permission_prompt_id=exc.prompt_id,
+                    tool_errors=tool_errors,
                 )
             except ToolExecutionError as exc:
                 tool_result = {
@@ -581,6 +671,7 @@ class TaskExecutor:
                 }
                 event["status"] = "failed"
                 event["error"] = str(exc)
+                tool_errors += 1
                 self._emit_checkpoint(
                     checkpoint,
                     stage="tool_call_failed",
@@ -588,10 +679,21 @@ class TaskExecutor:
                     tool=tool_name,
                     attempt=attempt,
                     error=str(exc),
+                    tool_errors=tool_errors,
                 )
 
             event["duration_ms"] = round((time.perf_counter() - started_at) * 1000.0, 2)
             tool_events.append(event)
+            if str(event.get("status", "")).strip().lower() in {
+                "failed",
+                "invalid_arguments",
+                "blocked",
+                "permission_required",
+            }:
+                self._enforce_tool_error_budget(
+                    tool_errors=tool_errors,
+                    max_tool_errors_budget=self._budget_limit_int(run_budget, "max_tool_errors"),
+                )
             self._emit_checkpoint(
                 checkpoint,
                 stage="tool_call_finished",
@@ -600,6 +702,8 @@ class TaskExecutor:
                 attempt=attempt,
                 status=event.get("status"),
                 duration_ms=event["duration_ms"],
+                tool_errors=tool_errors,
+                estimated_tokens_total=estimated_tokens,
             )
 
             reasoning_messages.append({"role": "assistant", "content": response_text})
@@ -618,11 +722,13 @@ class TaskExecutor:
             )
             self._check_prompt_size(reasoning_messages)
 
-            followup, model_calls = self._chat_with_limits(
+            followup, model_calls, estimated_tokens, usage = self._chat_with_limits(
                 messages=reasoning_messages,
                 model=agent.model,
                 session_id=session_id,
                 model_calls=model_calls,
+                estimated_tokens=estimated_tokens,
+                max_tokens_budget=self._budget_limit_int(run_budget, "max_tokens"),
                 started=started,
                 run_deadline_monotonic=run_deadline_monotonic,
             )
@@ -638,6 +744,10 @@ class TaskExecutor:
                 attempt=attempt,
                 preview=response_text[:240],
                 model_calls=model_calls,
+                estimated_tokens_total=estimated_tokens,
+                estimated_tokens_delta=usage["delta_tokens_est"],
+                estimated_prompt_tokens=usage["prompt_tokens_est"],
+                estimated_completion_tokens=usage["completion_tokens_est"],
             )
 
         if self.tool_executor.parse_tool_call(response_text):
@@ -645,7 +755,15 @@ class TaskExecutor:
                 f"Tool round limit exceeded (max={self.max_tool_rounds})."
             )
 
-        return response_text, provider_used, model_used, model_calls, tool_rounds
+        return (
+            response_text,
+            provider_used,
+            model_used,
+            model_calls,
+            tool_rounds,
+            estimated_tokens,
+            tool_errors,
+        )
 
     def _verify_and_repair_response(
         self,
@@ -659,11 +777,13 @@ class TaskExecutor:
         tool_events: list[dict[str, Any]],
         checkpoint: CheckpointWriter | None,
         model_calls: int,
+        estimated_tokens: int,
         started: float | None,
         run_deadline_monotonic: float | None,
-    ) -> tuple[str, str, str, int]:
+        run_budget: dict[str, Any] | None,
+    ) -> tuple[str, str, str, int, int]:
         if not self.verifier_enabled:
-            return response_text, provider_used, model_used, model_calls
+            return response_text, provider_used, model_used, model_calls, estimated_tokens
 
         issues = self._collect_verification_issues(response_text=response_text, tool_events=tool_events)
         self._emit_checkpoint(
@@ -679,7 +799,7 @@ class TaskExecutor:
                 stage="verification_passed",
                 message="Response verification passed.",
             )
-            return response_text, provider_used, model_used, model_calls
+            return response_text, provider_used, model_used, model_calls, estimated_tokens
 
         repaired_text = response_text
         repaired_provider = provider_used
@@ -703,11 +823,13 @@ class TaskExecutor:
             verify_messages.append({"role": "system", "content": verification_prompt})
             self._check_prompt_size(verify_messages)
 
-            followup, model_calls = self._chat_with_limits(
+            followup, model_calls, estimated_tokens, usage = self._chat_with_limits(
                 messages=verify_messages,
                 model=agent.model,
                 session_id=session_id,
                 model_calls=model_calls,
+                estimated_tokens=estimated_tokens,
+                max_tokens_budget=self._budget_limit_int(run_budget, "max_tokens"),
                 started=started,
                 run_deadline_monotonic=run_deadline_monotonic,
             )
@@ -726,6 +848,8 @@ class TaskExecutor:
                 issues_after=remaining_issues,
                 model_calls=model_calls,
                 preview=repaired_text[:240],
+                estimated_tokens_total=estimated_tokens,
+                estimated_tokens_delta=usage["delta_tokens_est"],
             )
             if not remaining_issues:
                 self._emit_checkpoint(
@@ -734,7 +858,7 @@ class TaskExecutor:
                     message="Verification repair succeeded.",
                     attempt=attempt,
                 )
-                return repaired_text, repaired_provider, repaired_model, model_calls
+                return repaired_text, repaired_provider, repaired_model, model_calls, estimated_tokens
 
         critical = {"response_empty", "unfinished_tool_call"}
         critical_issues = [item for item in remaining_issues if item in critical]
@@ -750,7 +874,7 @@ class TaskExecutor:
             issues=remaining_issues,
             issues_count=len(remaining_issues),
         )
-        return repaired_text, repaired_provider, repaired_model, model_calls
+        return repaired_text, repaired_provider, repaired_model, model_calls, estimated_tokens
 
     def _collect_verification_issues(
         self,
@@ -852,17 +976,24 @@ class TaskExecutor:
         model: str | None,
         session_id: str | None,
         model_calls: int,
+        estimated_tokens: int,
+        max_tokens_budget: int | None,
         started: float | None,
         run_deadline_monotonic: float | None,
-    ) -> tuple[dict[str, Any], int]:
+    ) -> tuple[dict[str, Any], int, int, dict[str, int]]:
         if model_calls >= self.max_model_calls:
             raise TaskGuardrailError(
                 f"Model call limit exceeded (max={self.max_model_calls})."
+            )
+        if max_tokens_budget is not None and estimated_tokens >= max_tokens_budget:
+            raise TaskBudgetError(
+                f"Run token budget exceeded ({estimated_tokens} >= {max_tokens_budget})."
             )
 
         self._check_runtime(started=started, run_deadline_monotonic=run_deadline_monotonic)
         self._check_prompt_size(messages)
 
+        prompt_tokens_est = self._estimate_prompt_tokens(messages)
         call_started = time.monotonic()
         response = self.model_manager.chat(
             messages=messages,
@@ -870,6 +1001,13 @@ class TaskExecutor:
             session_id=session_id,
         )
         model_calls += 1
+        completion_tokens_est = self._estimate_text_tokens(str(response.get("content", "")))
+        delta_tokens_est = max(0, prompt_tokens_est + completion_tokens_est)
+        estimated_tokens_total = max(0, int(estimated_tokens)) + delta_tokens_est
+        if max_tokens_budget is not None and estimated_tokens_total > max_tokens_budget:
+            raise TaskBudgetError(
+                f"Run token budget exceeded ({estimated_tokens_total} > {max_tokens_budget})."
+            )
 
         if (time.monotonic() - call_started) > self.max_duration_sec:
             raise TaskTimeoutError(
@@ -877,7 +1015,13 @@ class TaskExecutor:
             )
 
         self._check_runtime(started=started, run_deadline_monotonic=run_deadline_monotonic)
-        return response, model_calls
+        usage = {
+            "prompt_tokens_est": prompt_tokens_est,
+            "completion_tokens_est": completion_tokens_est,
+            "delta_tokens_est": delta_tokens_est,
+            "total_tokens_est": estimated_tokens_total,
+        }
+        return response, model_calls, estimated_tokens_total, usage
 
     def _check_runtime(
         self,
@@ -917,6 +1061,65 @@ class TaskExecutor:
                 total += len(str(content))
         return total
 
+    @classmethod
+    def _estimate_prompt_tokens(cls, messages: list[dict[str, Any]]) -> int:
+        return cls._estimate_text_tokens_from_chars(cls._estimate_prompt_chars(messages))
+
+    @classmethod
+    def _estimate_text_tokens(cls, text: str) -> int:
+        return cls._estimate_text_tokens_from_chars(len(text or ""))
+
+    @staticmethod
+    def _estimate_text_tokens_from_chars(char_count: int) -> int:
+        safe_chars = max(0, int(char_count))
+        if safe_chars == 0:
+            return 0
+        return max(1, (safe_chars + 3) // 4)
+
+    @staticmethod
+    def _normalize_run_budget(run_budget: dict[str, Any] | None) -> dict[str, Any]:
+        if not isinstance(run_budget, dict):
+            return {
+                "max_tokens": None,
+                "max_duration_sec": None,
+                "max_tool_calls": None,
+                "max_tool_errors": None,
+                "used_tokens": 0,
+                "used_tool_calls": 0,
+                "used_tool_errors": 0,
+            }
+        return {
+            "max_tokens": TaskExecutor._safe_int_or_none(run_budget.get("max_tokens")),
+            "max_duration_sec": TaskExecutor._safe_float_or_none(run_budget.get("max_duration_sec")),
+            "max_tool_calls": TaskExecutor._safe_int_or_none(run_budget.get("max_tool_calls")),
+            "max_tool_errors": TaskExecutor._safe_int_or_none(run_budget.get("max_tool_errors")),
+            "used_tokens": max(0, TaskExecutor._safe_int_or_none(run_budget.get("used_tokens")) or 0),
+            "used_tool_calls": max(0, TaskExecutor._safe_int_or_none(run_budget.get("used_tool_calls")) or 0),
+            "used_tool_errors": max(0, TaskExecutor._safe_int_or_none(run_budget.get("used_tool_errors")) or 0),
+        }
+
+    @staticmethod
+    def _budget_limit_int(run_budget: dict[str, Any] | None, key: str) -> int | None:
+        if not isinstance(run_budget, dict):
+            return None
+        value = run_budget.get(key)
+        if value is None:
+            return None
+        try:
+            parsed = int(value)
+        except Exception:
+            return None
+        return parsed if parsed >= 0 else None
+
+    @staticmethod
+    def _enforce_tool_error_budget(*, tool_errors: int, max_tool_errors_budget: int | None) -> None:
+        if max_tool_errors_budget is None:
+            return
+        if tool_errors > max_tool_errors_budget:
+            raise TaskBudgetError(
+                f"Run tool-error budget exceeded ({tool_errors} > {max_tool_errors_budget})."
+            )
+
     @staticmethod
     def _render_memory_note(memory_context: dict[str, Any], session_id: str | None) -> str:
         user_profile = memory_context.get("user", {})
@@ -952,6 +1155,8 @@ class TaskExecutor:
             "plan",
             "model_calls",
             "tool_rounds",
+            "tool_errors",
+            "estimated_tokens",
             "response_text",
             "provider",
             "model",
@@ -969,6 +1174,8 @@ class TaskExecutor:
         plan: list[dict[str, Any]],
         model_calls: int,
         tool_rounds: int,
+        tool_errors: int,
+        estimated_tokens: int,
         response_text: str,
         provider_used: str,
         model_used: str,
@@ -981,6 +1188,8 @@ class TaskExecutor:
             "plan": plan,
             "model_calls": max(0, int(model_calls)),
             "tool_rounds": max(0, int(tool_rounds)),
+            "tool_errors": max(0, int(tool_errors)),
+            "estimated_tokens": max(0, int(estimated_tokens)),
             "response_text": response_text,
             "provider": provider_used,
             "model": model_used,
@@ -1006,3 +1215,21 @@ class TaskExecutor:
             checkpoint(payload)
         except Exception:
             return
+
+    @staticmethod
+    def _safe_int_or_none(value: Any) -> int | None:
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _safe_float_or_none(value: Any) -> float | None:
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except Exception:
+            return None
