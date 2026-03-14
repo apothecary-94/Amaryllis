@@ -706,6 +706,11 @@ Run status values:
 
 Implemented now:
 - authN/authZ middleware on all non-public routes
+- fail-fast production config guard (runtime startup is rejected if:
+  - `AMARYLLIS_AUTH_ENABLED=false`
+  - auth tokens are empty
+  - `AMARYLLIS_TOOL_APPROVAL_ENFORCEMENT!=strict`
+  - `AMARYLLIS_PLUGIN_SIGNING_MODE!=strict`)
 - request scope enforcement:
   - `/security/*` and `/debug/*` -> `admin`
   - `/service/*` -> `service` or `admin`
@@ -954,6 +959,18 @@ Run unit tests (memory + work mode + tools/MCP + automation):
 ```bash
 python3 -m unittest discover -s tests -p "test_*.py" -v
 ```
+
+## Security CI Gate
+
+GitHub Actions workflow:
+- `.github/workflows/security-gate.yml`
+
+Release/pull-request gate is blocking and includes:
+- mandatory security suite (`auth/authz`, security config, signing/enforcement tests)
+- policy gate (`scripts/security/policy_check.py`) that rejects insecure production config
+- SAST (`bandit`) at high severity/high confidence
+- dependency vulnerability audit (`pip-audit`)
+- SBOM generation (`CycloneDX`)
 
 ## Notes on MLX and Ollama
 

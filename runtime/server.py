@@ -347,18 +347,26 @@ def create_app() -> FastAPI:
         request.state.request_id = request_id
         path = request.url.path
 
-        is_public = path == "/health"
-        if not is_public:
-            auth_context = services.auth_manager.authenticate_request(request)
-            request.state.auth_context = auth_context
-            if path.startswith("/security/") or path.startswith("/debug/"):
-                if not auth_context.is_admin:
-                    raise PermissionDeniedError("Admin scope is required")
-            elif path.startswith("/service/"):
-                if not auth_context.has_any_scope("service", "admin"):
-                    raise PermissionDeniedError("Service scope is required")
-            elif not auth_context.has_any_scope("user", "admin"):
-                raise PermissionDeniedError("User scope is required")
+        try:
+            is_public = path == "/health"
+            if not is_public:
+                auth_context = services.auth_manager.authenticate_request(request)
+                request.state.auth_context = auth_context
+                if path.startswith("/security/") or path.startswith("/debug/"):
+                    if not auth_context.is_admin:
+                        raise PermissionDeniedError("Admin scope is required")
+                elif path.startswith("/service/"):
+                    if not auth_context.has_any_scope("service", "admin"):
+                        raise PermissionDeniedError("Service scope is required")
+                elif not auth_context.has_any_scope("user", "admin"):
+                    raise PermissionDeniedError("User scope is required")
+        except AmaryllisError as exc:
+            return error_response(
+                request,
+                status_code=exc.status_code,
+                error_type=exc.error_type,
+                message=exc.message,
+            )
 
         start = time.perf_counter()
         services.telemetry.emit(
@@ -376,7 +384,24 @@ def create_app() -> FastAPI:
             path,
         )
 
-        response = await call_next(request)
+        try:
+            response = await call_next(request)
+        except AmaryllisError as exc:
+            return error_response(
+                request,
+                status_code=exc.status_code,
+                error_type=exc.error_type,
+                message=exc.message,
+            )
+        except Exception as exc:
+            logger.exception("unhandled_exception path=%s error=%s", request.url.path, exc)
+            internal = InternalError()
+            return error_response(
+                request,
+                status_code=internal.status_code,
+                error_type=internal.error_type,
+                message=internal.message,
+            )
 
         duration_ms = round((time.perf_counter() - start) * 1000.0, 2)
         response.headers["X-Request-ID"] = request_id

@@ -6,6 +6,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+class AppConfigError(ValueError):
+    pass
+
+
 @dataclass(frozen=True)
 class AuthTokenConfig:
     token: str
@@ -205,9 +209,6 @@ class AppConfig:
         ).strip().lower()
         if plugin_signing_mode not in {"off", "warn", "strict"}:
             plugin_signing_mode = "strict"
-        if security_profile == "production" and not security_allow_insecure_modes:
-            tool_approval_enforcement = "strict"
-            plugin_signing_mode = "strict"
         auth_enabled = _parse_bool(os.getenv("AMARYLLIS_AUTH_ENABLED", "true"))
         auth_tokens = tuple(
             _parse_auth_tokens(
@@ -215,8 +216,7 @@ class AppConfig:
                 single_token=os.getenv("AMARYLLIS_API_TOKEN", ""),
             )
         )
-
-        return cls(
+        config = cls(
             app_name="Amaryllis",
             host=os.getenv("AMARYLLIS_HOST", "localhost"),
             port=int(os.getenv("AMARYLLIS_PORT", "8000")),
@@ -396,6 +396,8 @@ class AppConfig:
             mcp_quarantine_sec=max(1.0, float(os.getenv("AMARYLLIS_MCP_QUARANTINE_SEC", "60"))),
             identity_path=identity_path,
         )
+        config._validate_security_configuration()
+        return config
 
     def ensure_directories(self) -> None:
         self.support_dir.mkdir(parents=True, exist_ok=True)
@@ -403,6 +405,23 @@ class AppConfig:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.plugins_dir.mkdir(parents=True, exist_ok=True)
         self.identity_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _validate_security_configuration(self) -> None:
+        if self.security_profile != "production":
+            return
+        errors: list[str] = []
+        if self.security_allow_insecure_modes:
+            errors.append("AMARYLLIS_ALLOW_INSECURE_SECURITY_MODES must be false in production")
+        if not self.auth_enabled:
+            errors.append("AMARYLLIS_AUTH_ENABLED must be true in production")
+        if not self.auth_tokens:
+            errors.append("At least one auth token must be configured in production")
+        if self.tool_approval_enforcement != "strict":
+            errors.append("AMARYLLIS_TOOL_APPROVAL_ENFORCEMENT must be strict in production")
+        if self.plugin_signing_mode != "strict":
+            errors.append("AMARYLLIS_PLUGIN_SIGNING_MODE must be strict in production")
+        if errors:
+            raise AppConfigError("Invalid production security configuration: " + "; ".join(errors))
 
 
 def _csv_items(value: str) -> list[str]:

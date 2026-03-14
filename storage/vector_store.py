@@ -123,7 +123,7 @@ class VectorStore:
             return vec
 
         for token in tokens:
-            digest = hashlib.sha1(token.encode("utf-8")).hexdigest()
+            digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
             idx = int(digest, 16) % self.dimension
             vec[idx] += 1.0
 

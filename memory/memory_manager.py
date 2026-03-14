@@ -926,4 +926,4 @@ class MemoryManager:
 
     @staticmethod
     def _fingerprint(text: str) -> str:
-        return hashlib.sha1(text.strip().lower().encode("utf-8")).hexdigest()
+        return hashlib.sha256(text.strip().lower().encode("utf-8")).hexdigest()

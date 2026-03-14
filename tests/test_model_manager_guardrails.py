@@ -72,6 +72,7 @@ class ModelManagerGuardrailsTests(unittest.TestCase):
         os.environ["AMARYLLIS_CLOUD_RATE_MAX_REQUESTS"] = "2"
         os.environ["AMARYLLIS_CLOUD_BUDGET_WINDOW_SEC"] = "3600"
         os.environ["AMARYLLIS_CLOUD_BUDGET_MAX_UNITS"] = "1000"
+        os.environ["AMARYLLIS_AUTH_TOKENS"] = "token-1:user-1:user"
 
         self.config = AppConfig.from_env()
         self.config.ensure_directories()

@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from runtime.config import AppConfig
+from runtime.config import AppConfig, AppConfigError
 
 
 class ConfigSecurityDefaultsTests(unittest.TestCase):
@@ -46,7 +46,7 @@ class ConfigSecurityDefaultsTests(unittest.TestCase):
         self.assertEqual(config.tool_approval_enforcement, "strict")
         self.assertEqual(config.plugin_signing_mode, "strict")
 
-    def test_production_profile_forces_strict_even_when_env_requests_unsafe_modes(self) -> None:
+    def test_production_profile_rejects_non_strict_security_modes(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amaryllis-config-tests-") as tmp:
             support_dir = Path(tmp) / "support"
             with patch.dict(
@@ -60,11 +60,60 @@ class ConfigSecurityDefaultsTests(unittest.TestCase):
                 },
                 clear=True,
             ):
-                config = AppConfig.from_env()
+                with self.assertRaisesRegex(AppConfigError, "production security configuration"):
+                    AppConfig.from_env()
 
-        self.assertEqual(config.security_profile, "production")
-        self.assertEqual(config.tool_approval_enforcement, "strict")
-        self.assertEqual(config.plugin_signing_mode, "strict")
+    def test_production_profile_rejects_disabled_auth(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amaryllis-config-tests-") as tmp:
+            support_dir = Path(tmp) / "support"
+            with patch.dict(
+                os.environ,
+                {
+                    "AMARYLLIS_SUPPORT_DIR": str(support_dir),
+                    "AMARYLLIS_SECURITY_PROFILE": "production",
+                    "AMARYLLIS_AUTH_ENABLED": "false",
+                    "AMARYLLIS_AUTH_TOKENS": "token-1:user-1:user",
+                },
+                clear=True,
+            ):
+                with self.assertRaisesRegex(AppConfigError, "AMARYLLIS_AUTH_ENABLED must be true"):
+                    AppConfig.from_env()
+
+    def test_production_profile_rejects_empty_auth_tokens(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amaryllis-config-tests-") as tmp:
+            support_dir = Path(tmp) / "support"
+            with patch.dict(
+                os.environ,
+                {
+                    "AMARYLLIS_SUPPORT_DIR": str(support_dir),
+                    "AMARYLLIS_SECURITY_PROFILE": "production",
+                    "AMARYLLIS_AUTH_ENABLED": "true",
+                    "AMARYLLIS_AUTH_TOKENS": "",
+                    "AMARYLLIS_API_TOKEN": "",
+                },
+                clear=True,
+            ):
+                with self.assertRaisesRegex(AppConfigError, "At least one auth token"):
+                    AppConfig.from_env()
+
+    def test_production_profile_rejects_allow_insecure_modes_flag(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amaryllis-config-tests-") as tmp:
+            support_dir = Path(tmp) / "support"
+            with patch.dict(
+                os.environ,
+                {
+                    "AMARYLLIS_SUPPORT_DIR": str(support_dir),
+                    "AMARYLLIS_SECURITY_PROFILE": "production",
+                    "AMARYLLIS_ALLOW_INSECURE_SECURITY_MODES": "true",
+                    "AMARYLLIS_AUTH_TOKENS": "token-1:user-1:user",
+                },
+                clear=True,
+            ):
+                with self.assertRaisesRegex(
+                    AppConfigError,
+                    "AMARYLLIS_ALLOW_INSECURE_SECURITY_MODES must be false",
+                ):
+                    AppConfig.from_env()
 
     def test_development_profile_can_keep_non_strict_modes(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amaryllis-config-tests-") as tmp:

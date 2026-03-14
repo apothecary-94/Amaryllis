@@ -194,6 +194,7 @@ class ModelFailoverTests(unittest.TestCase):
         os.environ["AMARYLLIS_DEFAULT_MODEL"] = "mlx-community/Qwen2.5-1.5B-Instruct-4bit"
         os.environ["AMARYLLIS_OPENAI_API_KEY"] = "test-key"
         os.environ["AMARYLLIS_PROVIDER_RETRY_ATTEMPTS"] = "1"
+        os.environ["AMARYLLIS_AUTH_TOKENS"] = "token-1:user-1:user"
 
         self.config = AppConfig.from_env()
         self.config.ensure_directories()
