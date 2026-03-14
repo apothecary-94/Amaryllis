@@ -338,6 +338,117 @@ class TaskExecutorTests(unittest.TestCase):
         self.assertEqual(tools[0]["status"], "invalid_arguments")
         self.assertIn("count", str(tools[0].get("error", "")))
 
+    def test_tool_call_is_reused_from_resume_cache(self) -> None:
+        call_counter = {"count": 0}
+
+        def _handler(args: dict[str, Any]) -> dict[str, Any]:
+            call_counter["count"] += 1
+            return {"ok": True, "args": args}
+
+        registry = ToolRegistry()
+        registry.register(
+            name="echo_tool",
+            description="Echo args",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string"},
+                },
+                "required": ["text"],
+                "additionalProperties": False,
+            },
+            handler=_handler,
+        )
+
+        model_manager = _FakeModelManager(
+            responses=[
+                {
+                    "content": '<tool_call>{"name":"echo_tool","arguments":{"text":"hello"}}</tool_call>',
+                    "provider": "fake",
+                    "model": "fake-model",
+                },
+                {
+                    "content": "First final answer.",
+                    "provider": "fake",
+                    "model": "fake-model",
+                },
+                {
+                    "content": '<tool_call>{"name":"echo_tool","arguments":{"text":"hello"}}</tool_call>',
+                    "provider": "fake",
+                    "model": "fake-model",
+                },
+                {
+                    "content": "Second final answer (cache).",
+                    "provider": "fake",
+                    "model": "fake-model",
+                },
+            ]
+        )
+        memory_manager = _FakeMemoryManager()
+        executor = TaskExecutor(
+            model_manager=model_manager,  # type: ignore[arg-type]
+            memory_manager=memory_manager,  # type: ignore[arg-type]
+            tool_registry=registry,
+            tool_executor=ToolExecutor(registry),
+            meta_controller=MetaController(),
+            planner=Planner(),
+            max_model_calls=6,
+            verifier_enabled=False,
+        )
+        agent = Agent.create(
+            name="Reuse Agent",
+            system_prompt="Use tools if needed.",
+            model="fake-model",
+            tools=["echo_tool"],
+            user_id="user-1",
+        )
+
+        first_checkpoints: list[dict[str, Any]] = []
+        first_result = executor.execute(
+            agent=agent,
+            user_id="user-1",
+            session_id="session-reuse",
+            user_message="Use tool once",
+            checkpoint=lambda payload: first_checkpoints.append(dict(payload)),
+        )
+        self.assertEqual(first_result["response"], "First final answer.")
+        self.assertEqual(call_counter["count"], 1)
+
+        latest_resume_state: dict[str, Any] | None = None
+        for item in first_checkpoints:
+            if item.get("stage") != "step_completed":
+                continue
+            state = item.get("resume_state")
+            if isinstance(state, dict):
+                latest_resume_state = dict(state)
+        self.assertIsNotNone(latest_resume_state)
+        assert isinstance(latest_resume_state, dict)
+        self.assertIsInstance(latest_resume_state.get("tool_call_cache"), dict)
+
+        resumed_state = dict(latest_resume_state)
+        resumed_state["completed_steps"] = ["prepare_context"]
+        resumed_state["response_text"] = ""
+        resumed_state["provider"] = ""
+        resumed_state["model"] = ""
+        resumed_state["tool_events"] = []
+        resumed_state["model_calls"] = 0
+        resumed_state["tool_rounds"] = 0
+        resumed_state["tool_errors"] = 0
+        resumed_state["estimated_tokens"] = 0
+
+        second_checkpoints: list[dict[str, Any]] = []
+        second_result = executor.execute(
+            agent=agent,
+            user_id="user-1",
+            session_id="session-reuse",
+            user_message="Use tool once",
+            checkpoint=lambda payload: second_checkpoints.append(dict(payload)),
+            resume_state=resumed_state,
+        )
+        self.assertEqual(second_result["response"], "Second final answer (cache).")
+        self.assertEqual(call_counter["count"], 1)
+        self.assertTrue(any(item.get("stage") == "tool_call_reused" for item in second_checkpoints))
+
     def test_plan_issues_execute_in_parallel_when_independent(self) -> None:
         model_manager = _FakeModelManager(
             responses=[

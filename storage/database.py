@@ -863,8 +863,17 @@ class Database:
             )
             self._conn.commit()
 
-    def append_agent_run_checkpoint(self, run_id: str, checkpoint: dict[str, Any]) -> None:
+    def append_agent_run_checkpoint(
+        self,
+        run_id: str,
+        checkpoint: dict[str, Any],
+        *,
+        issue_update: dict[str, Any] | None = None,
+        issue_artifact: dict[str, Any] | None = None,
+        tool_call_record: dict[str, Any] | None = None,
+    ) -> None:
         with self._lock:
+            now = self._utc_now()
             row = self._conn.execute(
                 "SELECT checkpoints_json FROM agent_runs WHERE id = ?",
                 (run_id,),
@@ -880,20 +889,24 @@ class Database:
             if not isinstance(checkpoints, list):
                 checkpoints = []
 
-            checkpoints.append(
-                {
-                    "timestamp": self._utc_now(),
-                    **checkpoint,
-                }
-            )
+            payload = dict(checkpoint)
+            payload.setdefault("timestamp", now)
+            checkpoints.append(payload)
             self._conn.execute(
                 """
                 UPDATE agent_runs
                 SET checkpoints_json = ?, updated_at = ?
                 WHERE id = ?
                 """,
-                (json.dumps(checkpoints, ensure_ascii=False), self._utc_now(), run_id),
+                (json.dumps(checkpoints, ensure_ascii=False), now, run_id),
             )
+
+            if isinstance(issue_update, dict):
+                self._upsert_agent_run_issue_no_commit(run_id=run_id, now=now, **issue_update)
+            if isinstance(issue_artifact, dict):
+                self._upsert_agent_run_issue_artifact_no_commit(run_id=run_id, now=now, **issue_artifact)
+            if isinstance(tool_call_record, dict):
+                self._upsert_agent_run_tool_call_no_commit(run_id=run_id, now=now, **tool_call_record)
             self._conn.commit()
 
     def get_agent_run(
@@ -959,7 +972,40 @@ class Database:
         started_at: str | None = None,
         finished_at: str | None = None,
     ) -> None:
-        now = self._utc_now()
+        with self._lock:
+            self._upsert_agent_run_issue_no_commit(
+                run_id=run_id,
+                issue_id=issue_id,
+                issue_order=issue_order,
+                title=title,
+                status=status,
+                depends_on=depends_on,
+                attempt_count=attempt_count,
+                last_error=last_error,
+                payload=payload,
+                started_at=started_at,
+                finished_at=finished_at,
+                now=self._utc_now(),
+            )
+            self._conn.commit()
+
+    def _upsert_agent_run_issue_no_commit(
+        self,
+        *,
+        run_id: str,
+        issue_id: str,
+        issue_order: int,
+        title: str,
+        status: str,
+        depends_on: list[str] | None = None,
+        attempt_count: int = 0,
+        last_error: str | None = None,
+        payload: dict[str, Any] | None = None,
+        started_at: str | None = None,
+        finished_at: str | None = None,
+        now: str | None = None,
+    ) -> None:
+        timestamp = now or self._utc_now()
         normalized_issue_order = max(0, int(issue_order))
         normalized_attempt_count = max(0, int(attempt_count))
         normalized_status = str(status or "planned").strip().lower() or "planned"
@@ -968,54 +1014,52 @@ class Database:
         normalized_title = str(title or issue_id).strip() or issue_id
         depends_on_json = json.dumps(depends_on or [], ensure_ascii=False)
         payload_json = json.dumps(payload or {}, ensure_ascii=False)
-        with self._lock:
-            self._conn.execute(
-                """
-                INSERT INTO agent_run_issues(
-                    run_id,
-                    issue_id,
-                    issue_order,
-                    title,
-                    status,
-                    depends_on_json,
-                    attempt_count,
-                    last_error,
-                    payload_json,
-                    created_at,
-                    updated_at,
-                    started_at,
-                    finished_at
-                )
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(run_id, issue_id) DO UPDATE SET
-                    issue_order=excluded.issue_order,
-                    title=excluded.title,
-                    status=excluded.status,
-                    depends_on_json=excluded.depends_on_json,
-                    attempt_count=excluded.attempt_count,
-                    last_error=excluded.last_error,
-                    payload_json=excluded.payload_json,
-                    updated_at=excluded.updated_at,
-                    started_at=excluded.started_at,
-                    finished_at=excluded.finished_at
-                """,
-                (
-                    run_id,
-                    issue_id,
-                    normalized_issue_order,
-                    normalized_title,
-                    normalized_status,
-                    depends_on_json,
-                    normalized_attempt_count,
-                    last_error,
-                    payload_json,
-                    now,
-                    now,
-                    started_at,
-                    finished_at,
-                ),
+        self._conn.execute(
+            """
+            INSERT INTO agent_run_issues(
+                run_id,
+                issue_id,
+                issue_order,
+                title,
+                status,
+                depends_on_json,
+                attempt_count,
+                last_error,
+                payload_json,
+                created_at,
+                updated_at,
+                started_at,
+                finished_at
             )
-            self._conn.commit()
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(run_id, issue_id) DO UPDATE SET
+                issue_order=excluded.issue_order,
+                title=excluded.title,
+                status=excluded.status,
+                depends_on_json=excluded.depends_on_json,
+                attempt_count=excluded.attempt_count,
+                last_error=excluded.last_error,
+                payload_json=excluded.payload_json,
+                updated_at=excluded.updated_at,
+                started_at=excluded.started_at,
+                finished_at=excluded.finished_at
+            """,
+            (
+                run_id,
+                issue_id,
+                normalized_issue_order,
+                normalized_title,
+                normalized_status,
+                depends_on_json,
+                normalized_attempt_count,
+                last_error,
+                payload_json,
+                timestamp,
+                timestamp,
+                started_at,
+                finished_at,
+            ),
+        )
 
     def get_agent_run_issue(self, *, run_id: str, issue_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -1081,36 +1125,53 @@ class Database:
         artifact_key: str,
         artifact: dict[str, Any] | None = None,
     ) -> None:
-        now = self._utc_now()
+        with self._lock:
+            self._upsert_agent_run_issue_artifact_no_commit(
+                run_id=run_id,
+                issue_id=issue_id,
+                artifact_key=artifact_key,
+                artifact=artifact,
+                now=self._utc_now(),
+            )
+            self._conn.commit()
+
+    def _upsert_agent_run_issue_artifact_no_commit(
+        self,
+        *,
+        run_id: str,
+        issue_id: str,
+        artifact_key: str,
+        artifact: dict[str, Any] | None = None,
+        now: str | None = None,
+    ) -> None:
+        timestamp = now or self._utc_now()
         normalized_issue_id = str(issue_id or "").strip() or "unknown"
         normalized_key = str(artifact_key or "").strip() or "result"
         artifact_json = json.dumps(artifact or {}, ensure_ascii=False)
-        with self._lock:
-            self._conn.execute(
-                """
-                INSERT INTO agent_run_issue_artifacts(
-                    run_id,
-                    issue_id,
-                    artifact_key,
-                    artifact_json,
-                    created_at,
-                    updated_at
-                )
-                VALUES(?, ?, ?, ?, ?, ?)
-                ON CONFLICT(run_id, issue_id, artifact_key) DO UPDATE SET
-                    artifact_json=excluded.artifact_json,
-                    updated_at=excluded.updated_at
-                """,
-                (
-                    run_id,
-                    normalized_issue_id,
-                    normalized_key,
-                    artifact_json,
-                    now,
-                    now,
-                ),
+        self._conn.execute(
+            """
+            INSERT INTO agent_run_issue_artifacts(
+                run_id,
+                issue_id,
+                artifact_key,
+                artifact_json,
+                created_at,
+                updated_at
             )
-            self._conn.commit()
+            VALUES(?, ?, ?, ?, ?, ?)
+            ON CONFLICT(run_id, issue_id, artifact_key) DO UPDATE SET
+                artifact_json=excluded.artifact_json,
+                updated_at=excluded.updated_at
+            """,
+            (
+                run_id,
+                normalized_issue_id,
+                normalized_key,
+                artifact_json,
+                timestamp,
+                timestamp,
+            ),
+        )
 
     def list_agent_run_issue_artifacts(
         self,
@@ -1157,6 +1218,186 @@ class Database:
                     (run_id, limit),
                 ).fetchall()
         return [self._decode_agent_run_issue_artifact_row(dict(row)) for row in rows]
+
+    def upsert_agent_run_tool_call(
+        self,
+        *,
+        run_id: str,
+        idempotency_key: str,
+        tool_name: str,
+        arguments: dict[str, Any] | None = None,
+        status: str,
+        result: dict[str, Any] | None = None,
+        error_message: str | None = None,
+        attempt: int = 0,
+    ) -> None:
+        with self._lock:
+            self._upsert_agent_run_tool_call_no_commit(
+                run_id=run_id,
+                idempotency_key=idempotency_key,
+                tool_name=tool_name,
+                arguments=arguments,
+                status=status,
+                result=result,
+                error_message=error_message,
+                attempt=attempt,
+                now=self._utc_now(),
+            )
+            self._conn.commit()
+
+    def _upsert_agent_run_tool_call_no_commit(
+        self,
+        *,
+        run_id: str,
+        idempotency_key: str,
+        tool_name: str,
+        arguments: dict[str, Any] | None = None,
+        status: str,
+        result: dict[str, Any] | None = None,
+        error_message: str | None = None,
+        attempt: int = 0,
+        now: str | None = None,
+    ) -> None:
+        timestamp = now or self._utc_now()
+        normalized_key = str(idempotency_key or "").strip()
+        if not normalized_key:
+            return
+        normalized_tool_name = str(tool_name or "").strip() or "unknown"
+        normalized_status = str(status or "unknown").strip().lower() or "unknown"
+        arguments_json = json.dumps(arguments or {}, ensure_ascii=False)
+        result_json = json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else None
+        normalized_attempt = max(0, int(attempt))
+        existing = self._conn.execute(
+            """
+            SELECT status FROM agent_run_tool_calls
+            WHERE run_id = ? AND idempotency_key = ?
+            """,
+            (run_id, normalized_key),
+        ).fetchone()
+        if existing is not None:
+            existing_status = str(existing["status"] or "").strip().lower()
+            if existing_status == "succeeded" and normalized_status != "succeeded":
+                return
+        self._conn.execute(
+            """
+            INSERT INTO agent_run_tool_calls(
+                run_id,
+                idempotency_key,
+                tool_name,
+                arguments_json,
+                status,
+                result_json,
+                error_message,
+                attempt,
+                created_at,
+                updated_at
+            )
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(run_id, idempotency_key) DO UPDATE SET
+                tool_name=excluded.tool_name,
+                arguments_json=excluded.arguments_json,
+                status=excluded.status,
+                result_json=excluded.result_json,
+                error_message=excluded.error_message,
+                attempt=excluded.attempt,
+                updated_at=excluded.updated_at
+            """,
+            (
+                run_id,
+                normalized_key,
+                normalized_tool_name,
+                arguments_json,
+                normalized_status,
+                result_json,
+                error_message,
+                normalized_attempt,
+                timestamp,
+                timestamp,
+            ),
+        )
+
+    def get_agent_run_tool_call(
+        self,
+        *,
+        run_id: str,
+        idempotency_key: str,
+    ) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT
+                    run_id,
+                    idempotency_key,
+                    tool_name,
+                    arguments_json,
+                    status,
+                    result_json,
+                    error_message,
+                    attempt,
+                    created_at,
+                    updated_at
+                FROM agent_run_tool_calls
+                WHERE run_id = ? AND idempotency_key = ?
+                """,
+                (run_id, idempotency_key),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._decode_agent_run_tool_call_row(dict(row))
+
+    def list_agent_run_tool_calls(
+        self,
+        *,
+        run_id: str,
+        status: str | None = None,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        if limit <= 0:
+            return []
+        with self._lock:
+            if status is not None:
+                rows = self._conn.execute(
+                    """
+                    SELECT
+                        run_id,
+                        idempotency_key,
+                        tool_name,
+                        arguments_json,
+                        status,
+                        result_json,
+                        error_message,
+                        attempt,
+                        created_at,
+                        updated_at
+                    FROM agent_run_tool_calls
+                    WHERE run_id = ? AND status = ?
+                    ORDER BY updated_at ASC
+                    LIMIT ?
+                    """,
+                    (run_id, str(status).strip().lower(), limit),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    """
+                    SELECT
+                        run_id,
+                        idempotency_key,
+                        tool_name,
+                        arguments_json,
+                        status,
+                        result_json,
+                        error_message,
+                        attempt,
+                        created_at,
+                        updated_at
+                    FROM agent_run_tool_calls
+                    WHERE run_id = ?
+                    ORDER BY updated_at ASC
+                    LIMIT ?
+                    """,
+                    (run_id, limit),
+                ).fetchall()
+        return [self._decode_agent_run_tool_call_row(dict(row)) for row in rows]
 
     def create_automation(
         self,
@@ -1785,6 +2026,32 @@ class Database:
             row["artifact"] = {}
         row["issue_id"] = str(row.get("issue_id") or "unknown").strip() or "unknown"
         row["artifact_key"] = str(row.get("artifact_key") or "result").strip() or "result"
+        return row
+
+    @staticmethod
+    def _decode_agent_run_tool_call_row(row: dict[str, Any]) -> dict[str, Any]:
+        arguments_json = row.pop("arguments_json", "{}")
+        result_json = row.pop("result_json", None)
+        try:
+            parsed_args = json.loads(arguments_json or "{}")
+            row["arguments"] = parsed_args if isinstance(parsed_args, dict) else {}
+        except Exception:
+            row["arguments"] = {}
+        if isinstance(result_json, str) and result_json.strip():
+            try:
+                parsed_result = json.loads(result_json)
+                row["result"] = parsed_result if isinstance(parsed_result, dict) else None
+            except Exception:
+                row["result"] = None
+        else:
+            row["result"] = None
+        row["idempotency_key"] = str(row.get("idempotency_key") or "").strip()
+        row["tool_name"] = str(row.get("tool_name") or "unknown").strip() or "unknown"
+        row["status"] = str(row.get("status") or "unknown").strip().lower() or "unknown"
+        try:
+            row["attempt"] = max(0, int(row.get("attempt", 0)))
+        except Exception:
+            row["attempt"] = 0
         return row
 
     @staticmethod

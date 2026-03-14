@@ -91,6 +91,7 @@ class AgentRunManager:
             return
         self._started = True
         self._stop.clear()
+        self._recover_pending_runs()
         for index in range(self.worker_count):
             worker = Thread(
                 target=self._worker_loop,
@@ -112,6 +113,51 @@ class AgentRunManager:
         self._workers.clear()
         self._started = False
         self.logger.info("run_workers_stopped")
+
+    def _recover_pending_runs(self) -> None:
+        recovered_running = self.database.list_agent_runs(status="running", limit=5000)
+        queued = self.database.list_agent_runs(status="queued", limit=5000)
+        requeued_ids: set[str] = set()
+        recovered_count = 0
+
+        for item in recovered_running:
+            run_id = str(item.get("id") or "").strip()
+            if not run_id:
+                continue
+            self.database.update_agent_run_fields(
+                run_id,
+                status="queued",
+                error_message=None,
+                stop_reason=None,
+                failure_class=None,
+                finished_at=None,
+            )
+            self.database.append_agent_run_checkpoint(
+                run_id=run_id,
+                checkpoint={
+                    "stage": "recovered_after_crash",
+                    "message": "Recovered running run after runtime restart.",
+                    "previous_status": "running",
+                },
+            )
+            self._reset_issue_states_for_resume(run_id=run_id)
+            self._queue.put(run_id)
+            requeued_ids.add(run_id)
+            recovered_count += 1
+
+        for item in queued:
+            run_id = str(item.get("id") or "").strip()
+            if not run_id or run_id in requeued_ids:
+                continue
+            self._queue.put(run_id)
+            requeued_ids.add(run_id)
+
+        if recovered_count or requeued_ids:
+            self.logger.info(
+                "run_recovery_completed recovered_running=%s queued_reenqueued=%s",
+                recovered_count,
+                max(0, len(requeued_ids) - recovered_count),
+            )
 
     def create_run(
         self,
@@ -144,7 +190,8 @@ class AgentRunManager:
             },
         )
         self._ensure_core_issue_records(run_id=run_id)
-        self._queue.put(run_id)
+        if self._started:
+            self._queue.put(run_id)
         self._emit(
             "agent_run_queued",
             {
@@ -190,6 +237,19 @@ class AgentRunManager:
         return self.database.list_agent_run_issue_artifacts(
             run_id=run_id,
             issue_id=issue_id,
+            limit=max(1, min(int(limit), 5000)),
+        )
+
+    def list_run_tool_calls(
+        self,
+        run_id: str,
+        *,
+        status: str | None = None,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        return self.database.list_agent_run_tool_calls(
+            run_id=run_id,
+            status=status,
             limit=max(1, min(int(limit), 5000)),
         )
 
@@ -281,7 +341,8 @@ class AgentRunManager:
             },
         )
         self._reset_issue_states_for_resume(run_id=run_id)
-        self._queue.put(run_id)
+        if self._started:
+            self._queue.put(run_id)
 
         updated = self.database.get_agent_run(run_id)
         assert updated is not None
@@ -371,7 +432,8 @@ class AgentRunManager:
             if stage in {"succeeded", "failed", "canceled"}:
                 summary["finished_at"] = timestamp
             if stage == "tool_call_finished":
-                summary["tool_rounds"] = int(summary.get("tool_rounds", 0)) + 1
+                if not bool(item.get("cached")) and item.get("executed") is not False:
+                    summary["tool_rounds"] = int(summary.get("tool_rounds", 0)) + 1
             if stage == "verification_repair_attempt":
                 summary["verification_repairs"] = int(summary.get("verification_repairs", 0)) + 1
             if stage in {"error", "failed"} and message:
@@ -381,10 +443,15 @@ class AgentRunManager:
 
         latest_resume_state = self._extract_resume_state(run)
         issue_artifacts = self.database.list_agent_run_issue_artifacts(run_id=run_id, limit=2000)
+        tool_call_rows = self.database.list_agent_run_tool_calls(run_id=run_id, limit=5000)
         artifact_counts: dict[str, int] = {}
         for item in issue_artifacts:
             issue_id = str(item.get("issue_id") or "unknown")
             artifact_counts[issue_id] = int(artifact_counts.get(issue_id, 0)) + 1
+        tool_call_status_counts: dict[str, int] = {}
+        for item in tool_call_rows:
+            status = str(item.get("status") or "unknown").strip().lower() or "unknown"
+            tool_call_status_counts[status] = int(tool_call_status_counts.get(status, 0)) + 1
         issue_items = self.database.list_agent_run_issues(run_id=run_id, limit=500)
         issue_status_breakdown: dict[str, int] = {}
         for issue in issue_items:
@@ -409,11 +476,14 @@ class AgentRunManager:
             "latest_resume_state": latest_resume_state or None,
             "issues": issue_items,
             "issue_artifacts": issue_artifacts,
+            "tool_calls": tool_call_rows,
             "issue_summary": {
                 "count": len(issue_items),
                 "status_breakdown": issue_status_breakdown,
                 "artifact_count": len(issue_artifacts),
                 "artifact_breakdown": artifact_counts,
+                "tool_call_count": len(tool_call_rows),
+                "tool_call_status_breakdown": tool_call_status_counts,
             },
             "has_result": run.get("result") is not None,
             "error_message": run.get("error_message"),
@@ -495,16 +565,17 @@ class AgentRunManager:
                     terminal_by_attempt[attempt] = timestamp
                     terminal_stage_by_attempt[attempt] = stage
                 if stage == "tool_call_finished":
-                    tool_call_total += 1
-                    status = str(item.get("status", "")).strip().lower()
-                    if status == "succeeded":
-                        tool_call_successes += 1
-                    try:
-                        duration_ms = float(item.get("duration_ms", 0.0))
-                    except Exception:
-                        duration_ms = 0.0
-                    if duration_ms > 0:
-                        tool_call_durations_ms.append(duration_ms)
+                    if not bool(item.get("cached")) and item.get("executed") is not False:
+                        tool_call_total += 1
+                        status = str(item.get("status", "")).strip().lower()
+                        if status == "succeeded":
+                            tool_call_successes += 1
+                        try:
+                            duration_ms = float(item.get("duration_ms", 0.0))
+                        except Exception:
+                            duration_ms = 0.0
+                        if duration_ms > 0:
+                            tool_call_durations_ms.append(duration_ms)
                 if stage == "verification_repair_attempt":
                     verification_repair_total += 1
 
@@ -711,12 +782,24 @@ class AgentRunManager:
                 data.setdefault("attempt", attempt)
                 self._merge_checkpoint_usage(live_usage=live_usage, checkpoint=data)
                 self._validate_live_budget_usage(budget=budget, usage=live_usage)
-                self.database.append_agent_run_checkpoint(run_id=run_id, checkpoint=data)
-                self._sync_issue_state_from_checkpoint(run_id=run_id, checkpoint=data, attempt=attempt)
-                self._persist_issue_artifact_from_checkpoint(run_id=run_id, checkpoint=data)
+                issue_update = self._derive_issue_update_from_checkpoint(
+                    run_id=run_id,
+                    checkpoint=data,
+                    attempt=attempt,
+                )
+                issue_artifact = self._derive_issue_artifact_from_checkpoint(checkpoint=data)
+                tool_call_record = self._derive_tool_call_record_from_checkpoint(checkpoint=data)
+                self.database.append_agent_run_checkpoint(
+                    run_id=run_id,
+                    checkpoint=data,
+                    issue_update=issue_update,
+                    issue_artifact=issue_artifact,
+                    tool_call_record=tool_call_record,
+                )
 
             resume_state = self._extract_resume_state(run)
             resume_state = self._merge_persisted_issue_artifacts(run_id=run_id, resume_state=resume_state)
+            resume_state = self._merge_persisted_tool_call_cache(run_id=run_id, resume_state=resume_state)
             result = self._run_task_executor(
                 run=run,
                 agent=agent,
@@ -925,13 +1008,13 @@ class AgentRunManager:
                 finished_at=None,
             )
 
-    def _sync_issue_state_from_checkpoint(
+    def _derive_issue_update_from_checkpoint(
         self,
         *,
         run_id: str,
         checkpoint: dict[str, Any],
         attempt: int,
-    ) -> None:
+    ) -> dict[str, Any] | None:
         stage = str(checkpoint.get("stage") or "").strip().lower()
         timestamp = str(checkpoint.get("timestamp") or self._utc_now())
 
@@ -958,11 +1041,11 @@ class AgentRunManager:
                     },
                 }
         if issue_payload is None:
-            return
+            return None
 
         issue_id = str(issue_payload.get("id") or "").strip()
         if not issue_id:
-            return
+            return None
         title, issue_order_default, depends_on_default = self._issue_meta_for_id(issue_id)
         issue_order = self._safe_int(issue_payload.get("order"), issue_order_default)
         status = str(issue_payload.get("status") or "planned").strip().lower() or "planned"
@@ -1003,61 +1086,91 @@ class AgentRunManager:
             normalized_finished_at = None
         payload_raw = issue_payload.get("payload")
         payload = dict(payload_raw) if isinstance(payload_raw, dict) else {}
-        self.database.upsert_agent_run_issue(
-            run_id=run_id,
-            issue_id=issue_id,
-            issue_order=max(0, int(issue_order)),
-            title=str(issue_payload.get("title") or title).strip() or title,
-            status=status,
-            depends_on=depends_on,
-            attempt_count=attempt_count,
-            last_error=last_error,
-            payload=payload,
-            started_at=normalized_started_at,
-            finished_at=normalized_finished_at,
-        )
+        return {
+            "issue_id": issue_id,
+            "issue_order": max(0, int(issue_order)),
+            "title": str(issue_payload.get("title") or title).strip() or title,
+            "status": status,
+            "depends_on": depends_on,
+            "attempt_count": attempt_count,
+            "last_error": last_error,
+            "payload": payload,
+            "started_at": normalized_started_at,
+            "finished_at": normalized_finished_at,
+        }
 
-    def _persist_issue_artifact_from_checkpoint(
-        self,
-        *,
-        run_id: str,
+    @staticmethod
+    def _derive_issue_artifact_from_checkpoint(
         checkpoint: dict[str, Any],
-    ) -> None:
+    ) -> dict[str, Any] | None:
         stage = str(checkpoint.get("stage") or "").strip().lower()
         if stage == "issue_artifact":
             issue_id = str(checkpoint.get("issue_id") or "").strip()
             artifact_key = str(checkpoint.get("artifact_key") or "result").strip() or "result"
             artifact = checkpoint.get("artifact")
             if not issue_id or not isinstance(artifact, dict):
-                return
-            self.database.upsert_agent_run_issue_artifact(
-                run_id=run_id,
-                issue_id=issue_id,
-                artifact_key=artifact_key,
-                artifact=artifact,
-            )
-            return
+                return None
+            return {
+                "issue_id": issue_id,
+                "artifact_key": artifact_key,
+                "artifact": artifact,
+            }
 
         if stage != "issue_state":
-            return
+            return None
         issue = checkpoint.get("issue")
         if not isinstance(issue, dict):
-            return
+            return None
         issue_id = str(issue.get("id") or "").strip()
         if not issue_id:
-            return
+            return None
         payload = issue.get("payload")
         if not isinstance(payload, dict):
-            return
+            return None
         artifact = payload.get("artifact")
         if isinstance(artifact, dict):
             artifact_key = str(payload.get("artifact_key") or "result").strip() or "result"
-            self.database.upsert_agent_run_issue_artifact(
-                run_id=run_id,
-                issue_id=issue_id,
-                artifact_key=artifact_key,
-                artifact=artifact,
-            )
+            return {
+                "issue_id": issue_id,
+                "artifact_key": artifact_key,
+                "artifact": artifact,
+            }
+        return None
+
+    @staticmethod
+    def _derive_tool_call_record_from_checkpoint(checkpoint: dict[str, Any]) -> dict[str, Any] | None:
+        stage = str(checkpoint.get("stage") or "").strip().lower()
+        if stage != "tool_call_recorded":
+            return None
+        idempotency_key = str(checkpoint.get("idempotency_key") or "").strip()
+        tool_name = str(checkpoint.get("tool") or "").strip()
+        status = str(checkpoint.get("status") or "").strip().lower()
+        arguments = checkpoint.get("arguments")
+        result = checkpoint.get("result")
+        error_message = checkpoint.get("error")
+        attempt = checkpoint.get("attempt")
+        if not idempotency_key or not tool_name:
+            return None
+        if not isinstance(arguments, dict):
+            arguments = {}
+        if not isinstance(result, dict):
+            result = None
+        try:
+            attempt_int = max(0, int(attempt))
+        except Exception:
+            attempt_int = 0
+        normalized_status = status or "unknown"
+        if normalized_status == "reused":
+            normalized_status = "succeeded"
+        return {
+            "idempotency_key": idempotency_key,
+            "tool_name": tool_name,
+            "arguments": arguments,
+            "status": normalized_status,
+            "result": result,
+            "error_message": str(error_message) if error_message not in (None, "") else None,
+            "attempt": attempt_int,
+        }
 
     def _merge_persisted_issue_artifacts(
         self,
@@ -1099,6 +1212,48 @@ class AgentRunManager:
             issue_artifacts.setdefault(issue_id, {})
             issue_artifacts[issue_id][artifact_key] = artifact
         state["issue_artifacts"] = issue_artifacts
+        return state
+
+    def _merge_persisted_tool_call_cache(
+        self,
+        *,
+        run_id: str,
+        resume_state: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        state = dict(resume_state) if isinstance(resume_state, dict) else {}
+        rows = self.database.list_agent_run_tool_calls(run_id=run_id, limit=5000)
+        if not rows:
+            return state if state else resume_state
+
+        raw_cache = state.get("tool_call_cache")
+        tool_call_cache: dict[str, dict[str, Any]] = {}
+        if isinstance(raw_cache, dict):
+            for key, value in raw_cache.items():
+                cache_key = str(key).strip()
+                if cache_key and isinstance(value, dict):
+                    tool_call_cache[cache_key] = dict(value)
+
+        for row in rows:
+            status = str(row.get("status") or "").strip().lower()
+            if status != "succeeded":
+                continue
+            idempotency_key = str(row.get("idempotency_key") or "").strip()
+            tool_name = str(row.get("tool_name") or "").strip()
+            arguments = row.get("arguments")
+            result = row.get("result")
+            if not idempotency_key or not tool_name:
+                continue
+            if not isinstance(arguments, dict):
+                arguments = {}
+            if not isinstance(result, dict):
+                continue
+            tool_call_cache[idempotency_key] = {
+                "tool_name": tool_name,
+                "status": "succeeded",
+                "arguments": arguments,
+                "tool_result": result,
+            }
+        state["tool_call_cache"] = tool_call_cache
         return state
 
     def _mark_issue_failed_from_error(
@@ -1460,6 +1615,10 @@ class AgentRunManager:
                 pass
         stage = str(checkpoint.get("stage", "")).strip()
         if stage == "tool_call_finished":
+            cached = bool(checkpoint.get("cached"))
+            executed = checkpoint.get("executed")
+            if cached or executed is False:
+                return
             live_usage["tool_calls"] = max(0, int(live_usage.get("tool_calls", 0))) + 1
             status = str(checkpoint.get("status", "")).strip().lower()
             if status in {"failed", "invalid_arguments", "blocked", "permission_required"}:

@@ -19,16 +19,20 @@ class _FakeTaskExecutor:
         fail_first: bool = False,
         always_fail: bool = False,
         fail_once_after_prepare: bool = False,
+        fail_once_after_tool_record: bool = False,
         error_sequence: list[Exception] | None = None,
         emit_tool_finished_count: int = 0,
         emit_tool_error_count: int = 0,
+        emit_tool_call_record: bool = False,
     ) -> None:
         self.fail_first = fail_first
         self.always_fail = always_fail
         self.fail_once_after_prepare = fail_once_after_prepare
+        self.fail_once_after_tool_record = fail_once_after_tool_record
         self.error_sequence = list(error_sequence or [])
         self.emit_tool_finished_count = max(0, int(emit_tool_finished_count))
         self.emit_tool_error_count = max(0, int(emit_tool_error_count))
+        self.emit_tool_call_record = bool(emit_tool_call_record)
         self.call_count = 0
         self.last_resume_state: dict[str, Any] | None = None
 
@@ -105,6 +109,25 @@ class _FakeTaskExecutor:
                     },
                 }
             )
+
+        if callable(checkpoint) and self.emit_tool_call_record:
+            checkpoint(
+                {
+                    "stage": "tool_call_recorded",
+                    "tool": "demo_tool",
+                    "idempotency_key": "demo-key-1",
+                    "status": "succeeded",
+                    "arguments": {"query": user_message},
+                    "result": {
+                        "tool": "demo_tool",
+                        "result": {"ok": True, "query": user_message},
+                    },
+                    "cached": False,
+                    "executed": True,
+                }
+            )
+        if self.fail_once_after_tool_record and self.call_count == 1:
+            raise RuntimeError("fail after tool record")
 
         if callable(checkpoint):
             for idx in range(self.emit_tool_finished_count):
@@ -409,6 +432,86 @@ class AgentRunManagerTests(unittest.TestCase):
         self.assertIsInstance(prepare_artifacts, dict)
         assert isinstance(prepare_artifacts, dict)
         self.assertIn("result", prepare_artifacts)
+
+    def test_resume_uses_persisted_tool_call_cache_when_checkpoints_missing(self) -> None:
+        self.executor = _FakeTaskExecutor(
+            emit_tool_call_record=True,
+            fail_once_after_tool_record=True,
+        )
+        self.manager = AgentRunManager(
+            database=self.database,
+            task_executor=self.executor,  # type: ignore[arg-type]
+            worker_count=1,
+            default_max_attempts=1,
+            retry_backoff_sec=0.0,
+            retry_max_backoff_sec=0.0,
+            retry_jitter_sec=0.0,
+        )
+        self.manager.start()
+        run = self.manager.create_run(
+            agent=self.agent,
+            user_id="user-1",
+            session_id="session-resume-tool-cache",
+            user_message="resume tool call cache",
+            max_attempts=1,
+        )
+        failed = self._wait_for_status(run["id"], {"failed"})
+        self.assertIsNotNone(failed)
+
+        rows = self.database.list_agent_run_tool_calls(run_id=run["id"], limit=100)
+        self.assertGreaterEqual(len(rows), 1)
+        self.assertEqual(str(rows[0].get("idempotency_key")), "demo-key-1")
+        self.assertEqual(str(rows[0].get("status")), "succeeded")
+        self.database.update_agent_run_fields(run["id"], checkpoints_json=[])
+
+        self.executor.fail_once_after_tool_record = False
+        resumed = self.manager.resume_run(run["id"])
+        self.assertEqual(resumed["status"], "queued")
+        final = self._wait_for_status(run["id"], {"succeeded"})
+        self.assertIsNotNone(final)
+
+        self.assertIsNotNone(self.executor.last_resume_state)
+        assert isinstance(self.executor.last_resume_state, dict)
+        tool_call_cache = self.executor.last_resume_state.get("tool_call_cache")
+        self.assertIsInstance(tool_call_cache, dict)
+        assert isinstance(tool_call_cache, dict)
+        self.assertIn("demo-key-1", tool_call_cache)
+        cached_entry = tool_call_cache.get("demo-key-1")
+        self.assertIsInstance(cached_entry, dict)
+        assert isinstance(cached_entry, dict)
+        self.assertEqual(str(cached_entry.get("status")), "succeeded")
+
+    def test_start_recovers_running_runs_after_restart(self) -> None:
+        run = self.manager.create_run(
+            agent=self.agent,
+            user_id="user-1",
+            session_id="session-recovery",
+            user_message="recover me",
+            max_attempts=3,
+        )
+        self.database.update_agent_run_fields(
+            run["id"],
+            status="running",
+            attempts=1,
+            started_at=self.manager._utc_now(),  # noqa: SLF001
+        )
+        self.database.append_agent_run_checkpoint(
+            run_id=run["id"],
+            checkpoint={
+                "stage": "running",
+                "attempt": 1,
+                "message": "Simulated in-flight run before crash.",
+            },
+        )
+
+        self.manager.start()
+        final = self._wait_for_status(run["id"], {"succeeded"})
+        self.assertIsNotNone(final)
+        assert final is not None
+        self.assertEqual(final["status"], "succeeded")
+        self.assertGreaterEqual(int(final.get("attempts", 0)), 2)
+        stages = [str(item.get("stage")) for item in final.get("checkpoints", [])]
+        self.assertIn("recovered_after_crash", stages)
 
     def test_replay_missing_run_raises(self) -> None:
         with self.assertRaises(ValueError):

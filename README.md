@@ -632,6 +632,13 @@ Implemented now:
 - run resume restores issue/checkpoint state and continues from unfinished issues
 - run resume hydrates `issue_artifacts` from persisted storage even when checkpoints are missing
 - deterministic tool-call argument contract validation before tool execution
+- exactly-once tool-call reliability for run retries/resume:
+  - persisted idempotency log in SQLite (`agent_run_tool_calls`)
+  - cached reuse of previously succeeded tool results by `idempotency_key`
+  - crash-safe checkpoint bundle write (`checkpoint + issue state + issue artifact + tool call record`)
+- startup crash recovery for unfinished runs:
+  - `running` runs are moved back to `queued` with `recovered_after_crash` checkpoint
+  - queued/running runs are re-enqueued on runtime start
 - automatic retry until `max_attempts`
 - manual cancel and resume APIs
 - checkpoint replay API (`GET /agents/runs/{run_id}/replay`) with timeline + attempt summary

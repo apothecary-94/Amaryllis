@@ -363,6 +363,31 @@ MIGRATIONS: list[Migration] = [
             ON agent_run_issue_artifacts(run_id, issue_id, updated_at);
         """,
     ),
+    Migration(
+        version=12,
+        name="agent_run_tool_calls_v1",
+        sql="""
+        CREATE TABLE IF NOT EXISTS agent_run_tool_calls (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL,
+            tool_name TEXT NOT NULL,
+            arguments_json TEXT NOT NULL DEFAULT '{}',
+            status TEXT NOT NULL,
+            result_json TEXT,
+            error_message TEXT,
+            attempt INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(run_id, idempotency_key)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_agent_run_tool_calls_run_updated
+            ON agent_run_tool_calls(run_id, updated_at);
+        CREATE INDEX IF NOT EXISTS idx_agent_run_tool_calls_run_status
+            ON agent_run_tool_calls(run_id, status, updated_at);
+        """,
+    ),
 ]
 
 

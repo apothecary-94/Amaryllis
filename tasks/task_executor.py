@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
@@ -105,6 +106,7 @@ class TaskExecutor:
         completed_steps = set(state.get("completed_steps", []))
         issue_states = self._normalize_issue_states(state.get("issues"))
         issue_artifacts = self._normalize_issue_artifacts(state.get("issue_artifacts"))
+        tool_call_cache = self._normalize_tool_call_cache(state.get("tool_call_cache"))
         self._ensure_issue(
             issue_states=issue_states,
             issue_id=STEP_PREPARE_CONTEXT,
@@ -250,6 +252,7 @@ class TaskExecutor:
                 tool_events=tool_events,
                 issues=issue_states,
                 issue_artifacts=issue_artifacts,
+                tool_call_cache=tool_call_cache,
             )
             self._emit_checkpoint(
                 checkpoint,
@@ -385,6 +388,7 @@ class TaskExecutor:
                     messages=messages,
                     agent=agent,
                     tool_events=tool_events,
+                    tool_call_cache=tool_call_cache,
                     user_id=user_id,
                     session_id=session_id,
                     checkpoint=checkpoint,
@@ -442,6 +446,7 @@ class TaskExecutor:
                 tool_events=tool_events,
                 issues=issue_states,
                 issue_artifacts=issue_artifacts,
+                tool_call_cache=tool_call_cache,
             )
             self._emit_checkpoint(
                 checkpoint,
@@ -470,6 +475,7 @@ class TaskExecutor:
                     messages=messages,
                     agent=agent,
                     tool_events=tool_events,
+                    tool_call_cache=tool_call_cache,
                     user_id=user_id,
                     session_id=session_id,
                     checkpoint=checkpoint,
@@ -575,6 +581,7 @@ class TaskExecutor:
                 tool_events=tool_events,
                 issues=issue_states,
                 issue_artifacts=issue_artifacts,
+                tool_call_cache=tool_call_cache,
             )
             self._emit_checkpoint(
                 checkpoint,
@@ -659,6 +666,7 @@ class TaskExecutor:
         messages: list[dict[str, Any]],
         agent: Agent,
         tool_events: list[dict[str, Any]],
+        tool_call_cache: dict[str, dict[str, Any]],
         user_id: str,
         session_id: str | None,
         checkpoint: CheckpointWriter | None = None,
@@ -726,6 +734,109 @@ class TaskExecutor:
                 )
                 break
 
+            tool_name = str(parsed["name"])
+            arguments = parsed["arguments"]
+            idempotency_key = self._tool_call_idempotency_key(tool_name=tool_name, arguments=arguments)
+            cached_tool_result = self._get_cached_tool_result(
+                tool_call_cache=tool_call_cache,
+                idempotency_key=idempotency_key,
+                tool_name=tool_name,
+            )
+            if cached_tool_result is not None:
+                event: dict[str, Any] = {
+                    "attempt": attempt,
+                    "tool_round": tool_rounds,
+                    "tool": tool_name,
+                    "arguments": arguments,
+                    "status": "reused",
+                    "cached": True,
+                    "idempotency_key": idempotency_key,
+                    "duration_ms": 0.0,
+                }
+                if "result" in cached_tool_result:
+                    event["result"] = cached_tool_result.get("result")
+                tool_events.append(event)
+                self._emit_checkpoint(
+                    checkpoint,
+                    stage="tool_call_reused",
+                    message=f"Tool result reused from cache: {tool_name}",
+                    tool=tool_name,
+                    attempt=attempt,
+                    idempotency_key=idempotency_key,
+                )
+                self._emit_checkpoint(
+                    checkpoint,
+                    stage="tool_call_recorded",
+                    message=f"Tool call record upserted: {tool_name}",
+                    tool=tool_name,
+                    attempt=attempt,
+                    idempotency_key=idempotency_key,
+                    status="reused",
+                    arguments=arguments,
+                    result=cached_tool_result,
+                    cached=True,
+                    executed=False,
+                )
+                self._emit_checkpoint(
+                    checkpoint,
+                    stage="tool_call_finished",
+                    message=f"Tool call finished: {tool_name}",
+                    tool=tool_name,
+                    attempt=attempt,
+                    status=event.get("status"),
+                    duration_ms=event["duration_ms"],
+                    tool_errors=tool_errors,
+                    estimated_tokens_total=estimated_tokens,
+                    idempotency_key=idempotency_key,
+                    cached=True,
+                    executed=False,
+                )
+
+                reasoning_messages.append({"role": "assistant", "content": response_text})
+                reasoning_messages.append(
+                    {
+                        "role": "tool",
+                        "name": tool_name,
+                        "content": json.dumps(cached_tool_result, ensure_ascii=False),
+                    }
+                )
+                reasoning_messages.append(
+                    {
+                        "role": "system",
+                        "content": "Tool output is provided. Produce a final user-facing answer.",
+                    }
+                )
+                self._check_prompt_size(reasoning_messages)
+
+                followup, model_calls, estimated_tokens, usage = self._chat_with_limits(
+                    messages=reasoning_messages,
+                    model=agent.model,
+                    session_id=session_id,
+                    model_calls=model_calls,
+                    estimated_tokens=estimated_tokens,
+                    max_tokens_budget=self._budget_limit_int(run_budget, "max_tokens"),
+                    started=started,
+                    run_deadline_monotonic=run_deadline_monotonic,
+                )
+                response_text = str(followup.get("content", "")).strip()
+                provider_used = str(followup.get("provider", provider_used))
+                model_used = str(followup.get("model", model_used))
+                self._emit_checkpoint(
+                    checkpoint,
+                    stage="llm_followup_response",
+                    message="Received follow-up model response after cached tool output.",
+                    provider=provider_used,
+                    model=model_used,
+                    attempt=attempt,
+                    preview=response_text[:240],
+                    model_calls=model_calls,
+                    estimated_tokens_total=estimated_tokens,
+                    estimated_tokens_delta=usage["delta_tokens_est"],
+                    estimated_prompt_tokens=usage["prompt_tokens_est"],
+                    estimated_completion_tokens=usage["completion_tokens_est"],
+                )
+                continue
+
             max_tool_calls_budget = self._budget_limit_int(run_budget, "max_tool_calls")
             if max_tool_calls_budget is not None and (tool_rounds + 1) > max_tool_calls_budget:
                 raise TaskBudgetError(
@@ -733,8 +844,6 @@ class TaskExecutor:
                 )
 
             tool_rounds += 1
-            tool_name = str(parsed["name"])
-            arguments = parsed["arguments"]
             self._emit_checkpoint(
                 checkpoint,
                 stage="tool_call_started",
@@ -742,6 +851,7 @@ class TaskExecutor:
                 tool=tool_name,
                 attempt=attempt,
                 tool_round=tool_rounds,
+                idempotency_key=idempotency_key,
             )
             event: dict[str, Any] = {
                 "attempt": attempt,
@@ -749,6 +859,8 @@ class TaskExecutor:
                 "tool": tool_name,
                 "arguments": arguments,
                 "status": "started",
+                "cached": False,
+                "idempotency_key": idempotency_key,
             }
             if tool_name not in allowed_tools:
                 event["status"] = "blocked"
@@ -763,6 +875,19 @@ class TaskExecutor:
                     attempt=attempt,
                     estimated_tokens_total=estimated_tokens,
                     tool_errors=tool_errors,
+                )
+                self._emit_checkpoint(
+                    checkpoint,
+                    stage="tool_call_recorded",
+                    message=f"Tool call record upserted: {tool_name}",
+                    tool=tool_name,
+                    attempt=attempt,
+                    idempotency_key=idempotency_key,
+                    status=event.get("status"),
+                    arguments=arguments,
+                    error=event.get("error"),
+                    cached=False,
+                    executed=False,
                 )
                 self._enforce_tool_error_budget(
                     tool_errors=tool_errors,
@@ -790,6 +915,20 @@ class TaskExecutor:
                     attempt=attempt,
                     error=validation_error,
                     tool_errors=tool_errors,
+                )
+                self._emit_checkpoint(
+                    checkpoint,
+                    stage="tool_call_recorded",
+                    message=f"Tool call record upserted: {tool_name}",
+                    tool=tool_name,
+                    attempt=attempt,
+                    idempotency_key=idempotency_key,
+                    status=event.get("status"),
+                    arguments=arguments,
+                    result=tool_result,
+                    error=validation_error,
+                    cached=False,
+                    executed=False,
                 )
                 self._enforce_tool_error_budget(
                     tool_errors=tool_errors,
@@ -909,6 +1048,30 @@ class TaskExecutor:
                     tool_errors=tool_errors,
                     max_tool_errors_budget=self._budget_limit_int(run_budget, "max_tool_errors"),
                 )
+            status_for_record = str(event.get("status", "")).strip().lower() or "unknown"
+            self._emit_checkpoint(
+                checkpoint,
+                stage="tool_call_recorded",
+                message=f"Tool call record upserted: {tool_name}",
+                tool=tool_name,
+                attempt=attempt,
+                idempotency_key=idempotency_key,
+                status=status_for_record,
+                arguments=arguments,
+                result=tool_result if isinstance(tool_result, dict) else None,
+                error=event.get("error"),
+                cached=False,
+                executed=True,
+            )
+            if status_for_record == "succeeded" and isinstance(tool_result, dict):
+                self._record_tool_call_cache_entry(
+                    tool_call_cache=tool_call_cache,
+                    idempotency_key=idempotency_key,
+                    tool_name=tool_name,
+                    arguments=arguments,
+                    status=status_for_record,
+                    tool_result=tool_result,
+                )
             self._emit_checkpoint(
                 checkpoint,
                 stage="tool_call_finished",
@@ -919,6 +1082,9 @@ class TaskExecutor:
                 duration_ms=event["duration_ms"],
                 tool_errors=tool_errors,
                 estimated_tokens_total=estimated_tokens,
+                idempotency_key=idempotency_key,
+                cached=False,
+                executed=True,
             )
 
             reasoning_messages.append({"role": "assistant", "content": response_text})
@@ -1378,6 +1544,7 @@ class TaskExecutor:
             "tool_events",
             "issues",
             "issue_artifacts",
+            "tool_call_cache",
         ):
             if key in resume_state:
                 normalized[key] = resume_state[key]
@@ -1399,6 +1566,7 @@ class TaskExecutor:
         tool_events: list[dict[str, Any]],
         issues: dict[str, dict[str, Any]],
         issue_artifacts: dict[str, dict[str, Any]],
+        tool_call_cache: dict[str, dict[str, Any]],
     ) -> dict[str, Any]:
         return {
             "version": 2,
@@ -1415,6 +1583,7 @@ class TaskExecutor:
             "tool_events": tool_events,
             "issues": issues,
             "issue_artifacts": issue_artifacts,
+            "tool_call_cache": tool_call_cache,
         }
 
     def _register_plan_issues(
@@ -1744,6 +1913,84 @@ class TaskExecutor:
             if normalized_artifacts:
                 result[normalized_issue_id] = normalized_artifacts
         return result
+
+    def _normalize_tool_call_cache(self, raw: Any) -> dict[str, dict[str, Any]]:
+        if not isinstance(raw, dict):
+            return {}
+        result: dict[str, dict[str, Any]] = {}
+        for idempotency_key, payload in raw.items():
+            normalized_key = str(idempotency_key).strip()
+            if not normalized_key or not isinstance(payload, dict):
+                continue
+            status = str(payload.get("status") or "").strip().lower()
+            tool_name = str(payload.get("tool_name") or payload.get("tool") or "").strip()
+            arguments = payload.get("arguments")
+            tool_result = payload.get("tool_result") or payload.get("result")
+            if status != "succeeded":
+                continue
+            if not tool_name:
+                continue
+            if not isinstance(arguments, dict):
+                arguments = {}
+            if not isinstance(tool_result, dict):
+                continue
+            result[normalized_key] = {
+                "tool_name": tool_name,
+                "status": "succeeded",
+                "arguments": dict(arguments),
+                "tool_result": dict(tool_result),
+            }
+        return result
+
+    @staticmethod
+    def _tool_call_idempotency_key(*, tool_name: str, arguments: dict[str, Any]) -> str:
+        canonical = json.dumps(arguments or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        raw = f"{str(tool_name).strip().lower()}::{canonical}"
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _get_cached_tool_result(
+        *,
+        tool_call_cache: dict[str, dict[str, Any]],
+        idempotency_key: str,
+        tool_name: str,
+    ) -> dict[str, Any] | None:
+        entry = tool_call_cache.get(str(idempotency_key))
+        if not isinstance(entry, dict):
+            return None
+        status = str(entry.get("status") or "").strip().lower()
+        if status != "succeeded":
+            return None
+        cached_tool = str(entry.get("tool_name") or entry.get("tool") or "").strip()
+        if not cached_tool or cached_tool != str(tool_name).strip():
+            return None
+        result_payload = entry.get("tool_result") or entry.get("result")
+        if not isinstance(result_payload, dict):
+            return None
+        return dict(result_payload)
+
+    @staticmethod
+    def _record_tool_call_cache_entry(
+        *,
+        tool_call_cache: dict[str, dict[str, Any]],
+        idempotency_key: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        status: str,
+        tool_result: dict[str, Any],
+    ) -> None:
+        normalized_key = str(idempotency_key).strip()
+        if not normalized_key:
+            return
+        normalized_status = str(status or "").strip().lower()
+        if normalized_status != "succeeded":
+            return
+        tool_call_cache[normalized_key] = {
+            "tool_name": str(tool_name).strip() or "unknown",
+            "status": "succeeded",
+            "arguments": dict(arguments or {}),
+            "tool_result": dict(tool_result),
+        }
 
     def _record_issue_artifact(
         self,
