@@ -334,6 +334,9 @@ class TaskExecutor:
                 conflicts=artifact_quality_summary.get("conflicts", [])
                 if isinstance(artifact_quality_summary, dict)
                 else [],
+                scorecard=artifact_quality_summary.get("scorecard", {})
+                if isinstance(artifact_quality_summary, dict)
+                else {},
             )
             if artifact_note:
                 messages.append({"role": "system", "content": artifact_note})
@@ -346,6 +349,11 @@ class TaskExecutor:
                         artifact_quality_summary.get("conflicts", [])
                         if isinstance(artifact_quality_summary, dict)
                         else []
+                    ),
+                    artifact_quality_score=(
+                        artifact_quality_summary.get("scorecard", {}).get("overall_score")
+                        if isinstance(artifact_quality_summary, dict)
+                        else None
                     ),
                 )
 
@@ -1785,10 +1793,12 @@ class TaskExecutor:
             message="Issue artifact quality evaluated.",
             quality_passed=quality["passed"],
             problematic_issue_ids=quality["problematic_issue_ids"],
+            repair_priority=quality["repair_priority"],
             missing_artifacts=quality["missing_artifacts"],
             invalid_artifacts=quality["invalid_artifacts"],
             conflicts=quality["conflicts"],
             merged_artifact=quality["merged_artifact"],
+            scorecard=quality["scorecard"],
         )
         if not self.artifact_quality_enabled:
             self._emit_checkpoint(
@@ -1796,6 +1806,7 @@ class TaskExecutor:
                 stage="artifact_quality_passed",
                 message="Issue artifact quality gate is disabled.",
                 quality_gate_enabled=False,
+                scorecard=quality["scorecard"],
             )
             return quality
 
@@ -1806,11 +1817,12 @@ class TaskExecutor:
                 message="Issue artifact quality gate passed.",
                 repair_attempt=0,
                 conflicts_count=len(quality["conflicts"]),
+                scorecard=quality["scorecard"],
             )
             return quality
 
         for repair_attempt in range(1, self.artifact_quality_max_repair_attempts + 1):
-            problematic_issue_ids = list(quality["problematic_issue_ids"])
+            problematic_issue_ids = list(quality["repair_priority"] or quality["problematic_issue_ids"])
             if not problematic_issue_ids:
                 break
 
@@ -1821,6 +1833,7 @@ class TaskExecutor:
                 repair_attempt=repair_attempt,
                 problematic_issue_ids=problematic_issue_ids,
                 issues_by_issue=quality["issues_by_issue"],
+                scorecard=quality["scorecard"],
             )
 
             for issue_id in problematic_issue_ids:
@@ -1868,10 +1881,12 @@ class TaskExecutor:
                 repair_attempt=repair_attempt,
                 quality_passed=quality["passed"],
                 problematic_issue_ids=quality["problematic_issue_ids"],
+                repair_priority=quality["repair_priority"],
                 missing_artifacts=quality["missing_artifacts"],
                 invalid_artifacts=quality["invalid_artifacts"],
                 conflicts=quality["conflicts"],
                 merged_artifact=quality["merged_artifact"],
+                scorecard=quality["scorecard"],
             )
             if quality["passed"]:
                 self._emit_checkpoint(
@@ -1880,6 +1895,7 @@ class TaskExecutor:
                     message="Issue artifact quality gate passed after repair.",
                     repair_attempt=repair_attempt,
                     conflicts_count=len(quality["conflicts"]),
+                    scorecard=quality["scorecard"],
                 )
                 return quality
 
@@ -1889,9 +1905,11 @@ class TaskExecutor:
             stage="artifact_quality_failed",
             message=failure_message,
             problematic_issue_ids=quality["problematic_issue_ids"],
+            repair_priority=quality["repair_priority"],
             missing_artifacts=quality["missing_artifacts"],
             invalid_artifacts=quality["invalid_artifacts"],
             conflicts=quality["conflicts"],
+            scorecard=quality["scorecard"],
             max_repair_attempts=self.artifact_quality_max_repair_attempts,
         )
         raise TaskGuardrailError(
@@ -1989,17 +2007,27 @@ class TaskExecutor:
         problematic_issue_ids = [
             issue_id for issue_id in plan_issue_ids if issues_by_issue.get(issue_id)
         ]
+        scorecard = self._build_artifact_quality_scorecard(
+            plan_issue_ids=plan_issue_ids,
+            issues_by_issue=issues_by_issue,
+            missing_artifacts=missing_artifacts,
+            invalid_artifacts=invalid_artifacts,
+            conflicts=conflicts,
+            merged_sources=merged_sources,
+        )
         return {
             "passed": len(problematic_issue_ids) == 0,
             "step_by_issue": step_by_issue,
             "issues_by_issue": issues_by_issue,
             "problematic_issue_ids": problematic_issue_ids,
+            "repair_priority": scorecard.get("repair_priority", []),
             "missing_artifacts": missing_artifacts,
             "invalid_artifacts": invalid_artifacts,
             "conflicts": conflicts,
             "merged_artifact": merged_artifact,
             "merged_sources": merged_sources,
             "selected_artifacts": selected,
+            "scorecard": scorecard,
         }
 
     @staticmethod
@@ -2064,12 +2092,125 @@ class TaskExecutor:
         return float(value) >= 0.0
 
     @staticmethod
+    def _build_artifact_quality_scorecard(
+        *,
+        plan_issue_ids: list[str],
+        issues_by_issue: dict[str, list[str]],
+        missing_artifacts: list[dict[str, Any]],
+        invalid_artifacts: list[dict[str, Any]],
+        conflicts: list[dict[str, Any]],
+        merged_sources: dict[str, str],
+    ) -> dict[str, Any]:
+        total_issues = max(1, len(plan_issue_ids))
+        missing_issue_ids = {
+            str(item.get("issue_id"))
+            for item in missing_artifacts
+            if str(item.get("issue_id")).strip()
+        }
+        invalid_issue_ids = {
+            str(item.get("issue_id"))
+            for item in invalid_artifacts
+            if str(item.get("issue_id")).strip()
+        }
+
+        completeness = max(0.0, 1.0 - (len(missing_issue_ids) / total_issues))
+        validity = max(0.0, 1.0 - (len(invalid_issue_ids) / total_issues))
+        max_conflicts = max(1, len(merged_sources))
+        consistency = max(0.0, 1.0 - min(1.0, len(conflicts) / max_conflicts))
+
+        conflict_hits: dict[str, int] = {}
+        for conflict in conflicts:
+            for source_field in ("previous_source", "next_source"):
+                source = str(conflict.get(source_field, "")).strip()
+                if not source:
+                    continue
+                issue_id = source.split("/", 1)[0].strip()
+                if not issue_id:
+                    continue
+                conflict_hits[issue_id] = conflict_hits.get(issue_id, 0) + 1
+
+        issue_scores: list[dict[str, Any]] = []
+        for issue_id in plan_issue_ids:
+            problems = list(issues_by_issue.get(issue_id, []))
+            issue_missing = any(
+                item in {"artifact_missing"} or item.startswith("issue_status_not_done:")
+                for item in problems
+            )
+            issue_invalid_count = sum(
+                1
+                for item in problems
+                if item not in {"artifact_missing"} and not item.startswith("issue_status_not_done:")
+            )
+            issue_conflicts = max(0, int(conflict_hits.get(issue_id, 0)))
+
+            score = 1.0
+            if issue_missing:
+                score -= 0.65
+            score -= min(0.25, issue_invalid_count * 0.1)
+            score -= min(0.15, issue_conflicts * 0.05)
+            bounded_score = round(max(0.0, min(1.0, score)), 3)
+            issue_scores.append(
+                {
+                    "issue_id": issue_id,
+                    "score": bounded_score,
+                    "problems": problems,
+                    "conflict_hits": issue_conflicts,
+                }
+            )
+
+        if issue_scores:
+            issue_average = sum(float(item["score"]) for item in issue_scores) / len(issue_scores)
+        else:
+            issue_average = 1.0
+
+        overall_score = round(
+            max(
+                0.0,
+                min(
+                    1.0,
+                    (completeness * 0.35)
+                    + (validity * 0.35)
+                    + (consistency * 0.15)
+                    + (issue_average * 0.15),
+                ),
+            ),
+            3,
+        )
+
+        repair_priority = [
+            item["issue_id"]
+            for item in sorted(
+                issue_scores,
+                key=lambda value: (float(value["score"]), value["issue_id"]),
+            )
+            if item["problems"]
+        ]
+        return {
+            "overall_score": overall_score,
+            "component_scores": {
+                "completeness": round(completeness, 3),
+                "validity": round(validity, 3),
+                "consistency": round(consistency, 3),
+                "issue_average": round(issue_average, 3),
+            },
+            "issue_scores": issue_scores,
+            "repair_priority": repair_priority,
+            "counts": {
+                "issues": len(plan_issue_ids),
+                "missing_issues": len(missing_issue_ids),
+                "invalid_issues": len(invalid_issue_ids),
+                "conflicts": len(conflicts),
+            },
+        }
+
+    @staticmethod
     def _render_issue_artifact_note(
         *,
         issue_artifacts: dict[str, dict[str, Any]],
         plan_issue_ids: list[str],
         merged_artifact: dict[str, Any],
         conflicts: list[dict[str, Any]],
+        scorecard: dict[str, Any],
     ) -> str:
         if not plan_issue_ids:
             return ""
@@ -2093,6 +2234,11 @@ class TaskExecutor:
         payload: dict[str, Any] = {
             "per_issue": selected,
             "merged": merged_artifact,
+            "quality": {
+                "overall_score": scorecard.get("overall_score"),
+                "component_scores": scorecard.get("component_scores"),
+                "repair_priority": scorecard.get("repair_priority"),
+            },
         }
         if conflicts:
             payload["conflicts"] = conflicts

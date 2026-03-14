@@ -493,8 +493,19 @@ class TaskExecutorTests(unittest.TestCase):
         self.assertGreaterEqual(len(quality_evals), 2)
         self.assertFalse(bool(quality_evals[0].get("quality_passed")))
         self.assertTrue(bool(quality_evals[-1].get("quality_passed")))
+        first_scorecard = quality_evals[0].get("scorecard")
+        self.assertIsInstance(first_scorecard, dict)
+        assert isinstance(first_scorecard, dict)
+        self.assertIn("overall_score", first_scorecard)
+        self.assertIn("repair_priority", first_scorecard)
+        self.assertGreaterEqual(len(first_scorecard.get("repair_priority", [])), 1)
+        self.assertEqual(str(first_scorecard.get("repair_priority", [])[0]), "plan_step:1")
         quality_passed = [item for item in checkpoints if item.get("stage") == "artifact_quality_passed"]
         self.assertGreaterEqual(len(quality_passed), 1)
+        passed_scorecard = quality_passed[-1].get("scorecard")
+        self.assertIsInstance(passed_scorecard, dict)
+        assert isinstance(passed_scorecard, dict)
+        self.assertGreaterEqual(float(passed_scorecard.get("overall_score", 0.0)), 0.9)
 
         first_call_messages = model_manager.calls[0]["messages"]
         artifact_contexts = [
@@ -557,6 +568,10 @@ class TaskExecutorTests(unittest.TestCase):
         self.assertIsInstance(problematic, list)
         assert isinstance(problematic, list)
         self.assertGreaterEqual(len(problematic), 1)
+        failed_scorecard = failed_events[0].get("scorecard")
+        self.assertIsInstance(failed_scorecard, dict)
+        assert isinstance(failed_scorecard, dict)
+        self.assertLessEqual(float(failed_scorecard.get("overall_score", 1.0)), 0.7)
 
     def test_verifier_repairs_empty_response(self) -> None:
         model_manager = _FakeModelManager(

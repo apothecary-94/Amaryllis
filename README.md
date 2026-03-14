@@ -626,6 +626,7 @@ Implemented now:
 - final reasoning context now includes normalized issue artifacts from completed planner issues
 - artifact quality gate for plan-step artifacts with:
   - deterministic merge policy (`latest_issue_wins` on field conflicts)
+  - quality scorecard (`overall_score`, component scores, per-issue scoring, repair priority)
   - repair loop for problematic artifacts (bounded by config)
   - quality checkpoints: `artifact_quality_evaluated|artifact_repair_attempt|artifact_quality_passed|artifact_quality_failed`
 - run resume restores issue/checkpoint state and continues from unfinished issues
