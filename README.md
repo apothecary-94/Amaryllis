@@ -624,6 +624,10 @@ Implemented now:
 - bounded parallel execution for independent planner issues (dependency-aware worker pool)
 - issue-level deadline guardrail with timeout failure propagation to run state
 - final reasoning context now includes normalized issue artifacts from completed planner issues
+- artifact quality gate for plan-step artifacts with:
+  - deterministic merge policy (`latest_issue_wins` on field conflicts)
+  - repair loop for problematic artifacts (bounded by config)
+  - quality checkpoints: `artifact_quality_evaluated|artifact_repair_attempt|artifact_quality_passed|artifact_quality_failed`
 - run resume restores issue/checkpoint state and continues from unfinished issues
 - run resume hydrates `issue_artifacts` from persisted storage even when checkpoints are missing
 - deterministic tool-call argument contract validation before tool execution
@@ -911,6 +915,8 @@ Run unit tests (memory + work mode + tools/MCP + automation):
   - `AMARYLLIS_RUN_BUDGET_MAX_TOOL_ERRORS=3`
   - `AMARYLLIS_TASK_ISSUE_PARALLEL_WORKERS=2`
   - `AMARYLLIS_TASK_ISSUE_TIMEOUT_SEC=15`
+  - `AMARYLLIS_TASK_ARTIFACT_QUALITY_ENABLED=true`
+  - `AMARYLLIS_TASK_ARTIFACT_QUALITY_MAX_REPAIR_ATTEMPTS=1`
   - `AMARYLLIS_AUTOMATION_POLL_SEC=2`
   - `AMARYLLIS_AUTOMATION_BATCH_SIZE=10`
   - `AMARYLLIS_MEMORY_PROFILE_DECAY_ENABLED=true`
@@ -950,6 +956,8 @@ export AMARYLLIS_RUN_BUDGET_MAX_TOOL_CALLS=8
 export AMARYLLIS_RUN_BUDGET_MAX_TOOL_ERRORS=3
 export AMARYLLIS_TASK_ISSUE_PARALLEL_WORKERS=2
 export AMARYLLIS_TASK_ISSUE_TIMEOUT_SEC=15
+export AMARYLLIS_TASK_ARTIFACT_QUALITY_ENABLED=true
+export AMARYLLIS_TASK_ARTIFACT_QUALITY_MAX_REPAIR_ATTEMPTS=1
 export AMARYLLIS_AUTOMATION_POLL_SEC=2
 export AMARYLLIS_AUTOMATION_BATCH_SIZE=10
 export AMARYLLIS_MEMORY_PROFILE_DECAY_ENABLED=true

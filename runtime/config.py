@@ -56,6 +56,8 @@ class AppConfig:
     task_verifier_enabled: bool
     task_verifier_max_repair_attempts: int
     task_verifier_min_response_chars: int
+    task_artifact_quality_enabled: bool
+    task_artifact_quality_max_repair_attempts: int
     memory_consolidation_enabled: bool
     memory_consolidation_interval_sec: float
     memory_consolidation_semantic_limit: int
@@ -253,6 +255,12 @@ class AppConfig:
             ),
             task_verifier_min_response_chars=max(
                 1, int(os.getenv("AMARYLLIS_TASK_VERIFIER_MIN_RESPONSE_CHARS", "8"))
+            ),
+            task_artifact_quality_enabled=_parse_bool(
+                os.getenv("AMARYLLIS_TASK_ARTIFACT_QUALITY_ENABLED", "true")
+            ),
+            task_artifact_quality_max_repair_attempts=max(
+                0, int(os.getenv("AMARYLLIS_TASK_ARTIFACT_QUALITY_MAX_REPAIR_ATTEMPTS", "1"))
             ),
             memory_consolidation_enabled=memory_consolidation_enabled,
             memory_consolidation_interval_sec=max(

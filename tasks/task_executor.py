@@ -57,6 +57,8 @@ class TaskExecutor:
         verifier_min_response_chars: int = 8,
         issue_parallel_workers: int = 2,
         issue_timeout_sec: float = 15.0,
+        artifact_quality_enabled: bool = True,
+        artifact_quality_max_repair_attempts: int = 1,
     ) -> None:
         self.model_manager = model_manager
         self.memory_manager = memory_manager
@@ -73,6 +75,8 @@ class TaskExecutor:
         self.verifier_min_response_chars = max(1, int(verifier_min_response_chars))
         self.issue_parallel_workers = max(1, int(issue_parallel_workers))
         self.issue_timeout_sec = max(0.01, float(issue_timeout_sec))
+        self.artifact_quality_enabled = bool(artifact_quality_enabled)
+        self.artifact_quality_max_repair_attempts = max(0, int(artifact_quality_max_repair_attempts))
 
     def execute(
         self,
@@ -299,8 +303,19 @@ class TaskExecutor:
             plan=plan,
             checkpoint=checkpoint,
         )
+        artifact_quality_summary: dict[str, Any] | None = None
         if plan_issue_ids:
             self._execute_plan_issues(
+                plan=plan,
+                plan_issue_ids=plan_issue_ids,
+                issue_states=issue_states,
+                issue_artifacts=issue_artifacts,
+                completed_steps=completed_steps,
+                tools_available=tools_available,
+                checkpoint=checkpoint,
+                run_deadline_monotonic=run_deadline_monotonic,
+            )
+            artifact_quality_summary = self._ensure_issue_artifact_quality(
                 plan=plan,
                 plan_issue_ids=plan_issue_ids,
                 issue_states=issue_states,
@@ -313,6 +328,12 @@ class TaskExecutor:
             artifact_note = self._render_issue_artifact_note(
                 issue_artifacts=issue_artifacts,
                 plan_issue_ids=plan_issue_ids,
+                merged_artifact=artifact_quality_summary.get("merged_artifact", {})
+                if isinstance(artifact_quality_summary, dict)
+                else {},
+                conflicts=artifact_quality_summary.get("conflicts", [])
+                if isinstance(artifact_quality_summary, dict)
+                else [],
             )
             if artifact_note:
                 messages.append({"role": "system", "content": artifact_note})
@@ -321,6 +342,11 @@ class TaskExecutor:
                     stage="issue_artifacts_loaded",
                     message="Issue artifacts injected into reasoning context.",
                     artifact_issue_count=len(issue_artifacts),
+                    artifact_conflicts_count=len(
+                        artifact_quality_summary.get("conflicts", [])
+                        if isinstance(artifact_quality_summary, dict)
+                        else []
+                    ),
                 )
 
         if STEP_REASONING not in completed_steps:
@@ -1450,12 +1476,14 @@ class TaskExecutor:
     ) -> None:
         for issue_id in plan_issue_ids:
             if issue_id in completed_steps:
+                issue = issue_states.get(issue_id) or {}
+                attempt = max(1, int(issue.get("attempt", 0)))
                 self._set_issue_status(
                     issue_states=issue_states,
                     issue_id=issue_id,
                     status=ISSUE_DONE,
                     checkpoint=checkpoint,
-                    attempt=1,
+                    attempt=attempt,
                     payload={"message": "Plan issue resumed from checkpoint."},
                 )
 
@@ -1467,7 +1495,7 @@ class TaskExecutor:
         for index, issue_id in enumerate(plan_issue_ids, start=1):
             step_by_issue[issue_id] = plan[index - 1] if index - 1 < len(plan) else {}
 
-        active: dict[Future[dict[str, Any]], str] = {}
+        active: dict[Future[dict[str, Any]], tuple[str, int]] = {}
         with ThreadPoolExecutor(max_workers=self.issue_parallel_workers) as pool:
             while pending or active:
                 scheduled_any = False
@@ -1481,6 +1509,7 @@ class TaskExecutor:
                         break
 
                     issue = issue_states.get(ready_issue) or {}
+                    attempt = max(1, int(issue.get("attempt", 0)) + 1)
                     dependencies = [str(item) for item in issue.get("depends_on", []) if str(item).strip()]
                     blocked_dep = self._first_blocking_dependency(issue_states=issue_states, dependencies=dependencies)
                     if blocked_dep is not None:
@@ -1490,7 +1519,7 @@ class TaskExecutor:
                             issue_id=ready_issue,
                             status=ISSUE_BLOCKED,
                             checkpoint=checkpoint,
-                            attempt=1,
+                            attempt=attempt,
                             last_error=error_message,
                             payload={
                                 "error": error_message,
@@ -1508,7 +1537,7 @@ class TaskExecutor:
                         issue_id=ready_issue,
                         status=ISSUE_RUNNING,
                         checkpoint=checkpoint,
-                        attempt=1,
+                        attempt=attempt,
                         payload={
                             "message": "Plan issue started.",
                             "plan_step": step_payload,
@@ -1522,19 +1551,21 @@ class TaskExecutor:
                         tools_available=tools_available,
                         issue_deadline_monotonic=issue_deadline,
                     )
-                    active[future] = ready_issue
+                    active[future] = (ready_issue, attempt)
                     scheduled_any = True
 
                 if not active:
                     if pending and not scheduled_any:
                         for issue_id in list(pending):
+                            issue = issue_states.get(issue_id) or {}
+                            attempt = max(1, int(issue.get("attempt", 0)) + 1)
                             error_message = "No schedulable issue (dependency cycle or blocked dependencies)."
                             self._set_issue_status(
                                 issue_states=issue_states,
                                 issue_id=issue_id,
                                 status=ISSUE_BLOCKED,
                                 checkpoint=checkpoint,
-                                attempt=1,
+                                attempt=attempt,
                                 last_error=error_message,
                                 payload={"error": error_message},
                             )
@@ -1552,7 +1583,7 @@ class TaskExecutor:
                     continue
 
                 for future in done:
-                    issue_id = active.pop(future)
+                    issue_id, issue_attempt = active.pop(future)
                     issue = issue_states.get(issue_id) or {}
                     issue_payload = issue.get("payload")
                     deadline_monotonic: float | None = None
@@ -1568,7 +1599,7 @@ class TaskExecutor:
                             issue_id=issue_id,
                             status=ISSUE_FAILED,
                             checkpoint=checkpoint,
-                            attempt=1,
+                            attempt=issue_attempt,
                             last_error=error_message,
                             payload={"error": error_message},
                         )
@@ -1581,7 +1612,7 @@ class TaskExecutor:
                             issue_id=issue_id,
                             status=ISSUE_FAILED,
                             checkpoint=checkpoint,
-                            attempt=1,
+                            attempt=issue_attempt,
                             last_error=str(exc),
                             payload={"error": str(exc)},
                         )
@@ -1614,7 +1645,7 @@ class TaskExecutor:
                             issue_id=issue_id,
                             status=ISSUE_DONE,
                             checkpoint=checkpoint,
-                            attempt=1,
+                            attempt=issue_attempt,
                             payload={
                                 "message": "Plan issue completed.",
                                 "artifact_key": artifact_key,
@@ -1631,7 +1662,7 @@ class TaskExecutor:
                             issue_id=issue_id,
                             status=ISSUE_BLOCKED,
                             checkpoint=checkpoint,
-                            attempt=1,
+                            attempt=issue_attempt,
                             last_error=reason,
                             payload={"error": reason, **payload},
                         )
@@ -1644,7 +1675,7 @@ class TaskExecutor:
                             issue_id=issue_id,
                             status=ISSUE_FAILED,
                             checkpoint=checkpoint,
-                            attempt=1,
+                            attempt=issue_attempt,
                             last_error=reason,
                             payload={"error": reason, **payload},
                         )
@@ -1655,7 +1686,7 @@ class TaskExecutor:
                         issue_id=issue_id,
                         status=ISSUE_DONE,
                         checkpoint=checkpoint,
-                        attempt=1,
+                        attempt=issue_attempt,
                         payload={"message": "Plan issue completed."},
                     )
 
@@ -1730,11 +1761,315 @@ class TaskExecutor:
             artifact=dict(artifact),
         )
 
+    def _ensure_issue_artifact_quality(
+        self,
+        *,
+        plan: list[dict[str, Any]],
+        plan_issue_ids: list[str],
+        issue_states: dict[str, dict[str, Any]],
+        issue_artifacts: dict[str, dict[str, Any]],
+        completed_steps: set[str],
+        tools_available: bool,
+        checkpoint: CheckpointWriter | None,
+        run_deadline_monotonic: float | None,
+    ) -> dict[str, Any]:
+        quality = self._evaluate_issue_artifact_quality(
+            plan=plan,
+            plan_issue_ids=plan_issue_ids,
+            issue_states=issue_states,
+            issue_artifacts=issue_artifacts,
+        )
+        self._emit_checkpoint(
+            checkpoint,
+            stage="artifact_quality_evaluated",
+            message="Issue artifact quality evaluated.",
+            quality_passed=quality["passed"],
+            problematic_issue_ids=quality["problematic_issue_ids"],
+            missing_artifacts=quality["missing_artifacts"],
+            invalid_artifacts=quality["invalid_artifacts"],
+            conflicts=quality["conflicts"],
+            merged_artifact=quality["merged_artifact"],
+        )
+        if not self.artifact_quality_enabled:
+            self._emit_checkpoint(
+                checkpoint,
+                stage="artifact_quality_passed",
+                message="Issue artifact quality gate is disabled.",
+                quality_gate_enabled=False,
+            )
+            return quality
+
+        if quality["passed"]:
+            self._emit_checkpoint(
+                checkpoint,
+                stage="artifact_quality_passed",
+                message="Issue artifact quality gate passed.",
+                repair_attempt=0,
+                conflicts_count=len(quality["conflicts"]),
+            )
+            return quality
+
+        for repair_attempt in range(1, self.artifact_quality_max_repair_attempts + 1):
+            problematic_issue_ids = list(quality["problematic_issue_ids"])
+            if not problematic_issue_ids:
+                break
+
+            self._emit_checkpoint(
+                checkpoint,
+                stage="artifact_repair_attempt",
+                message="Attempting issue artifact quality repair.",
+                repair_attempt=repair_attempt,
+                problematic_issue_ids=problematic_issue_ids,
+                issues_by_issue=quality["issues_by_issue"],
+            )
+
+            for issue_id in problematic_issue_ids:
+                completed_steps.discard(issue_id)
+                issue_artifacts.pop(issue_id, None)
+
+                issue = issue_states.get(issue_id) or {}
+                attempt = max(1, int(issue.get("attempt", 0)) + 1)
+                plan_step = quality["step_by_issue"].get(issue_id, {})
+                self._set_issue_status(
+                    issue_states=issue_states,
+                    issue_id=issue_id,
+                    status=ISSUE_PLANNED,
+                    checkpoint=checkpoint,
+                    attempt=attempt,
+                    last_error=None,
+                    payload={
+                        "message": "Issue marked for artifact quality repair.",
+                        "repair_attempt": repair_attempt,
+                        "artifact_quality_issues": quality["issues_by_issue"].get(issue_id, []),
+                        "plan_step": plan_step,
+                    },
+                )
+
+            self._execute_plan_issues(
+                plan=plan,
+                plan_issue_ids=plan_issue_ids,
+                issue_states=issue_states,
+                issue_artifacts=issue_artifacts,
+                completed_steps=completed_steps,
+                tools_available=tools_available,
+                checkpoint=checkpoint,
+                run_deadline_monotonic=run_deadline_monotonic,
+            )
+            quality = self._evaluate_issue_artifact_quality(
+                plan=plan,
+                plan_issue_ids=plan_issue_ids,
+                issue_states=issue_states,
+                issue_artifacts=issue_artifacts,
+            )
+            self._emit_checkpoint(
+                checkpoint,
+                stage="artifact_quality_evaluated",
+                message="Issue artifact quality re-evaluated after repair.",
+                repair_attempt=repair_attempt,
+                quality_passed=quality["passed"],
+                problematic_issue_ids=quality["problematic_issue_ids"],
+                missing_artifacts=quality["missing_artifacts"],
+                invalid_artifacts=quality["invalid_artifacts"],
+                conflicts=quality["conflicts"],
+                merged_artifact=quality["merged_artifact"],
+            )
+            if quality["passed"]:
+                self._emit_checkpoint(
+                    checkpoint,
+                    stage="artifact_quality_passed",
+                    message="Issue artifact quality gate passed after repair.",
+                    repair_attempt=repair_attempt,
+                    conflicts_count=len(quality["conflicts"]),
+                )
+                return quality
+
+        failure_message = "Issue artifact quality gate failed after repair attempts."
+        self._emit_checkpoint(
+            checkpoint,
+            stage="artifact_quality_failed",
+            message=failure_message,
+            problematic_issue_ids=quality["problematic_issue_ids"],
+            missing_artifacts=quality["missing_artifacts"],
+            invalid_artifacts=quality["invalid_artifacts"],
+            conflicts=quality["conflicts"],
+            max_repair_attempts=self.artifact_quality_max_repair_attempts,
+        )
+        raise TaskGuardrailError(
+            failure_message
+            + " problematic="
+            + ",".join(quality["problematic_issue_ids"])
+        )
+
+    def _evaluate_issue_artifact_quality(
+        self,
+        *,
+        plan: list[dict[str, Any]],
+        plan_issue_ids: list[str],
+        issue_states: dict[str, dict[str, Any]],
+        issue_artifacts: dict[str, dict[str, Any]],
+    ) -> dict[str, Any]:
+        step_by_issue: dict[str, dict[str, Any]] = {}
+        for index, issue_id in enumerate(plan_issue_ids, start=1):
+            step_by_issue[issue_id] = plan[index - 1] if index - 1 < len(plan) else {}
+
+        issues_by_issue: dict[str, list[str]] = {}
+        missing_artifacts: list[dict[str, Any]] = []
+        invalid_artifacts: list[dict[str, Any]] = []
+
+        for issue_id in plan_issue_ids:
+            issue_state = issue_states.get(issue_id) or {}
+            status = str(issue_state.get("status") or ISSUE_PLANNED).strip().lower()
+            if status != ISSUE_DONE:
+                reason = f"issue_status_not_done:{status or ISSUE_PLANNED}"
+                missing_artifacts.append({"issue_id": issue_id, "reason": reason})
+                issues_by_issue.setdefault(issue_id, []).append(reason)
+                continue
+
+            artifacts = issue_artifacts.get(issue_id)
+            if not isinstance(artifacts, dict) or not artifacts:
+                reason = "artifact_missing"
+                missing_artifacts.append({"issue_id": issue_id, "reason": reason})
+                issues_by_issue.setdefault(issue_id, []).append(reason)
+                continue
+
+            primary_key = "result" if "result" in artifacts else sorted(artifacts.keys())[0]
+            primary_artifact = artifacts.get(primary_key)
+            if not isinstance(primary_artifact, dict):
+                reason = "artifact_not_object"
+                invalid_artifacts.append(
+                    {
+                        "issue_id": issue_id,
+                        "artifact_key": primary_key,
+                        "reason": reason,
+                    }
+                )
+                issues_by_issue.setdefault(issue_id, []).append(reason)
+                continue
+
+            description = primary_artifact.get("description")
+            if not isinstance(description, str) or not description.strip():
+                reason = "description_missing"
+                invalid_artifacts.append(
+                    {
+                        "issue_id": issue_id,
+                        "artifact_key": primary_key,
+                        "reason": reason,
+                    }
+                )
+                issues_by_issue.setdefault(issue_id, []).append(reason)
+
+            requires_tools = primary_artifact.get("requires_tools")
+            if requires_tools is not None and not isinstance(requires_tools, bool):
+                reason = "requires_tools_invalid_type"
+                invalid_artifacts.append(
+                    {
+                        "issue_id": issue_id,
+                        "artifact_key": primary_key,
+                        "reason": reason,
+                    }
+                )
+                issues_by_issue.setdefault(issue_id, []).append(reason)
+
+            duration_ms = primary_artifact.get("duration_ms")
+            if duration_ms is not None and not self._is_non_negative_number(duration_ms):
+                reason = "duration_ms_invalid"
+                invalid_artifacts.append(
+                    {
+                        "issue_id": issue_id,
+                        "artifact_key": primary_key,
+                        "reason": reason,
+                    }
+                )
+                issues_by_issue.setdefault(issue_id, []).append(reason)
+
+        merged_artifact, merged_sources, conflicts, selected = self._merge_issue_artifacts(
+            issue_artifacts=issue_artifacts,
+            plan_issue_ids=plan_issue_ids,
+        )
+        problematic_issue_ids = [
+            issue_id for issue_id in plan_issue_ids if issues_by_issue.get(issue_id)
+        ]
+        return {
+            "passed": len(problematic_issue_ids) == 0,
+            "step_by_issue": step_by_issue,
+            "issues_by_issue": issues_by_issue,
+            "problematic_issue_ids": problematic_issue_ids,
+            "missing_artifacts": missing_artifacts,
+            "invalid_artifacts": invalid_artifacts,
+            "conflicts": conflicts,
+            "merged_artifact": merged_artifact,
+            "merged_sources": merged_sources,
+            "selected_artifacts": selected,
+        }
+
+    @staticmethod
+    def _merge_issue_artifacts(
+        *,
+        issue_artifacts: dict[str, dict[str, Any]],
+        plan_issue_ids: list[str],
+    ) -> tuple[dict[str, Any], dict[str, str], list[dict[str, Any]], list[dict[str, Any]]]:
+        selected: list[dict[str, Any]] = []
+        for issue_id in plan_issue_ids:
+            artifacts = issue_artifacts.get(issue_id)
+            if not isinstance(artifacts, dict):
+                continue
+            for artifact_key in sorted(artifacts.keys()):
+                artifact = artifacts.get(artifact_key)
+                if not isinstance(artifact, dict):
+                    continue
+                selected.append(
+                    {
+                        "issue_id": issue_id,
+                        "artifact_key": str(artifact_key),
+                        "artifact": dict(artifact),
+                    }
+                )
+
+        merged: dict[str, Any] = {}
+        merged_sources: dict[str, str] = {}
+        conflicts: list[dict[str, Any]] = []
+        for item in selected:
+            issue_id = str(item.get("issue_id"))
+            artifact_key = str(item.get("artifact_key"))
+            source = f"{issue_id}/{artifact_key}"
+            artifact = item.get("artifact")
+            if not isinstance(artifact, dict):
+                continue
+            for raw_field, value in artifact.items():
+                field = str(raw_field).strip()
+                if not field:
+                    continue
+                if field in merged and merged[field] != value:
+                    conflicts.append(
+                        {
+                            "field": field,
+                            "previous_source": merged_sources[field],
+                            "previous_value": merged[field],
+                            "next_source": source,
+                            "next_value": value,
+                            "resolution": "latest_issue_wins",
+                        }
+                    )
+                merged[field] = value
+                merged_sources[field] = source
+
+        return merged, merged_sources, conflicts, selected
+
+    @staticmethod
+    def _is_non_negative_number(value: Any) -> bool:
+        if isinstance(value, bool):
+            return False
+        if not isinstance(value, (int, float)):
+            return False
+        return float(value) >= 0.0
+
     @staticmethod
     def _render_issue_artifact_note(
         *,
         issue_artifacts: dict[str, dict[str, Any]],
         plan_issue_ids: list[str],
+        merged_artifact: dict[str, Any],
+        conflicts: list[dict[str, Any]],
     ) -> str:
         if not plan_issue_ids:
             return ""
@@ -1755,7 +2090,13 @@ class TaskExecutor:
                 )
         if not selected:
             return ""
-        return "Issue artifacts context: " + json.dumps(selected, ensure_ascii=False)
+        payload: dict[str, Any] = {
+            "per_issue": selected,
+            "merged": merged_artifact,
+        }
+        if conflicts:
+            payload["conflicts"] = conflicts
+        return "Issue artifacts context: " + json.dumps(payload, ensure_ascii=False)
 
     def _next_ready_plan_issue(
         self,
@@ -1838,13 +2179,14 @@ class TaskExecutor:
     def _enforce_active_issue_deadlines(
         self,
         *,
-        active: dict[Future[dict[str, Any]], str],
+        active: dict[Future[dict[str, Any]], tuple[str, int]],
         issue_states: dict[str, dict[str, Any]],
         checkpoint: CheckpointWriter | None,
     ) -> None:
         now = time.monotonic()
         timed_out: list[Future[dict[str, Any]]] = []
-        for future, issue_id in active.items():
+        for future, active_entry in active.items():
+            issue_id, _ = active_entry
             issue = issue_states.get(issue_id) or {}
             payload = issue.get("payload")
             if not isinstance(payload, dict):
@@ -1858,9 +2200,10 @@ class TaskExecutor:
                 timed_out.append(future)
 
         for future in timed_out:
-            issue_id = active.pop(future, None)
-            if issue_id is None:
+            active_entry = active.pop(future, None)
+            if active_entry is None:
                 continue
+            issue_id, issue_attempt = active_entry
             future.cancel()
             error_message = f"Issue exceeded deadline ({self.issue_timeout_sec:.2f}s)."
             self._set_issue_status(
@@ -1868,7 +2211,7 @@ class TaskExecutor:
                 issue_id=issue_id,
                 status=ISSUE_FAILED,
                 checkpoint=checkpoint,
-                attempt=1,
+                attempt=issue_attempt,
                 last_error=error_message,
                 payload={"error": error_message},
             )
@@ -1998,7 +2341,7 @@ class TaskExecutor:
         issue["attempt"] = max(int(issue.get("attempt", 0)), int(attempt))
         if last_error is not None:
             issue["last_error"] = str(last_error)
-        elif normalized_status == ISSUE_DONE:
+        elif normalized_status in {ISSUE_DONE, ISSUE_RUNNING, ISSUE_PLANNED}:
             issue["last_error"] = None
         merged_payload: dict[str, Any] = {}
         current_payload = issue.get("payload")

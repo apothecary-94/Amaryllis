@@ -7,7 +7,7 @@ from typing import Any
 from agents.agent import Agent
 from controller.meta_controller import MetaController
 from planner.planner import PlanStep, Planner
-from tasks.task_executor import TaskExecutor, TaskTimeoutError
+from tasks.task_executor import TaskExecutor, TaskGuardrailError, TaskTimeoutError
 from tools.tool_executor import ToolExecutor
 from tools.tool_registry import ToolRegistry
 
@@ -114,6 +114,66 @@ class _SlowIssueTaskExecutor(TaskExecutor):
         issue_deadline_monotonic: float,
     ) -> dict[str, Any]:
         time.sleep(0.03)
+        return super()._evaluate_plan_issue(
+            issue_id=issue_id,
+            step_payload=step_payload,
+            tools_available=tools_available,
+            issue_deadline_monotonic=issue_deadline_monotonic,
+        )
+
+
+class _FlakyArtifactTaskExecutor(TaskExecutor):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._issue_attempts: dict[str, int] = {}
+
+    def _evaluate_plan_issue(  # type: ignore[override]
+        self,
+        *,
+        issue_id: str,
+        step_payload: dict[str, Any],
+        tools_available: bool,
+        issue_deadline_monotonic: float,
+    ) -> dict[str, Any]:
+        attempt = self._issue_attempts.get(issue_id, 0) + 1
+        self._issue_attempts[issue_id] = attempt
+        if issue_id == "plan_step:1" and attempt == 1:
+            return {
+                "status": "done",
+                "artifact_key": "result",
+                "payload": {
+                    "description": "   ",
+                    "requires_tools": "no",
+                    "duration_ms": -5,
+                },
+            }
+        return super()._evaluate_plan_issue(
+            issue_id=issue_id,
+            step_payload=step_payload,
+            tools_available=tools_available,
+            issue_deadline_monotonic=issue_deadline_monotonic,
+        )
+
+
+class _AlwaysBrokenArtifactTaskExecutor(TaskExecutor):
+    def _evaluate_plan_issue(  # type: ignore[override]
+        self,
+        *,
+        issue_id: str,
+        step_payload: dict[str, Any],
+        tools_available: bool,
+        issue_deadline_monotonic: float,
+    ) -> dict[str, Any]:
+        if issue_id.startswith("plan_step:"):
+            return {
+                "status": "done",
+                "artifact_key": "result",
+                "payload": {
+                    "description": "",
+                    "requires_tools": "invalid",
+                    "duration_ms": -1,
+                },
+            }
         return super()._evaluate_plan_issue(
             issue_id=issue_id,
             step_payload=step_payload,
@@ -380,6 +440,123 @@ class TaskExecutorTests(unittest.TestCase):
                 session_id="s2",
                 user_message="Do A and B",
             )
+
+    def test_artifact_quality_repair_loop(self) -> None:
+        model_manager = _FakeModelManager(
+            responses=[
+                {
+                    "content": "Final answer after repair.",
+                    "provider": "fake",
+                    "model": "fake-model",
+                }
+            ]
+        )
+        memory_manager = _FakeMemoryManager()
+        registry = ToolRegistry()
+        executor = _FlakyArtifactTaskExecutor(
+            model_manager=model_manager,  # type: ignore[arg-type]
+            memory_manager=memory_manager,  # type: ignore[arg-type]
+            tool_registry=registry,
+            tool_executor=ToolExecutor(registry),
+            meta_controller=MetaController(),
+            planner=Planner(),
+            max_model_calls=4,
+            verifier_enabled=False,
+            artifact_quality_enabled=True,
+            artifact_quality_max_repair_attempts=2,
+        )
+        agent = Agent.create(
+            name="Artifact Repair Agent",
+            system_prompt="Respond directly.",
+            model="fake-model",
+            tools=[],
+            user_id="user-1",
+        )
+
+        checkpoints: list[dict[str, Any]] = []
+
+        def _checkpoint(payload: dict[str, Any]) -> None:
+            checkpoints.append(dict(payload))
+
+        result = executor.execute(
+            agent=agent,
+            user_id="user-1",
+            session_id="repair-session",
+            user_message="Repair artifacts",
+            checkpoint=_checkpoint,
+        )
+
+        self.assertEqual(result["response"], "Final answer after repair.")
+        repair_events = [item for item in checkpoints if item.get("stage") == "artifact_repair_attempt"]
+        self.assertEqual(len(repair_events), 1)
+        quality_evals = [item for item in checkpoints if item.get("stage") == "artifact_quality_evaluated"]
+        self.assertGreaterEqual(len(quality_evals), 2)
+        self.assertFalse(bool(quality_evals[0].get("quality_passed")))
+        self.assertTrue(bool(quality_evals[-1].get("quality_passed")))
+        quality_passed = [item for item in checkpoints if item.get("stage") == "artifact_quality_passed"]
+        self.assertGreaterEqual(len(quality_passed), 1)
+
+        first_call_messages = model_manager.calls[0]["messages"]
+        artifact_contexts = [
+            str(item.get("content", ""))
+            for item in first_call_messages
+            if isinstance(item, dict) and str(item.get("role")) == "system"
+            and "Issue artifacts context:" in str(item.get("content", ""))
+        ]
+        self.assertGreaterEqual(len(artifact_contexts), 1)
+        self.assertIn('"merged"', artifact_contexts[-1])
+
+    def test_artifact_quality_failure_raises_guardrail(self) -> None:
+        model_manager = _FakeModelManager(
+            responses=[
+                {
+                    "content": "Should not reach final response.",
+                    "provider": "fake",
+                    "model": "fake-model",
+                }
+            ]
+        )
+        memory_manager = _FakeMemoryManager()
+        registry = ToolRegistry()
+        executor = _AlwaysBrokenArtifactTaskExecutor(
+            model_manager=model_manager,  # type: ignore[arg-type]
+            memory_manager=memory_manager,  # type: ignore[arg-type]
+            tool_registry=registry,
+            tool_executor=ToolExecutor(registry),
+            meta_controller=MetaController(),
+            planner=Planner(),
+            max_model_calls=4,
+            verifier_enabled=False,
+            artifact_quality_enabled=True,
+            artifact_quality_max_repair_attempts=1,
+        )
+        agent = Agent.create(
+            name="Artifact Broken Agent",
+            system_prompt="Respond directly.",
+            model="fake-model",
+            tools=[],
+            user_id="user-1",
+        )
+        checkpoints: list[dict[str, Any]] = []
+
+        def _checkpoint(payload: dict[str, Any]) -> None:
+            checkpoints.append(dict(payload))
+
+        with self.assertRaises(TaskGuardrailError):
+            executor.execute(
+                agent=agent,
+                user_id="user-1",
+                session_id="broken-session",
+                user_message="Break artifacts",
+                checkpoint=_checkpoint,
+            )
+
+        failed_events = [item for item in checkpoints if item.get("stage") == "artifact_quality_failed"]
+        self.assertEqual(len(failed_events), 1)
+        problematic = failed_events[0].get("problematic_issue_ids")
+        self.assertIsInstance(problematic, list)
+        assert isinstance(problematic, list)
+        self.assertGreaterEqual(len(problematic), 1)
 
     def test_verifier_repairs_empty_response(self) -> None:
         model_manager = _FakeModelManager(

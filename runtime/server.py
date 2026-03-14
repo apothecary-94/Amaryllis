@@ -165,6 +165,8 @@ def create_services() -> ServiceContainer:
         verifier_enabled=config.task_verifier_enabled,
         verifier_max_repair_attempts=config.task_verifier_max_repair_attempts,
         verifier_min_response_chars=config.task_verifier_min_response_chars,
+        artifact_quality_enabled=config.task_artifact_quality_enabled,
+        artifact_quality_max_repair_attempts=config.task_artifact_quality_max_repair_attempts,
     )
 
     agent_run_manager = AgentRunManager(
