@@ -138,26 +138,27 @@ class AutomationScheduler:
             )
         )
 
-        self.database.create_automation(
-            automation_id=automation_id,
-            agent_id=agent_id,
-            user_id=user_id,
-            session_id=session_id,
-            message=message,
-            interval_sec=normalized_interval,
-            next_run_at=next_run_at,
-            schedule_type=normalized_type,
-            schedule=normalized_schedule,
-            timezone_name=normalized_timezone,
-        )
-        self.database.add_automation_event(
-            automation_id=automation_id,
-            event_type="created",
-            message=(
-                f"Automation created "
-                f"(schedule_type={normalized_type}, timezone={normalized_timezone})."
-            ),
-        )
+        with self.database.write_transaction():
+            self.database.create_automation(
+                automation_id=automation_id,
+                agent_id=agent_id,
+                user_id=user_id,
+                session_id=session_id,
+                message=message,
+                interval_sec=normalized_interval,
+                next_run_at=next_run_at,
+                schedule_type=normalized_type,
+                schedule=normalized_schedule,
+                timezone_name=normalized_timezone,
+            )
+            self.database.add_automation_event(
+                automation_id=automation_id,
+                event_type="created",
+                message=(
+                    f"Automation created "
+                    f"(schedule_type={normalized_type}, timezone={normalized_timezone})."
+                ),
+            )
         self._emit(
             "automation_created",
             {
@@ -229,15 +230,16 @@ class AutomationScheduler:
                 now_utc=self._utc_now(),
             )
 
-        self.database.update_automation_fields(automation_id, **updates)
-        self.database.add_automation_event(
-            automation_id=automation_id,
-            event_type="updated",
-            message=(
-                f"Automation updated "
-                f"(schedule_type={normalized_type}, timezone={normalized_timezone})."
-            ),
-        )
+        with self.database.write_transaction():
+            self.database.update_automation_fields(automation_id, **updates)
+            self.database.add_automation_event(
+                automation_id=automation_id,
+                event_type="updated",
+                message=(
+                    f"Automation updated "
+                    f"(schedule_type={normalized_type}, timezone={normalized_timezone})."
+                ),
+            )
         updated = self.database.get_automation(automation_id)
         assert updated is not None
         return updated
@@ -265,17 +267,18 @@ class AutomationScheduler:
         if automation is None:
             raise ValueError(f"Automation not found: {automation_id}")
 
-        self.database.update_automation_fields(
-            automation_id,
-            is_enabled=False,
-            lease_owner=None,
-            lease_expires_at=None,
-        )
-        self.database.add_automation_event(
-            automation_id=automation_id,
-            event_type="paused",
-            message="Automation paused.",
-        )
+        with self.database.write_transaction():
+            self.database.update_automation_fields(
+                automation_id,
+                is_enabled=False,
+                lease_owner=None,
+                lease_expires_at=None,
+            )
+            self.database.add_automation_event(
+                automation_id=automation_id,
+                event_type="paused",
+                message="Automation paused.",
+            )
         updated = self.database.get_automation(automation_id)
         assert updated is not None
         return updated
@@ -293,23 +296,24 @@ class AutomationScheduler:
             timezone_name=timezone_name,
             now_utc=self._utc_now(),
         )
-        self.database.update_automation_fields(
-            automation_id,
-            is_enabled=True,
-            next_run_at=next_run_at,
-            last_error=None,
-            consecutive_failures=0,
-            escalation_level="none",
-            lease_owner=None,
-            lease_expires_at=None,
-            backoff_until=None,
-            circuit_open_until=None,
-        )
-        self.database.add_automation_event(
-            automation_id=automation_id,
-            event_type="resumed",
-            message="Automation resumed.",
-        )
+        with self.database.write_transaction():
+            self.database.update_automation_fields(
+                automation_id,
+                is_enabled=True,
+                next_run_at=next_run_at,
+                last_error=None,
+                consecutive_failures=0,
+                escalation_level="none",
+                lease_owner=None,
+                lease_expires_at=None,
+                backoff_until=None,
+                circuit_open_until=None,
+            )
+            self.database.add_automation_event(
+                automation_id=automation_id,
+                event_type="resumed",
+                message="Automation resumed.",
+            )
         updated = self.database.get_automation(automation_id)
         assert updated is not None
         return updated
@@ -573,20 +577,21 @@ class AutomationScheduler:
                 stale_before_iso=stale_before_iso if source_name == "scheduled" else None,
             )
             if not dispatch_registered:
-                self.database.update_automation_fields(
-                    automation_id,
-                    next_run_at=next_run_at,
-                    interval_sec=interval_sec,
-                    schedule_type=schedule_type,
-                    schedule_json=schedule,
-                    timezone=timezone_name,
-                    last_dispatch_key=dispatch_key,
-                )
-                self.database.add_automation_event(
-                    automation_id=automation_id,
-                    event_type="run_deduplicated",
-                    message=f"Duplicate dispatch skipped ({source_name}) key={dispatch_key}.",
-                )
+                with self.database.write_transaction():
+                    self.database.update_automation_fields(
+                        automation_id,
+                        next_run_at=next_run_at,
+                        interval_sec=interval_sec,
+                        schedule_type=schedule_type,
+                        schedule_json=schedule,
+                        timezone=timezone_name,
+                        last_dispatch_key=dispatch_key,
+                    )
+                    self.database.add_automation_event(
+                        automation_id=automation_id,
+                        event_type="run_deduplicated",
+                        message=f"Duplicate dispatch skipped ({source_name}) key={dispatch_key}.",
+                    )
                 self._emit(
                     "automation_run_deduplicated",
                     {
@@ -604,52 +609,54 @@ class AutomationScheduler:
                 user_message=run_message,
             )
             run_id = str(run["id"])
-            self.database.update_automation_dispatch_run_id(
-                automation_id=automation_id,
-                dispatch_key=dispatch_key,
-                run_id=run_id,
-            )
-            self.database.update_automation_fields(
-                automation_id,
-                last_run_at=now_iso,
-                next_run_at=next_run_at,
-                last_error=None,
-                interval_sec=interval_sec,
-                schedule_type=schedule_type,
-                schedule_json=schedule,
-                timezone=timezone_name,
-                consecutive_failures=0,
-                escalation_level="none",
-                backoff_until=None,
-                circuit_open_until=None,
-                last_dispatch_key=dispatch_key,
-            )
-            if previous_failures > 0 or previous_level != "none":
-                self.database.add_automation_event(
+            recovered = previous_failures > 0 or previous_level != "none"
+            with self.database.write_transaction():
+                self.database.update_automation_dispatch_run_id(
                     automation_id=automation_id,
-                    event_type="recovered",
-                    message="Automation recovered after previous failures.",
+                    dispatch_key=dispatch_key,
                     run_id=run_id,
                 )
+                self.database.update_automation_fields(
+                    automation_id,
+                    last_run_at=now_iso,
+                    next_run_at=next_run_at,
+                    last_error=None,
+                    interval_sec=interval_sec,
+                    schedule_type=schedule_type,
+                    schedule_json=schedule,
+                    timezone=timezone_name,
+                    consecutive_failures=0,
+                    escalation_level="none",
+                    backoff_until=None,
+                    circuit_open_until=None,
+                    last_dispatch_key=dispatch_key,
+                )
+                if recovered:
+                    self.database.add_automation_event(
+                        automation_id=automation_id,
+                        event_type="recovered",
+                        message="Automation recovered after previous failures.",
+                        run_id=run_id,
+                    )
+                self.database.add_automation_event(
+                    automation_id=automation_id,
+                    event_type="run_queued",
+                    message=(
+                        f"Automation queued run ({source_name})"
+                        if not changed_files
+                        else (
+                            f"Automation queued run ({source_name}); "
+                            f"watcher detected {len(changed_files)} changed files."
+                        )
+                    ),
+                    run_id=run_id,
+                )
+            if recovered:
                 self._notify_recovered(
                     automation_id=automation_id,
                     user_id=user_id,
                     previous_failures=previous_failures,
                 )
-
-            self.database.add_automation_event(
-                automation_id=automation_id,
-                event_type="run_queued",
-                message=(
-                    f"Automation queued run ({source_name})"
-                    if not changed_files
-                    else (
-                        f"Automation queued run ({source_name}); "
-                        f"watcher detected {len(changed_files)} changed files."
-                    )
-                ),
-                run_id=run_id,
-            )
             if changed_files and source_name != "manual":
                 self._notify_watch_triggered(
                     automation_id=automation_id,
@@ -669,11 +676,6 @@ class AutomationScheduler:
                 },
             )
         except Exception as exc:
-            if dispatch_registered and run_id is None:
-                self.database.delete_automation_dispatch(
-                    automation_id=automation_id,
-                    dispatch_key=dispatch_key,
-                )
             error = str(exc)
             failures = previous_failures + 1
             level = self._escalation_level_for_failures(failures)
@@ -689,31 +691,37 @@ class AutomationScheduler:
                 timezone_name=timezone_name,
                 now_utc=now,
             )
-            self.database.update_automation_fields(
-                automation_id,
-                last_error=error,
-                next_run_at=retry_next,
-                interval_sec=interval_sec,
-                schedule_type=schedule_type,
-                schedule_json=schedule,
-                timezone=timezone_name,
-                consecutive_failures=failures,
-                escalation_level=level,
-                backoff_until=backoff_until,
-                circuit_open_until=circuit_open_until,
-                last_dispatch_key=dispatch_key,
-                is_enabled=False if disable_now else bool(automation.get("is_enabled", True)),
-            )
-            self.database.add_automation_event(
-                automation_id=automation_id,
-                event_type="run_error",
-                message=(
-                    f"Automation failed to queue run: {error} "
-                    f"(consecutive_failures={failures}, escalation={level}, "
-                    f"backoff_sec={backoff_seconds:.2f}, "
-                    f"circuit_open_until={circuit_open_until or 'none'})"
-                ),
-            )
+            with self.database.write_transaction():
+                if dispatch_registered and run_id is None:
+                    self.database.delete_automation_dispatch(
+                        automation_id=automation_id,
+                        dispatch_key=dispatch_key,
+                    )
+                self.database.update_automation_fields(
+                    automation_id,
+                    last_error=error,
+                    next_run_at=retry_next,
+                    interval_sec=interval_sec,
+                    schedule_type=schedule_type,
+                    schedule_json=schedule,
+                    timezone=timezone_name,
+                    consecutive_failures=failures,
+                    escalation_level=level,
+                    backoff_until=backoff_until,
+                    circuit_open_until=circuit_open_until,
+                    last_dispatch_key=dispatch_key,
+                    is_enabled=False if disable_now else bool(automation.get("is_enabled", True)),
+                )
+                self.database.add_automation_event(
+                    automation_id=automation_id,
+                    event_type="run_error",
+                    message=(
+                        f"Automation failed to queue run: {error} "
+                        f"(consecutive_failures={failures}, escalation={level}, "
+                        f"backoff_sec={backoff_seconds:.2f}, "
+                        f"circuit_open_until={circuit_open_until or 'none'})"
+                    ),
+                )
             should_notify_escalation = (level != previous_level and level != "none") or (
                 disable_now and bool(automation.get("is_enabled", True))
             )

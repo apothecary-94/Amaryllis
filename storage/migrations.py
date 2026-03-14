@@ -388,6 +388,228 @@ MIGRATIONS: list[Migration] = [
             ON agent_run_tool_calls(run_id, status, updated_at);
         """,
     ),
+    Migration(
+        version=13,
+        name="persistence_foreign_keys_v1",
+        sql="""
+        PRAGMA foreign_keys=OFF;
+
+        DELETE FROM agent_run_issues
+        WHERE run_id NOT IN (SELECT id FROM agent_runs);
+        DELETE FROM agent_run_issue_artifacts
+        WHERE (run_id, issue_id) NOT IN (SELECT run_id, issue_id FROM agent_run_issues);
+        DELETE FROM agent_run_tool_calls
+        WHERE run_id NOT IN (SELECT id FROM agent_runs);
+        DELETE FROM automation_events
+        WHERE automation_id NOT IN (SELECT id FROM automations);
+        DELETE FROM automation_dispatches
+        WHERE automation_id NOT IN (SELECT id FROM automations);
+
+        ALTER TABLE agent_run_issues RENAME TO agent_run_issues_old;
+        CREATE TABLE agent_run_issues (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL,
+            issue_id TEXT NOT NULL,
+            issue_order INTEGER NOT NULL DEFAULT 0,
+            title TEXT NOT NULL,
+            status TEXT NOT NULL,
+            depends_on_json TEXT NOT NULL DEFAULT '[]',
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT,
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            started_at TEXT,
+            finished_at TEXT,
+            UNIQUE(run_id, issue_id),
+            FOREIGN KEY(run_id) REFERENCES agent_runs(id) ON DELETE CASCADE ON UPDATE CASCADE
+        );
+        INSERT INTO agent_run_issues (
+            id,
+            run_id,
+            issue_id,
+            issue_order,
+            title,
+            status,
+            depends_on_json,
+            attempt_count,
+            last_error,
+            payload_json,
+            created_at,
+            updated_at,
+            started_at,
+            finished_at
+        )
+        SELECT
+            id,
+            run_id,
+            issue_id,
+            issue_order,
+            title,
+            status,
+            depends_on_json,
+            attempt_count,
+            last_error,
+            payload_json,
+            created_at,
+            updated_at,
+            started_at,
+            finished_at
+        FROM agent_run_issues_old;
+        DROP TABLE agent_run_issues_old;
+        CREATE INDEX IF NOT EXISTS idx_agent_run_issues_run_order
+            ON agent_run_issues(run_id, issue_order, updated_at);
+        CREATE INDEX IF NOT EXISTS idx_agent_run_issues_status_updated
+            ON agent_run_issues(status, updated_at);
+
+        ALTER TABLE agent_run_issue_artifacts RENAME TO agent_run_issue_artifacts_old;
+        CREATE TABLE agent_run_issue_artifacts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL,
+            issue_id TEXT NOT NULL,
+            artifact_key TEXT NOT NULL,
+            artifact_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(run_id, issue_id, artifact_key),
+            FOREIGN KEY(run_id, issue_id) REFERENCES agent_run_issues(run_id, issue_id) ON DELETE CASCADE ON UPDATE CASCADE
+        );
+        INSERT INTO agent_run_issue_artifacts (
+            id,
+            run_id,
+            issue_id,
+            artifact_key,
+            artifact_json,
+            created_at,
+            updated_at
+        )
+        SELECT
+            id,
+            run_id,
+            issue_id,
+            artifact_key,
+            artifact_json,
+            created_at,
+            updated_at
+        FROM agent_run_issue_artifacts_old;
+        DROP TABLE agent_run_issue_artifacts_old;
+        CREATE INDEX IF NOT EXISTS idx_agent_run_issue_artifacts_run_updated
+            ON agent_run_issue_artifacts(run_id, updated_at);
+        CREATE INDEX IF NOT EXISTS idx_agent_run_issue_artifacts_issue_updated
+            ON agent_run_issue_artifacts(run_id, issue_id, updated_at);
+
+        ALTER TABLE agent_run_tool_calls RENAME TO agent_run_tool_calls_old;
+        CREATE TABLE agent_run_tool_calls (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL,
+            tool_name TEXT NOT NULL,
+            arguments_json TEXT NOT NULL DEFAULT '{}',
+            status TEXT NOT NULL,
+            result_json TEXT,
+            error_message TEXT,
+            attempt INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(run_id, idempotency_key),
+            FOREIGN KEY(run_id) REFERENCES agent_runs(id) ON DELETE CASCADE ON UPDATE CASCADE
+        );
+        INSERT INTO agent_run_tool_calls (
+            id,
+            run_id,
+            idempotency_key,
+            tool_name,
+            arguments_json,
+            status,
+            result_json,
+            error_message,
+            attempt,
+            created_at,
+            updated_at
+        )
+        SELECT
+            id,
+            run_id,
+            idempotency_key,
+            tool_name,
+            arguments_json,
+            status,
+            result_json,
+            error_message,
+            attempt,
+            created_at,
+            updated_at
+        FROM agent_run_tool_calls_old;
+        DROP TABLE agent_run_tool_calls_old;
+        CREATE INDEX IF NOT EXISTS idx_agent_run_tool_calls_run_updated
+            ON agent_run_tool_calls(run_id, updated_at);
+        CREATE INDEX IF NOT EXISTS idx_agent_run_tool_calls_run_status
+            ON agent_run_tool_calls(run_id, status, updated_at);
+
+        ALTER TABLE automation_events RENAME TO automation_events_old;
+        CREATE TABLE automation_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            automation_id TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            message TEXT NOT NULL,
+            run_id TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(automation_id) REFERENCES automations(id) ON DELETE CASCADE ON UPDATE CASCADE
+        );
+        INSERT INTO automation_events (
+            id,
+            automation_id,
+            event_type,
+            message,
+            run_id,
+            created_at
+        )
+        SELECT
+            id,
+            automation_id,
+            event_type,
+            message,
+            run_id,
+            created_at
+        FROM automation_events_old;
+        DROP TABLE automation_events_old;
+        CREATE INDEX IF NOT EXISTS idx_automation_events_automation_time
+            ON automation_events(automation_id, created_at);
+
+        ALTER TABLE automation_dispatches RENAME TO automation_dispatches_old;
+        CREATE TABLE automation_dispatches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            automation_id TEXT NOT NULL,
+            dispatch_key TEXT NOT NULL,
+            source TEXT NOT NULL,
+            run_id TEXT,
+            created_at TEXT NOT NULL,
+            UNIQUE(automation_id, dispatch_key),
+            FOREIGN KEY(automation_id) REFERENCES automations(id) ON DELETE CASCADE ON UPDATE CASCADE
+        );
+        INSERT INTO automation_dispatches (
+            id,
+            automation_id,
+            dispatch_key,
+            source,
+            run_id,
+            created_at
+        )
+        SELECT
+            id,
+            automation_id,
+            dispatch_key,
+            source,
+            run_id,
+            created_at
+        FROM automation_dispatches_old;
+        DROP TABLE automation_dispatches_old;
+        CREATE INDEX IF NOT EXISTS idx_automation_dispatches_automation_time
+            ON automation_dispatches(automation_id, created_at);
+
+        PRAGMA foreign_keys=ON;
+        """,
+    ),
 ]
 
 

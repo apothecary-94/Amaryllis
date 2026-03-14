@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 import logging
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from threading import Lock
-from typing import Any
+from threading import RLock
+from typing import Any, Iterator
 from uuid import uuid4
 
 from storage.migrations import apply_migrations
@@ -17,19 +18,56 @@ class Database:
         self.logger = logging.getLogger("amaryllis.storage.database")
         self.database_path = Path(database_path)
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        self._lock = Lock()
+        self._lock = RLock()
+        self._write_tx_depth = 0
+        self._pending_commit = False
 
         self._conn = sqlite3.connect(self.database_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
 
         with self._lock:
+            self._configure_connection()
             applied = apply_migrations(self._conn)
+            self._configure_connection()
         if applied:
             self.logger.info("sqlite_migrations_applied versions=%s", ",".join(str(v) for v in applied))
 
     @staticmethod
     def _utc_now() -> str:
         return datetime.now(timezone.utc).isoformat()
+
+    def _configure_connection(self) -> None:
+        self._conn.execute("PRAGMA busy_timeout=5000")
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA synchronous=NORMAL")
+        self._conn.execute("PRAGMA temp_store=MEMORY")
+        self._conn.execute("PRAGMA foreign_keys=ON")
+
+    def _commit_locked(self) -> None:
+        if self._write_tx_depth > 0:
+            self._pending_commit = True
+            return
+        self._conn.commit()
+
+    @contextmanager
+    def write_transaction(self) -> Iterator[None]:
+        with self._lock:
+            if self._write_tx_depth == 0:
+                self._pending_commit = False
+            self._write_tx_depth += 1
+            try:
+                yield
+            except Exception:
+                if self._write_tx_depth == 1:
+                    self._conn.rollback()
+                    self._pending_commit = False
+                raise
+            else:
+                if self._write_tx_depth == 1 and self._pending_commit:
+                    self._conn.commit()
+                    self._pending_commit = False
+            finally:
+                self._write_tx_depth = max(0, self._write_tx_depth - 1)
 
     def close(self) -> None:
         with self._lock:
@@ -45,7 +83,7 @@ class Database:
                 """,
                 (key, value),
             )
-            self._conn.commit()
+            self._commit_locked()
 
     def get_setting(self, key: str, default: str | None = None) -> str | None:
         with self._lock:
@@ -103,7 +141,7 @@ class Database:
                     self._utc_now(),
                 ),
             )
-            self._conn.commit()
+            self._commit_locked()
 
     def list_episodic_events(
         self,
@@ -208,7 +246,7 @@ class Database:
                     self._utc_now(),
                 ),
             )
-            self._conn.commit()
+            self._commit_locked()
             return int(cursor.lastrowid)
 
     def get_semantic_entry(
@@ -388,7 +426,7 @@ class Database:
                 """,
                 (superseded_by, semantic_id),
             )
-            self._conn.commit()
+            self._commit_locked()
 
     def set_user_memory(
         self,
@@ -415,7 +453,7 @@ class Database:
                 """,
                 (user_id, key, value, confidence, importance, source, timestamp),
             )
-            self._conn.commit()
+            self._commit_locked()
 
     def get_user_memory(self, user_id: str) -> dict[str, str]:
         with self._lock:
@@ -497,7 +535,7 @@ class Database:
                     self._utc_now(),
                 ),
             )
-            self._conn.commit()
+            self._commit_locked()
 
     def list_working_memory(
         self,
@@ -543,7 +581,7 @@ class Database:
                 """,
                 (self._utc_now(), user_id, session_id),
             )
-            self._conn.commit()
+            self._commit_locked()
 
     def add_extraction_record(
         self,
@@ -571,7 +609,7 @@ class Database:
                 """,
                 (user_id, agent_id, session_id, source_role, source_text, payload, self._utc_now()),
             )
-            self._conn.commit()
+            self._commit_locked()
             return int(cursor.lastrowid)
 
     def list_extraction_records(self, user_id: str, limit: int = 50) -> list[dict[str, Any]]:
@@ -639,7 +677,7 @@ class Database:
                     self._utc_now(),
                 ),
             )
-            self._conn.commit()
+            self._commit_locked()
             return int(cursor.lastrowid)
 
     def list_conflict_records(self, user_id: str, limit: int = 50) -> list[dict[str, Any]]:
@@ -730,7 +768,7 @@ class Database:
                     self._utc_now(),
                 ),
             )
-            self._conn.commit()
+            self._commit_locked()
             return int(cursor.lastrowid)
 
     def list_security_audit_events(
@@ -813,7 +851,7 @@ class Database:
                     now,
                 ),
             )
-            self._conn.commit()
+            self._commit_locked()
 
     def update_agent_run_fields(self, run_id: str, **fields: Any) -> None:
         if not fields:
@@ -861,7 +899,7 @@ class Database:
                 f"UPDATE agent_runs SET {assignments} WHERE id = ?",
                 values,
             )
-            self._conn.commit()
+            self._commit_locked()
 
     def append_agent_run_checkpoint(
         self,
@@ -907,7 +945,7 @@ class Database:
                 self._upsert_agent_run_issue_artifact_no_commit(run_id=run_id, now=now, **issue_artifact)
             if isinstance(tool_call_record, dict):
                 self._upsert_agent_run_tool_call_no_commit(run_id=run_id, now=now, **tool_call_record)
-            self._conn.commit()
+            self._commit_locked()
 
     def get_agent_run(
         self,
@@ -987,7 +1025,7 @@ class Database:
                 finished_at=finished_at,
                 now=self._utc_now(),
             )
-            self._conn.commit()
+            self._commit_locked()
 
     def _upsert_agent_run_issue_no_commit(
         self,
@@ -1133,7 +1171,7 @@ class Database:
                 artifact=artifact,
                 now=self._utc_now(),
             )
-            self._conn.commit()
+            self._commit_locked()
 
     def _upsert_agent_run_issue_artifact_no_commit(
         self,
@@ -1243,7 +1281,7 @@ class Database:
                 attempt=attempt,
                 now=self._utc_now(),
             )
-            self._conn.commit()
+            self._commit_locked()
 
     def _upsert_agent_run_tool_call_no_commit(
         self,
@@ -1456,7 +1494,7 @@ class Database:
                     now,
                 ),
             )
-            self._conn.commit()
+            self._commit_locked()
 
     def get_automation(self, automation_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -1570,7 +1608,7 @@ class Database:
                 ).fetchone()
                 if claimed_row is not None:
                     claimed.append(self._decode_automation_row(dict(claimed_row)))
-            self._conn.commit()
+            self._commit_locked()
         return claimed
 
     def release_automation_lease(
@@ -1588,7 +1626,7 @@ class Database:
                 """,
                 (self._utc_now(), automation_id, lease_owner),
             )
-            self._conn.commit()
+            self._commit_locked()
 
     def register_automation_dispatch(
         self,
@@ -1616,7 +1654,7 @@ class Database:
                 )
             except sqlite3.IntegrityError:
                 if stale_before_iso is None:
-                    self._conn.commit()
+                    self._commit_locked()
                     return False
                 existing = self._conn.execute(
                     """
@@ -1627,12 +1665,12 @@ class Database:
                     (automation_id, dispatch_key),
                 ).fetchone()
                 if existing is None:
-                    self._conn.commit()
+                    self._commit_locked()
                     return False
                 existing_run_id = existing["run_id"]
                 existing_created_at_raw = existing["created_at"]
                 if existing_run_id:
-                    self._conn.commit()
+                    self._commit_locked()
                     return False
                 try:
                     existing_created_at = datetime.fromisoformat(str(existing_created_at_raw))
@@ -1642,10 +1680,10 @@ class Database:
                     if stale_before.tzinfo is None:
                         stale_before = stale_before.replace(tzinfo=timezone.utc)
                     if existing_created_at > stale_before:
-                        self._conn.commit()
+                        self._commit_locked()
                         return False
                 except Exception:
-                    self._conn.commit()
+                    self._commit_locked()
                     return False
 
                 cursor = self._conn.execute(
@@ -1656,9 +1694,9 @@ class Database:
                     """,
                     (source, run_id, self._utc_now(), automation_id, dispatch_key),
                 )
-                self._conn.commit()
+                self._commit_locked()
                 return int(cursor.rowcount or 0) > 0
-            self._conn.commit()
+            self._commit_locked()
         return True
 
     def update_automation_dispatch_run_id(
@@ -1677,7 +1715,7 @@ class Database:
                 """,
                 (run_id, self._utc_now(), automation_id, dispatch_key),
             )
-            self._conn.commit()
+            self._commit_locked()
 
     def delete_automation_dispatch(
         self,
@@ -1693,7 +1731,7 @@ class Database:
                 """,
                 (automation_id, dispatch_key),
             )
-            self._conn.commit()
+            self._commit_locked()
 
     def list_recent_automation_events(self, limit: int = 500) -> list[dict[str, Any]]:
         if limit <= 0:
@@ -1776,7 +1814,7 @@ class Database:
                 f"UPDATE automations SET {assignments} WHERE id = ?",
                 values,
             )
-            self._conn.commit()
+            self._commit_locked()
 
     def delete_automation(self, automation_id: str) -> bool:
         with self._lock:
@@ -1792,7 +1830,7 @@ class Database:
                 "DELETE FROM automation_dispatches WHERE automation_id = ?",
                 (automation_id,),
             )
-            self._conn.commit()
+            self._commit_locked()
         return int(cursor.rowcount or 0) > 0
 
     def add_automation_event(
@@ -1822,7 +1860,7 @@ class Database:
                     self._utc_now(),
                 ),
             )
-            self._conn.commit()
+            self._commit_locked()
             return int(cursor.lastrowid)
 
     def list_automation_events(self, automation_id: str, limit: int = 100) -> list[dict[str, Any]]:
@@ -1901,7 +1939,7 @@ class Database:
                     now,
                 ),
             )
-            self._conn.commit()
+            self._commit_locked()
 
         item = self.get_inbox_item(item_id)
         assert item is not None
@@ -1956,7 +1994,7 @@ class Database:
                 """,
                 (1 if is_read else 0, now, item_id),
             )
-            self._conn.commit()
+            self._commit_locked()
         if int(cursor.rowcount or 0) <= 0:
             return None
         return self.get_inbox_item(item_id)
@@ -2142,7 +2180,7 @@ class Database:
                     agent["created_at"],
                 ),
             )
-            self._conn.commit()
+            self._commit_locked()
 
     def get_agent(self, agent_id: str) -> dict[str, Any] | None:
         with self._lock:

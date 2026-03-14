@@ -171,25 +171,26 @@ class AgentRunManager:
         run_id = str(uuid4())
         attempts_limit = max(1, max_attempts or self.default_max_attempts)
         effective_budget = self._normalize_run_budget(budget)
-        self.database.create_agent_run(
-            run_id=run_id,
-            agent_id=agent.id,
-            user_id=user_id,
-            session_id=session_id,
-            input_message=user_message,
-            status="queued",
-            max_attempts=attempts_limit,
-            budget=effective_budget,
-        )
-        self.database.append_agent_run_checkpoint(
-            run_id=run_id,
-            checkpoint={
-                "stage": "queued",
-                "message": "Run queued for execution.",
-                "budget": effective_budget,
-            },
-        )
-        self._ensure_core_issue_records(run_id=run_id)
+        with self.database.write_transaction():
+            self.database.create_agent_run(
+                run_id=run_id,
+                agent_id=agent.id,
+                user_id=user_id,
+                session_id=session_id,
+                input_message=user_message,
+                status="queued",
+                max_attempts=attempts_limit,
+                budget=effective_budget,
+            )
+            self.database.append_agent_run_checkpoint(
+                run_id=run_id,
+                checkpoint={
+                    "stage": "queued",
+                    "message": "Run queued for execution.",
+                    "budget": effective_budget,
+                },
+            )
+            self._ensure_core_issue_records(run_id=run_id)
         if self._started:
             self._queue.put(run_id)
         self._emit(
@@ -258,46 +259,47 @@ class AgentRunManager:
         if run is None:
             raise ValueError(f"Run not found: {run_id}")
 
-        self.database.update_agent_run_fields(run_id, cancel_requested=1)
-        status = str(run.get("status", ""))
-        if status == "queued":
-            self.database.update_agent_run_fields(
-                run_id,
-                status="canceled",
-                stop_reason="canceled_by_user",
-                failure_class="canceled",
-                finished_at=self._utc_now(),
-            )
-            self.database.append_agent_run_checkpoint(
-                run_id=run_id,
-                checkpoint={
-                    "stage": "canceled",
-                    "message": "Run canceled before execution.",
-                    "stop_reason": "canceled_by_user",
-                    "failure_class": "canceled",
-                },
-            )
-            self._finalize_open_issues(
-                run_id=run_id,
-                target_status="blocked",
-                attempt=max(1, int(run.get("attempts", 0))),
-                message="Run canceled by user before execution.",
-            )
-        else:
-            self.database.append_agent_run_checkpoint(
-                run_id=run_id,
-                checkpoint={
-                    "stage": "cancel_requested",
-                    "message": "Cancel requested.",
-                    "stop_reason": "cancel_requested",
-                },
-            )
-            self._finalize_open_issues(
-                run_id=run_id,
-                target_status="blocked",
-                attempt=max(1, int(run.get("attempts", 0))),
-                message="Run cancel requested by user.",
-            )
+        with self.database.write_transaction():
+            self.database.update_agent_run_fields(run_id, cancel_requested=1)
+            status = str(run.get("status", ""))
+            if status == "queued":
+                self.database.update_agent_run_fields(
+                    run_id,
+                    status="canceled",
+                    stop_reason="canceled_by_user",
+                    failure_class="canceled",
+                    finished_at=self._utc_now(),
+                )
+                self.database.append_agent_run_checkpoint(
+                    run_id=run_id,
+                    checkpoint={
+                        "stage": "canceled",
+                        "message": "Run canceled before execution.",
+                        "stop_reason": "canceled_by_user",
+                        "failure_class": "canceled",
+                    },
+                )
+                self._finalize_open_issues(
+                    run_id=run_id,
+                    target_status="blocked",
+                    attempt=max(1, int(run.get("attempts", 0))),
+                    message="Run canceled by user before execution.",
+                )
+            else:
+                self.database.append_agent_run_checkpoint(
+                    run_id=run_id,
+                    checkpoint={
+                        "stage": "cancel_requested",
+                        "message": "Cancel requested.",
+                        "stop_reason": "cancel_requested",
+                    },
+                )
+                self._finalize_open_issues(
+                    run_id=run_id,
+                    target_status="blocked",
+                    attempt=max(1, int(run.get("attempts", 0))),
+                    message="Run cancel requested by user.",
+                )
         updated = self.database.get_agent_run(run_id)
         assert updated is not None
         self._emit(
@@ -319,28 +321,29 @@ class AgentRunManager:
             raise ValueError(f"Run {run_id} is not resumable (status={status})")
         resume_state = self._extract_resume_state(run)
 
-        self.database.update_agent_run_fields(
-            run_id,
-            status="queued",
-            attempts=0,
-            cancel_requested=0,
-            error_message=None,
-            stop_reason=None,
-            failure_class=None,
-            metrics_json={},
-            started_at=None,
-            finished_at=None,
-        )
-        self.database.append_agent_run_checkpoint(
-            run_id=run_id,
-            checkpoint={
-                "stage": "resumed",
-                "message": "Run resumed and queued again.",
-                "resume_steps": sorted(resume_state.get("completed_steps", [])) if resume_state else [],
-                "resume_state": resume_state or {},
-            },
-        )
-        self._reset_issue_states_for_resume(run_id=run_id)
+        with self.database.write_transaction():
+            self.database.update_agent_run_fields(
+                run_id,
+                status="queued",
+                attempts=0,
+                cancel_requested=0,
+                error_message=None,
+                stop_reason=None,
+                failure_class=None,
+                metrics_json={},
+                started_at=None,
+                finished_at=None,
+            )
+            self.database.append_agent_run_checkpoint(
+                run_id=run_id,
+                checkpoint={
+                    "stage": "resumed",
+                    "message": "Run resumed and queued again.",
+                    "resume_steps": sorted(resume_state.get("completed_steps", [])) if resume_state else [],
+                    "resume_state": resume_state or {},
+                },
+            )
+            self._reset_issue_states_for_resume(run_id=run_id)
         if self._started:
             self._queue.put(run_id)
 
@@ -660,23 +663,24 @@ class AgentRunManager:
         metrics_base = self._normalize_run_metrics(run.get("metrics"))
 
         if int(run.get("cancel_requested", 0)) == 1:
-            self.database.update_agent_run_fields(
-                run_id,
-                status="canceled",
-                stop_reason="canceled_by_user",
-                failure_class="canceled",
-                metrics_json=metrics_base,
-                finished_at=self._utc_now(),
-            )
-            self.database.append_agent_run_checkpoint(
-                run_id=run_id,
-                checkpoint={
-                    "stage": "canceled",
-                    "message": "Run canceled before worker execution.",
-                    "stop_reason": "canceled_by_user",
-                    "failure_class": "canceled",
-                },
-            )
+            with self.database.write_transaction():
+                self.database.update_agent_run_fields(
+                    run_id,
+                    status="canceled",
+                    stop_reason="canceled_by_user",
+                    failure_class="canceled",
+                    metrics_json=metrics_base,
+                    finished_at=self._utc_now(),
+                )
+                self.database.append_agent_run_checkpoint(
+                    run_id=run_id,
+                    checkpoint={
+                        "stage": "canceled",
+                        "message": "Run canceled before worker execution.",
+                        "stop_reason": "canceled_by_user",
+                        "failure_class": "canceled",
+                    },
+                )
             return
 
         status = str(run.get("status", ""))
@@ -686,30 +690,31 @@ class AgentRunManager:
         agent_record = self.database.get_agent(str(run["agent_id"]))
         if agent_record is None:
             error_message = f"Agent not found: {run['agent_id']}"
-            self.database.update_agent_run_fields(
-                run_id,
-                status="failed",
-                stop_reason="agent_not_found",
-                failure_class="not_found",
-                error_message=error_message,
-                metrics_json=metrics_base,
-                finished_at=self._utc_now(),
-            )
-            self.database.append_agent_run_checkpoint(
-                run_id=run_id,
-                checkpoint={
-                    "stage": "failed",
-                    "message": error_message,
-                    "stop_reason": "agent_not_found",
-                    "failure_class": "not_found",
-                    "retryable": False,
-                },
-            )
-            self._mark_issue_failed_from_error(
-                run_id=run_id,
-                attempt=max(1, int(run.get("attempts", 0)) + 1),
-                error_message=error_message,
-            )
+            with self.database.write_transaction():
+                self.database.update_agent_run_fields(
+                    run_id,
+                    status="failed",
+                    stop_reason="agent_not_found",
+                    failure_class="not_found",
+                    error_message=error_message,
+                    metrics_json=metrics_base,
+                    finished_at=self._utc_now(),
+                )
+                self.database.append_agent_run_checkpoint(
+                    run_id=run_id,
+                    checkpoint={
+                        "stage": "failed",
+                        "message": error_message,
+                        "stop_reason": "agent_not_found",
+                        "failure_class": "not_found",
+                        "retryable": False,
+                    },
+                )
+                self._mark_issue_failed_from_error(
+                    run_id=run_id,
+                    attempt=max(1, int(run.get("attempts", 0)) + 1),
+                    error_message=error_message,
+                )
             return
 
         agent = Agent.from_record(agent_record)
@@ -725,49 +730,51 @@ class AgentRunManager:
                 attempt=attempt,
                 attempt_duration_ms=0.0,
             )
+            with self.database.write_transaction():
+                self.database.update_agent_run_fields(
+                    run_id,
+                    status="failed",
+                    stop_reason="budget_exceeded",
+                    failure_class="budget_exceeded",
+                    error_message=error_message,
+                    metrics_json=metrics_final,
+                    finished_at=self._utc_now(),
+                )
+                self.database.append_agent_run_checkpoint(
+                    run_id=run_id,
+                    checkpoint={
+                        "stage": "failed",
+                        "attempt": attempt,
+                        "message": error_message,
+                        "retryable": False,
+                        "stop_reason": "budget_exceeded",
+                        "failure_class": "budget_exceeded",
+                    },
+                )
+            return
+
+        with self.database.write_transaction():
             self.database.update_agent_run_fields(
                 run_id,
-                status="failed",
-                stop_reason="budget_exceeded",
-                failure_class="budget_exceeded",
-                error_message=error_message,
-                metrics_json=metrics_final,
-                finished_at=self._utc_now(),
+                status="running",
+                attempts=attempt,
+                started_at=started_at,
+                stop_reason=None,
+                failure_class=None,
+                error_message=None,
+                metrics_json=metrics_base,
             )
             self.database.append_agent_run_checkpoint(
                 run_id=run_id,
                 checkpoint={
-                    "stage": "failed",
+                    "stage": "running",
                     "attempt": attempt,
-                    "message": error_message,
-                    "retryable": False,
-                    "stop_reason": "budget_exceeded",
-                    "failure_class": "budget_exceeded",
+                    "message": f"Execution started (attempt {attempt}/{max_attempts}).",
+                    "attempt_timeout_sec": self.attempt_timeout_sec,
+                    "run_budget": budget,
+                    "metrics_baseline": metrics_base,
                 },
             )
-            return
-
-        self.database.update_agent_run_fields(
-            run_id,
-            status="running",
-            attempts=attempt,
-            started_at=started_at,
-            stop_reason=None,
-            failure_class=None,
-            error_message=None,
-            metrics_json=metrics_base,
-        )
-        self.database.append_agent_run_checkpoint(
-            run_id=run_id,
-            checkpoint={
-                "stage": "running",
-                "attempt": attempt,
-                "message": f"Execution started (attempt {attempt}/{max_attempts}).",
-                "attempt_timeout_sec": self.attempt_timeout_sec,
-                "run_budget": budget,
-                "metrics_baseline": metrics_base,
-            },
-        )
 
         attempt_started_monotonic = time.monotonic()
         live_usage = {
@@ -821,143 +828,153 @@ class AgentRunManager:
                 attempt=attempt,
                 attempt_duration_ms=attempt_duration_ms,
             )
-            self.database.append_agent_run_checkpoint(
-                run_id=run_id,
-                checkpoint={
-                    "stage": "error",
-                    "attempt": attempt,
-                    "message": error_message,
-                    "retryable": retryable,
-                    "failure_class": failure_class,
-                    "stop_reason": stop_reason,
-                    "estimated_tokens_total": metrics_after_error["estimated_tokens"],
-                    "tool_calls_total": metrics_after_error["tool_calls"],
-                    "tool_errors_total": metrics_after_error["tool_errors"],
-                },
-            )
-            self._mark_issue_failed_from_error(
-                run_id=run_id,
-                attempt=attempt,
-                error_message=error_message,
-            )
-
-            if attempt < max_attempts and int(run.get("cancel_requested", 0)) != 1 and retryable:
-                backoff_sec = self._retry_delay_seconds(attempt=attempt)
-                self.database.update_agent_run_fields(
-                    run_id,
-                    status="queued",
-                    error_message=error_message,
-                    stop_reason=stop_reason,
-                    failure_class=failure_class,
-                    metrics_json=metrics_after_error,
-                )
+            with self.database.write_transaction():
                 self.database.append_agent_run_checkpoint(
                     run_id=run_id,
                     checkpoint={
-                        "stage": "retry_scheduled",
-                        "attempt": attempt + 1,
-                        "message": "Retry scheduled.",
-                        "backoff_sec": backoff_sec,
-                        "retryable": retryable,
-                        "failure_class": failure_class,
-                        "stop_reason": stop_reason,
-                    },
-                )
-                if backoff_sec > 0:
-                    time.sleep(backoff_sec)
-                self._queue.put(run_id)
-            else:
-                canceled = int(run.get("cancel_requested", 0)) == 1
-                final_status = "canceled" if canceled else "failed"
-                final_failure_class = "canceled" if canceled else failure_class
-                final_stop_reason = "canceled_by_user" if canceled else stop_reason
-                if not canceled and retryable and attempt >= max_attempts:
-                    final_stop_reason = "max_attempts_exhausted"
-                self.database.update_agent_run_fields(
-                    run_id,
-                    status=final_status,
-                    error_message=error_message,
-                    stop_reason=final_stop_reason,
-                    failure_class=final_failure_class,
-                    metrics_json=metrics_after_error,
-                    finished_at=self._utc_now(),
-                )
-                self.database.append_agent_run_checkpoint(
-                    run_id=run_id,
-                    checkpoint={
-                        "stage": final_status,
+                        "stage": "error",
                         "attempt": attempt,
                         "message": error_message,
                         "retryable": retryable,
-                        "failure_class": final_failure_class,
-                        "stop_reason": final_stop_reason,
+                        "failure_class": failure_class,
+                        "stop_reason": stop_reason,
+                        "estimated_tokens_total": metrics_after_error["estimated_tokens"],
+                        "tool_calls_total": metrics_after_error["tool_calls"],
+                        "tool_errors_total": metrics_after_error["tool_errors"],
                     },
                 )
-                if final_status == "canceled":
-                    self._finalize_open_issues(
-                        run_id=run_id,
-                        target_status="blocked",
-                        attempt=attempt,
-                        message="Run canceled before issue completion.",
+                self._mark_issue_failed_from_error(
+                    run_id=run_id,
+                    attempt=attempt,
+                    error_message=error_message,
+                )
+
+                schedule_retry = attempt < max_attempts and int(run.get("cancel_requested", 0)) != 1 and retryable
+                if schedule_retry:
+                    self.database.update_agent_run_fields(
+                        run_id,
+                        status="queued",
+                        error_message=error_message,
+                        stop_reason=stop_reason,
+                        failure_class=failure_class,
+                        metrics_json=metrics_after_error,
                     )
+                else:
+                    canceled = int(run.get("cancel_requested", 0)) == 1
+                    final_status = "canceled" if canceled else "failed"
+                    final_failure_class = "canceled" if canceled else failure_class
+                    final_stop_reason = "canceled_by_user" if canceled else stop_reason
+                    if not canceled and retryable and attempt >= max_attempts:
+                        final_stop_reason = "max_attempts_exhausted"
+                    self.database.update_agent_run_fields(
+                        run_id,
+                        status=final_status,
+                        error_message=error_message,
+                        stop_reason=final_stop_reason,
+                        failure_class=final_failure_class,
+                        metrics_json=metrics_after_error,
+                        finished_at=self._utc_now(),
+                    )
+                    if final_status == "canceled":
+                        self._finalize_open_issues(
+                            run_id=run_id,
+                            target_status="blocked",
+                            attempt=attempt,
+                            message="Run canceled before issue completion.",
+                        )
+
+                if schedule_retry:
+                    backoff_sec = self._retry_delay_seconds(attempt=attempt)
+                    self.database.append_agent_run_checkpoint(
+                        run_id=run_id,
+                        checkpoint={
+                            "stage": "retry_scheduled",
+                            "attempt": attempt + 1,
+                            "message": "Retry scheduled.",
+                            "backoff_sec": backoff_sec,
+                            "retryable": retryable,
+                            "failure_class": failure_class,
+                            "stop_reason": stop_reason,
+                        },
+                    )
+                else:
+                    self.database.append_agent_run_checkpoint(
+                        run_id=run_id,
+                        checkpoint={
+                            "stage": final_status,
+                            "attempt": attempt,
+                            "message": error_message,
+                            "retryable": retryable,
+                            "failure_class": final_failure_class,
+                            "stop_reason": final_stop_reason,
+                        },
+                    )
+
+            if schedule_retry:
+                backoff_sec = self._retry_delay_seconds(attempt=attempt)
+                if backoff_sec > 0:
+                    time.sleep(backoff_sec)
+                self._queue.put(run_id)
             return
 
         latest = self.database.get_agent_run(run_id)
         metrics_final = self._extract_result_metrics(result=result, fallback=live_usage, attempt=attempt)
         if latest is not None and int(latest.get("cancel_requested", 0)) == 1:
+            with self.database.write_transaction():
+                self.database.update_agent_run_fields(
+                    run_id,
+                    status="canceled",
+                    stop_reason="canceled_by_user",
+                    failure_class="canceled",
+                    result_json=result,
+                    metrics_json=metrics_final,
+                    finished_at=self._utc_now(),
+                )
+                self.database.append_agent_run_checkpoint(
+                    run_id=run_id,
+                    checkpoint={
+                        "stage": "canceled",
+                        "attempt": attempt,
+                        "message": "Execution completed but run was canceled.",
+                        "failure_class": "canceled",
+                        "stop_reason": "canceled_by_user",
+                    },
+                )
+                self._finalize_open_issues(
+                    run_id=run_id,
+                    target_status="blocked",
+                    attempt=attempt,
+                    message="Run canceled after task execution.",
+                )
+            return
+
+        with self.database.write_transaction():
+            self._finalize_open_issues(
+                run_id=run_id,
+                target_status="done",
+                attempt=attempt,
+                message="Run succeeded.",
+            )
             self.database.update_agent_run_fields(
                 run_id,
-                status="canceled",
-                stop_reason="canceled_by_user",
-                failure_class="canceled",
+                status="succeeded",
+                stop_reason="completed",
+                failure_class=None,
                 result_json=result,
+                error_message=None,
                 metrics_json=metrics_final,
                 finished_at=self._utc_now(),
             )
             self.database.append_agent_run_checkpoint(
                 run_id=run_id,
                 checkpoint={
-                    "stage": "canceled",
+                    "stage": "succeeded",
                     "attempt": attempt,
-                    "message": "Execution completed but run was canceled.",
-                    "failure_class": "canceled",
-                    "stop_reason": "canceled_by_user",
+                    "message": "Execution completed successfully.",
+                    "stop_reason": "completed",
+                    "metrics": metrics_final,
                 },
             )
-            self._finalize_open_issues(
-                run_id=run_id,
-                target_status="blocked",
-                attempt=attempt,
-                message="Run canceled after task execution.",
-            )
-            return
-
-        self._finalize_open_issues(
-            run_id=run_id,
-            target_status="done",
-            attempt=attempt,
-            message="Run succeeded.",
-        )
-        self.database.update_agent_run_fields(
-            run_id,
-            status="succeeded",
-            stop_reason="completed",
-            failure_class=None,
-            result_json=result,
-            error_message=None,
-            metrics_json=metrics_final,
-            finished_at=self._utc_now(),
-        )
-        self.database.append_agent_run_checkpoint(
-            run_id=run_id,
-            checkpoint={
-                "stage": "succeeded",
-                "attempt": attempt,
-                "message": "Execution completed successfully.",
-                "stop_reason": "completed",
-                "metrics": metrics_final,
-            },
-        )
         self._emit(
             "agent_run_succeeded",
             {
@@ -970,43 +987,45 @@ class AgentRunManager:
         )
 
     def _ensure_core_issue_records(self, *, run_id: str) -> None:
-        for issue_id, title, issue_order, depends_on in CORE_ISSUE_DEFINITIONS:
-            self.database.upsert_agent_run_issue(
-                run_id=run_id,
-                issue_id=issue_id,
-                issue_order=issue_order,
-                title=title,
-                status="planned",
-                depends_on=list(depends_on),
-                attempt_count=0,
-                last_error=None,
-                payload={},
-                started_at=None,
-                finished_at=None,
-            )
+        with self.database.write_transaction():
+            for issue_id, title, issue_order, depends_on in CORE_ISSUE_DEFINITIONS:
+                self.database.upsert_agent_run_issue(
+                    run_id=run_id,
+                    issue_id=issue_id,
+                    issue_order=issue_order,
+                    title=title,
+                    status="planned",
+                    depends_on=list(depends_on),
+                    attempt_count=0,
+                    last_error=None,
+                    payload={},
+                    started_at=None,
+                    finished_at=None,
+                )
 
     def _reset_issue_states_for_resume(self, *, run_id: str) -> None:
         items = self.database.list_agent_run_issues(run_id=run_id, limit=500)
         if not items:
             self._ensure_core_issue_records(run_id=run_id)
             return
-        for item in items:
-            status = str(item.get("status") or "planned").strip().lower() or "planned"
-            if status == "done":
-                continue
-            self.database.upsert_agent_run_issue(
-                run_id=run_id,
-                issue_id=str(item.get("issue_id")),
-                issue_order=int(item.get("issue_order", 0)),
-                title=str(item.get("title") or item.get("issue_id") or "Issue"),
-                status="planned",
-                depends_on=[str(dep) for dep in item.get("depends_on", []) if str(dep).strip()],
-                attempt_count=max(0, int(item.get("attempt_count", 0))),
-                last_error=None,
-                payload=dict(item.get("payload") or {}),
-                started_at=None,
-                finished_at=None,
-            )
+        with self.database.write_transaction():
+            for item in items:
+                status = str(item.get("status") or "planned").strip().lower() or "planned"
+                if status == "done":
+                    continue
+                self.database.upsert_agent_run_issue(
+                    run_id=run_id,
+                    issue_id=str(item.get("issue_id")),
+                    issue_order=int(item.get("issue_order", 0)),
+                    title=str(item.get("title") or item.get("issue_id") or "Issue"),
+                    status="planned",
+                    depends_on=[str(dep) for dep in item.get("depends_on", []) if str(dep).strip()],
+                    attempt_count=max(0, int(item.get("attempt_count", 0))),
+                    last_error=None,
+                    payload=dict(item.get("payload") or {}),
+                    started_at=None,
+                    finished_at=None,
+                )
 
     def _derive_issue_update_from_checkpoint(
         self,
@@ -1309,29 +1328,30 @@ class AgentRunManager:
             self._ensure_core_issue_records(run_id=run_id)
             items = self.database.list_agent_run_issues(run_id=run_id, limit=500)
         now_iso = self._utc_now()
-        for item in items:
-            status = str(item.get("status") or "planned").strip().lower() or "planned"
-            if status == "done" and normalized == "done":
-                continue
-            if status in {"failed", "blocked"} and normalized in {"blocked", "failed"}:
-                continue
-            if status == "failed" and normalized == "done":
-                continue
-            payload = dict(item.get("payload") or {})
-            payload["terminal_message"] = message
-            self.database.upsert_agent_run_issue(
-                run_id=run_id,
-                issue_id=str(item.get("issue_id")),
-                issue_order=int(item.get("issue_order", 0)),
-                title=str(item.get("title") or item.get("issue_id") or "Issue"),
-                status=normalized if status != "done" else "done",
-                depends_on=[str(dep) for dep in item.get("depends_on", []) if str(dep).strip()],
-                attempt_count=max(int(item.get("attempt_count", 0)), int(attempt)),
-                last_error=item.get("last_error") if normalized != "done" else None,
-                payload=payload,
-                started_at=str(item.get("started_at") or now_iso),
-                finished_at=str(item.get("finished_at") or now_iso),
-            )
+        with self.database.write_transaction():
+            for item in items:
+                status = str(item.get("status") or "planned").strip().lower() or "planned"
+                if status == "done" and normalized == "done":
+                    continue
+                if status in {"failed", "blocked"} and normalized in {"blocked", "failed"}:
+                    continue
+                if status == "failed" and normalized == "done":
+                    continue
+                payload = dict(item.get("payload") or {})
+                payload["terminal_message"] = message
+                self.database.upsert_agent_run_issue(
+                    run_id=run_id,
+                    issue_id=str(item.get("issue_id")),
+                    issue_order=int(item.get("issue_order", 0)),
+                    title=str(item.get("title") or item.get("issue_id") or "Issue"),
+                    status=normalized if status != "done" else "done",
+                    depends_on=[str(dep) for dep in item.get("depends_on", []) if str(dep).strip()],
+                    attempt_count=max(int(item.get("attempt_count", 0)), int(attempt)),
+                    last_error=item.get("last_error") if normalized != "done" else None,
+                    payload=payload,
+                    started_at=str(item.get("started_at") or now_iso),
+                    finished_at=str(item.get("finished_at") or now_iso),
+                )
 
     @staticmethod
     def _issue_meta_for_id(issue_id: str) -> tuple[str, int, list[str]]:
