@@ -24,6 +24,7 @@ Implemented in this version:
 - FastAPI backend runtime
 - native macOS UI (`SwiftUI`) with dark amaryllis theme
 - OpenAI-compatible endpoint: `POST /v1/chat/completions`
+- auth enabled by default with scoped access (`user`, `admin`, `service`)
 - model manager with MLX primary provider, Ollama fallback, and optional cloud providers (OpenAI / Anthropic / OpenRouter)
 - model APIs: list/download/load/capabilities
 - agent APIs: create/list/chat
@@ -42,6 +43,8 @@ Implemented in this version:
 - provider diagnostics endpoint: `GET /health/providers`
 - SQLite migration framework (`schema_migrations`)
 - local structured telemetry (`telemetry.jsonl`)
+- lease/CAS ownership for agent runs (single-owner execution under concurrent workers)
+- typed planner step execution with step contracts (pre/post conditions), verifier, retry and replan
 
 Out of scope for MVP:
 - distributed execution
@@ -81,6 +84,7 @@ Local telemetry log:
 │   ├── inbox_api.py
 │   ├── memory_api.py
 │   ├── model_api.py
+│   ├── security_api.py
 │   └── tool_api.py
 ├── controller
 │   └── meta_controller.py
@@ -117,20 +121,27 @@ Local telemetry log:
 ├── plugins
 │   └── .gitkeep
 ├── runtime
+│   ├── auth.py
 │   ├── config.py
+│   ├── security.py
 │   └── server.py
 ├── storage
 │   ├── database.py
+│   ├── migrations.py
 │   └── vector_store.py
 ├── tasks
+│   ├── step_registry.py
 │   └── task_executor.py
 ├── tests
 │   ├── test_agent_run_manager.py
 │   ├── test_automation_schedule.py
 │   ├── test_automation_scheduler.py
+│   ├── test_database_persistence_hardening.py
 │   ├── test_memory_manager.py
 │   ├── test_memory_quality_eval.py
 │   ├── test_model_routing.py
+│   ├── test_security_manager.py
+│   ├── test_task_executor.py
 │   └── test_tools_mcp.py
 ├── tools
 │   ├── builtin_tools
@@ -176,6 +187,20 @@ pip install -r requirements.txt
 uvicorn runtime.server:app --host localhost --port 8000 --reload
 ```
 
+Authentication is enabled by default.
+
+Only `GET /health` is public. All other endpoints require:
+
+```bash
+export AMARYLLIS_TOKEN="replace_me"
+export AUTH_HEADER="Authorization: Bearer ${AMARYLLIS_TOKEN}"
+```
+
+Scopes:
+- `user`: regular API access
+- `admin`: security/debug endpoints and elevated actions
+- `service`: `/service/*` endpoints (also allowed for `admin`)
+
 Health check:
 
 ```bash
@@ -185,7 +210,13 @@ curl http://localhost:8000/health
 Provider health:
 
 ```bash
-curl http://localhost:8000/health/providers
+curl -H "$AUTH_HEADER" http://localhost:8000/health/providers
+```
+
+Service health:
+
+```bash
+curl -H "$AUTH_HEADER" http://localhost:8000/service/health
 ```
 
 ## Native macOS App (.app)
@@ -248,6 +279,9 @@ Chat tab behavior:
 
 Local chat file:
 - `~/Library/Application Support/amaryllis/chat_sessions.json`
+
+API note:
+- in all examples below (except `GET /health`), add `-H "$AUTH_HEADER"` if auth is enabled (default)
 
 ## Model Management API
 
@@ -605,6 +639,8 @@ Implemented now:
 - persistent run state in SQLite (`agent_runs`)
 - persistent issue-level state in SQLite (`agent_run_issues`)
 - persistent issue artifacts in SQLite (`agent_run_issue_artifacts`)
+- run lease ownership with CAS semantics (`lease_owner`, `lease_token`, `lease_expires_at`)
+- lease release guarded by owner+token (prevents cross-worker lease clobbering)
 - deterministic run outcomes: `failure_class` + terminal `stop_reason`
 - failure-class retry policy (retry only for transient classes)
 - run-level execution budgets:
@@ -621,6 +657,11 @@ Implemented now:
   - statuses: `planned|running|blocked|done|failed`
   - core issues: `prepare_context`, `reasoning`, `persist`
   - planner issues: `plan_step:<n>` with dependency chain
+- typed planner-step contracts:
+  - step kinds resolved through `tasks/step_registry.py`
+  - contract tokens: `preconditions`, `postconditions`, `max_retries`, `replan_allowed`
+- step-level verifier for postconditions with failure scorecard in artifact payload
+- planner issue retry + replan policy (checkpointed via `plan_step_retry_scheduled` and `plan_step_replanned`)
 - bounded parallel execution for independent planner issues (dependency-aware worker pool)
 - issue-level deadline guardrail with timeout failure propagation to run state
 - final reasoning context now includes normalized issue artifacts from completed planner issues
@@ -660,6 +701,22 @@ Run status values:
 - `succeeded`
 - `failed`
 - `canceled`
+
+## Security Baseline (Current)
+
+Implemented now:
+- authN/authZ middleware on all non-public routes
+- request scope enforcement:
+  - `/security/*` and `/debug/*` -> `admin`
+  - `/service/*` -> `service` or `admin`
+  - business APIs -> `user` or `admin`
+- structured deny auditing for `401` and `403` events
+- signed security actions with local identity key
+- identity rotation endpoint:
+  - `POST /security/identity/rotate`
+- security audit endpoints (admin scope):
+  - `GET /security/identity`
+  - `GET /security/audit`
 
 ## Tools + MCP Layer Foundation (Current)
 
@@ -895,7 +952,7 @@ Plugins are auto-discovered from:
 Run unit tests (memory + work mode + tools/MCP + automation):
 
 ```bash
-~/Library/Application\ Support/amaryllis/runtime-src/.venv/bin/python -m unittest discover -s tests -p "test_*.py" -v
+python3 -m unittest discover -s tests -p "test_*.py" -v
 ```
 
 ## Notes on MLX and Ollama
@@ -905,7 +962,11 @@ Run unit tests (memory + work mode + tools/MCP + automation):
   - `mlx -> ollama` when MLX fails
   - `openai/anthropic/openrouter -> mlx/ollama` when cloud calls fail (for example `429` quota/rate-limit)
 - You can optionally enable remote cloud providers: OpenAI, Anthropic and OpenRouter.
-- Configure fallback via env:
+- Configure runtime via env:
+  - `AMARYLLIS_AUTH_ENABLED=true|false`
+  - `AMARYLLIS_AUTH_TOKENS=token-user:user-001:user,token-admin:admin:admin|user,token-service:svc:service`
+  - `AMARYLLIS_SECURITY_PROFILE=production|development`
+  - `AMARYLLIS_ALLOW_INSECURE_SECURITY_MODES=false|true`
   - `AMARYLLIS_OLLAMA_FALLBACK=true|false`
   - `AMARYLLIS_OLLAMA_URL=http://localhost:11434`
   - `AMARYLLIS_TELEMETRY_PATH=~/Library/Application Support/amaryllis/data/telemetry.jsonl`
@@ -917,6 +978,8 @@ Run unit tests (memory + work mode + tools/MCP + automation):
   - `AMARYLLIS_OPENROUTER_API_KEY=<your_key>`
   - `AMARYLLIS_RUN_WORKERS=2`
   - `AMARYLLIS_RUN_MAX_ATTEMPTS=2`
+  - `AMARYLLIS_RUN_ATTEMPT_TIMEOUT_SEC=180`
+  - `AMARYLLIS_RUN_LEASE_TTL_SEC=365` (must be >= `run_attempt_timeout_sec + 5`)
   - `AMARYLLIS_RUN_BUDGET_MAX_TOKENS=24000`
   - `AMARYLLIS_RUN_BUDGET_MAX_DURATION_SEC=300`
   - `AMARYLLIS_RUN_BUDGET_MAX_TOOL_CALLS=8`
@@ -925,13 +988,16 @@ Run unit tests (memory + work mode + tools/MCP + automation):
   - `AMARYLLIS_TASK_ISSUE_TIMEOUT_SEC=15`
   - `AMARYLLIS_TASK_ARTIFACT_QUALITY_ENABLED=true`
   - `AMARYLLIS_TASK_ARTIFACT_QUALITY_MAX_REPAIR_ATTEMPTS=1`
+  - `AMARYLLIS_TASK_STEP_VERIFIER_ENABLED=true`
+  - `AMARYLLIS_TASK_STEP_MAX_RETRIES_DEFAULT=1`
+  - `AMARYLLIS_TASK_STEP_REPLAN_MAX_ATTEMPTS=1`
   - `AMARYLLIS_AUTOMATION_POLL_SEC=2`
   - `AMARYLLIS_AUTOMATION_BATCH_SIZE=10`
   - `AMARYLLIS_MEMORY_PROFILE_DECAY_ENABLED=true`
   - `AMARYLLIS_MEMORY_PROFILE_DECAY_HALF_LIFE_DAYS=45`
   - `AMARYLLIS_MEMORY_PROFILE_DECAY_FLOOR=0.35`
   - `AMARYLLIS_MEMORY_PROFILE_DECAY_MIN_DELTA=0.05`
-  - `AMARYLLIS_TOOL_APPROVAL_ENFORCEMENT=prompt_and_allow|strict`
+  - `AMARYLLIS_TOOL_APPROVAL_ENFORCEMENT=strict|prompt_and_allow`
   - `AMARYLLIS_BLOCKED_TOOLS=python_exec,filesystem`
   - `AMARYLLIS_PLUGIN_SIGNING_KEY=<hmac_secret>`
   - `AMARYLLIS_PLUGIN_SIGNING_MODE=off|warn|strict`
@@ -947,6 +1013,10 @@ export AMARYLLIS_HOST=localhost
 export AMARYLLIS_PORT=8000
 export AMARYLLIS_DEFAULT_PROVIDER=mlx
 export AMARYLLIS_DEFAULT_MODEL=mlx-community/Qwen2.5-1.5B-Instruct-4bit
+export AMARYLLIS_AUTH_ENABLED=true
+export AMARYLLIS_AUTH_TOKENS="token-user:user-001:user,token-admin:admin:admin|user,token-service:svc:service"
+export AMARYLLIS_SECURITY_PROFILE=production
+export AMARYLLIS_ALLOW_INSECURE_SECURITY_MODES=false
 export AMARYLLIS_OLLAMA_URL=http://localhost:11434
 export AMARYLLIS_OLLAMA_FALLBACK=true
 export AMARYLLIS_TELEMETRY_PATH=~/Library/Application\ Support/amaryllis/data/telemetry.jsonl
@@ -958,6 +1028,8 @@ export AMARYLLIS_OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
 export AMARYLLIS_OPENROUTER_API_KEY=replace_me
 export AMARYLLIS_RUN_WORKERS=2
 export AMARYLLIS_RUN_MAX_ATTEMPTS=2
+export AMARYLLIS_RUN_ATTEMPT_TIMEOUT_SEC=180
+export AMARYLLIS_RUN_LEASE_TTL_SEC=365
 export AMARYLLIS_RUN_BUDGET_MAX_TOKENS=24000
 export AMARYLLIS_RUN_BUDGET_MAX_DURATION_SEC=300
 export AMARYLLIS_RUN_BUDGET_MAX_TOOL_CALLS=8
@@ -966,16 +1038,19 @@ export AMARYLLIS_TASK_ISSUE_PARALLEL_WORKERS=2
 export AMARYLLIS_TASK_ISSUE_TIMEOUT_SEC=15
 export AMARYLLIS_TASK_ARTIFACT_QUALITY_ENABLED=true
 export AMARYLLIS_TASK_ARTIFACT_QUALITY_MAX_REPAIR_ATTEMPTS=1
+export AMARYLLIS_TASK_STEP_VERIFIER_ENABLED=true
+export AMARYLLIS_TASK_STEP_MAX_RETRIES_DEFAULT=1
+export AMARYLLIS_TASK_STEP_REPLAN_MAX_ATTEMPTS=1
 export AMARYLLIS_AUTOMATION_POLL_SEC=2
 export AMARYLLIS_AUTOMATION_BATCH_SIZE=10
 export AMARYLLIS_MEMORY_PROFILE_DECAY_ENABLED=true
 export AMARYLLIS_MEMORY_PROFILE_DECAY_HALF_LIFE_DAYS=45
 export AMARYLLIS_MEMORY_PROFILE_DECAY_FLOOR=0.35
 export AMARYLLIS_MEMORY_PROFILE_DECAY_MIN_DELTA=0.05
-export AMARYLLIS_TOOL_APPROVAL_ENFORCEMENT=prompt_and_allow
+export AMARYLLIS_TOOL_APPROVAL_ENFORCEMENT=strict
 export AMARYLLIS_BLOCKED_TOOLS=
 export AMARYLLIS_PLUGIN_SIGNING_KEY=
-export AMARYLLIS_PLUGIN_SIGNING_MODE=warn
+export AMARYLLIS_PLUGIN_SIGNING_MODE=strict
 export AMARYLLIS_MCP_ENDPOINTS=
 export AMARYLLIS_MCP_TIMEOUT_SEC=10
 export AMARYLLIS_MCP_FAILURE_THRESHOLD=2
