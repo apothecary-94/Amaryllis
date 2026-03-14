@@ -18,6 +18,11 @@ class ValidationError(AmaryllisError):
         super().__init__(message=message, error_type="validation_error", status_code=400)
 
 
+class AuthenticationError(AmaryllisError):
+    def __init__(self, message: str = "Authentication required") -> None:
+        super().__init__(message=message, error_type="authentication_error", status_code=401)
+
+
 class NotFoundError(AmaryllisError):
     def __init__(self, message: str) -> None:
         super().__init__(message=message, error_type="not_found", status_code=404)

@@ -5,6 +5,7 @@ from typing import Any
 from fastapi import APIRouter, Path, Query, Request
 from pydantic import BaseModel, Field
 
+from runtime.auth import assert_owner, auth_context_from_request, resolve_user_id
 from runtime.errors import NotFoundError, PermissionDeniedError, ProviderError, ValidationError
 from tools.tool_executor import PermissionRequiredError, ToolBudgetLimitError
 
@@ -88,7 +89,10 @@ def list_permission_prompts(
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict[str, Any]:
     services = request.app.state.services
+    auth = auth_context_from_request(request)
     rows = services.tool_executor.list_permission_prompts(status=status, limit=limit)
+    if not auth.is_admin:
+        rows = [item for item in rows if str(item.get("user_id") or "") == auth.user_id]
     return {
         "items": rows,
         "count": len(rows),
@@ -102,12 +106,24 @@ def approve_permission_prompt(
     prompt_id: str = Path(..., min_length=1),
 ) -> dict[str, Any]:
     services = request.app.state.services
+    auth = auth_context_from_request(request)
     try:
+        prompts = services.tool_executor.list_permission_prompts(status=None, limit=2000)
+        match = next((item for item in prompts if str(item.get("id") or "") == prompt_id), None)
+        if match is None:
+            raise NotFoundError(f"Permission prompt not found: {prompt_id}")
+        assert_owner(
+            owner_user_id=str(match.get("user_id") or ""),
+            auth=auth,
+            resource_name="tool_permission_prompt",
+            resource_id=prompt_id,
+        )
         item = services.tool_executor.approve_permission_prompt(prompt_id=prompt_id)
         receipt = _sign_action(
             request,
             action="tool_permission_approve",
             payload={"prompt_id": prompt_id},
+            actor=auth.user_id,
             target_type="tool_permission_prompt",
             target_id=prompt_id,
         )
@@ -116,11 +132,24 @@ def approve_permission_prompt(
             "action_receipt": receipt,
             "request_id": _request_id(request),
         }
+    except NotFoundError:
+        _sign_action(
+            request,
+            action="tool_permission_approve",
+            payload={"prompt_id": prompt_id},
+            actor=auth.user_id,
+            target_type="tool_permission_prompt",
+            target_id=prompt_id,
+            status="failed",
+            details={"error": f"Permission prompt not found: {prompt_id}"},
+        )
+        raise
     except ValueError as exc:
         _sign_action(
             request,
             action="tool_permission_approve",
             payload={"prompt_id": prompt_id},
+            actor=auth.user_id,
             target_type="tool_permission_prompt",
             target_id=prompt_id,
             status="failed",
@@ -132,6 +161,7 @@ def approve_permission_prompt(
             request,
             action="tool_permission_approve",
             payload={"prompt_id": prompt_id},
+            actor=auth.user_id,
             target_type="tool_permission_prompt",
             target_id=prompt_id,
             status="failed",
@@ -146,12 +176,24 @@ def deny_permission_prompt(
     prompt_id: str = Path(..., min_length=1),
 ) -> dict[str, Any]:
     services = request.app.state.services
+    auth = auth_context_from_request(request)
     try:
+        prompts = services.tool_executor.list_permission_prompts(status=None, limit=2000)
+        match = next((item for item in prompts if str(item.get("id") or "") == prompt_id), None)
+        if match is None:
+            raise NotFoundError(f"Permission prompt not found: {prompt_id}")
+        assert_owner(
+            owner_user_id=str(match.get("user_id") or ""),
+            auth=auth,
+            resource_name="tool_permission_prompt",
+            resource_id=prompt_id,
+        )
         item = services.tool_executor.deny_permission_prompt(prompt_id=prompt_id)
         receipt = _sign_action(
             request,
             action="tool_permission_deny",
             payload={"prompt_id": prompt_id},
+            actor=auth.user_id,
             target_type="tool_permission_prompt",
             target_id=prompt_id,
         )
@@ -160,11 +202,24 @@ def deny_permission_prompt(
             "action_receipt": receipt,
             "request_id": _request_id(request),
         }
+    except NotFoundError:
+        _sign_action(
+            request,
+            action="tool_permission_deny",
+            payload={"prompt_id": prompt_id},
+            actor=auth.user_id,
+            target_type="tool_permission_prompt",
+            target_id=prompt_id,
+            status="failed",
+            details={"error": f"Permission prompt not found: {prompt_id}"},
+        )
+        raise
     except ValueError as exc:
         _sign_action(
             request,
             action="tool_permission_deny",
             payload={"prompt_id": prompt_id},
+            actor=auth.user_id,
             target_type="tool_permission_prompt",
             target_id=prompt_id,
             status="failed",
@@ -176,6 +231,7 @@ def deny_permission_prompt(
             request,
             action="tool_permission_deny",
             payload={"prompt_id": prompt_id},
+            actor=auth.user_id,
             target_type="tool_permission_prompt",
             target_id=prompt_id,
             status="failed",
@@ -257,6 +313,8 @@ def invoke_mcp_tool(
     tool_name: str = Path(..., min_length=1),
 ) -> dict[str, Any]:
     services = request.app.state.services
+    auth = auth_context_from_request(request)
+    effective_user_id = resolve_user_id(request_user_id=payload.user_id, auth=auth)
     if services.tool_registry.get(tool_name) is None:
         raise NotFoundError(f"Tool not found: {tool_name}")
 
@@ -265,7 +323,7 @@ def invoke_mcp_tool(
             name=tool_name,
             arguments=payload.arguments,
             request_id=_request_id(request),
-            user_id=payload.user_id,
+            user_id=effective_user_id,
             session_id=payload.session_id,
             permission_id=payload.permission_id,
         )
@@ -276,7 +334,7 @@ def invoke_mcp_tool(
                 "tool_name": tool_name,
                 "arguments": payload.arguments,
             },
-            actor=payload.user_id,
+            actor=auth.user_id,
             target_type="tool",
             target_id=tool_name,
             details={
@@ -297,7 +355,7 @@ def invoke_mcp_tool(
                 "tool_name": tool_name,
                 "arguments": payload.arguments,
             },
-            actor=payload.user_id,
+            actor=auth.user_id,
             target_type="tool",
             target_id=tool_name,
             status="failed",
@@ -312,7 +370,7 @@ def invoke_mcp_tool(
                 "tool_name": tool_name,
                 "arguments": payload.arguments,
             },
-            actor=payload.user_id,
+            actor=auth.user_id,
             target_type="tool",
             target_id=tool_name,
             status="failed",
@@ -327,7 +385,7 @@ def invoke_mcp_tool(
                 "tool_name": tool_name,
                 "arguments": payload.arguments,
             },
-            actor=payload.user_id,
+            actor=auth.user_id,
             target_type="tool",
             target_id=tool_name,
             status="failed",
@@ -342,7 +400,7 @@ def invoke_mcp_tool(
                 "tool_name": tool_name,
                 "arguments": payload.arguments,
             },
-            actor=payload.user_id,
+            actor=auth.user_id,
             target_type="tool",
             target_id=tool_name,
             status="failed",

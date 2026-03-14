@@ -9,6 +9,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from runtime.auth import auth_context_from_request, resolve_user_id
 from runtime.errors import ProviderError, ValidationError
 from tools.tool_executor import PermissionRequiredError
 
@@ -253,6 +254,10 @@ def _chat_with_tool_loop(
 
 @router.post("/v1/chat/completions")
 def chat_completions(payload: ChatCompletionsRequest, request: Request):
+    auth = auth_context_from_request(request)
+    effective_user_id = resolve_user_id(request_user_id=payload.user_id, auth=auth)
+    payload = payload.model_copy(update={"user_id": effective_user_id})
+
     if not payload.messages:
         raise ValidationError("messages must not be empty")
     _validate_chat_request_limits(payload=payload, request=request)

@@ -23,11 +23,17 @@ final class AmaryllisAPIClient {
 
     private let session: URLSession
     private let baseURLProvider: () -> String
+    private let authTokenProvider: () -> String
     private let jsonEncoder: JSONEncoder
     private let jsonDecoder: JSONDecoder
 
-    init(baseURLProvider: @escaping () -> String, session: URLSession = .shared) {
+    init(
+        baseURLProvider: @escaping () -> String,
+        authTokenProvider: @escaping () -> String,
+        session: URLSession = .shared
+    ) {
         self.baseURLProvider = baseURLProvider
+        self.authTokenProvider = authTokenProvider
         self.session = session
 
         self.jsonEncoder = JSONEncoder()
@@ -575,6 +581,10 @@ final class AmaryllisAPIClient {
         request.timeoutInterval = 180
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
         request.addValue("application/json", forHTTPHeaderField: "Accept")
+        let authToken = authTokenProvider().trimmingCharacters(in: .whitespacesAndNewlines)
+        if !authToken.isEmpty {
+            request.addValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
+        }
         request.httpBody = body
         return request
     }

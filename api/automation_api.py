@@ -5,6 +5,7 @@ from typing import Any
 from fastapi import APIRouter, Path, Query, Request
 from pydantic import BaseModel, Field
 
+from runtime.auth import assert_owner, auth_context_from_request, resolve_user_id
 from runtime.errors import NotFoundError, ProviderError, ValidationError
 
 router = APIRouter(tags=["automations"])
@@ -55,10 +56,12 @@ class CreateAutomationRequest(BaseModel):
 @router.post("/automations/create")
 def create_automation(payload: CreateAutomationRequest, request: Request) -> dict[str, Any]:
     services = request.app.state.services
+    auth = auth_context_from_request(request)
+    effective_user_id = resolve_user_id(request_user_id=payload.user_id, auth=auth)
     try:
         automation = services.automation_scheduler.create_automation(
             agent_id=payload.agent_id,
-            user_id=payload.user_id,
+            user_id=effective_user_id,
             session_id=payload.session_id,
             message=payload.message,
             interval_sec=payload.interval_sec,
@@ -70,8 +73,8 @@ def create_automation(payload: CreateAutomationRequest, request: Request) -> dic
         receipt = _sign_action(
             request,
             action="automation_create",
-            payload=payload.model_dump(),
-            actor=payload.user_id,
+            payload={**payload.model_dump(), "user_id": effective_user_id},
+            actor=auth.user_id,
             target_id=str(automation.get("id")),
         )
         return {
@@ -83,8 +86,8 @@ def create_automation(payload: CreateAutomationRequest, request: Request) -> dic
         _sign_action(
             request,
             action="automation_create",
-            payload=payload.model_dump(),
-            actor=payload.user_id,
+            payload={**payload.model_dump(), "user_id": effective_user_id},
+            actor=auth.user_id,
             status="failed",
             details={"error": str(exc)},
         )
@@ -93,8 +96,8 @@ def create_automation(payload: CreateAutomationRequest, request: Request) -> dic
         _sign_action(
             request,
             action="automation_create",
-            payload=payload.model_dump(),
-            actor=payload.user_id,
+            payload={**payload.model_dump(), "user_id": effective_user_id},
+            actor=auth.user_id,
             status="failed",
             details={"error": str(exc)},
         )
@@ -117,7 +120,17 @@ def update_automation(
     automation_id: str = Path(..., min_length=1),
 ) -> dict[str, Any]:
     services = request.app.state.services
+    auth = auth_context_from_request(request)
     try:
+        existing = services.automation_scheduler.get_automation(automation_id)
+        if existing is None:
+            raise NotFoundError(f"Automation not found: {automation_id}")
+        assert_owner(
+            owner_user_id=str(existing.get("user_id") or ""),
+            auth=auth,
+            resource_name="automation",
+            resource_id=automation_id,
+        )
         automation = services.automation_scheduler.update_automation(
             automation_id=automation_id,
             message=payload.message,
@@ -131,7 +144,7 @@ def update_automation(
             request,
             action="automation_update",
             payload=payload.model_dump(exclude_none=True),
-            actor=str(automation.get("user_id") or ""),
+            actor=auth.user_id,
             target_id=automation_id,
         )
         return {
@@ -139,6 +152,16 @@ def update_automation(
             "action_receipt": receipt,
             "request_id": _request_id(request),
         }
+    except NotFoundError:
+        _sign_action(
+            request,
+            action="automation_update",
+            payload=payload.model_dump(exclude_none=True),
+            target_id=automation_id,
+            status="failed",
+            details={"error": f"Automation not found: {automation_id}"},
+        )
+        raise
     except ValueError as exc:
         _sign_action(
             request,
@@ -172,9 +195,11 @@ def list_automations(
     limit: int = Query(default=200, ge=1, le=1000),
 ) -> dict[str, Any]:
     services = request.app.state.services
+    auth = auth_context_from_request(request)
+    effective_user_id = resolve_user_id(request_user_id=user_id, auth=auth)
     try:
         items = services.automation_scheduler.list_automations(
-            user_id=user_id,
+            user_id=effective_user_id,
             agent_id=agent_id,
             enabled=enabled,
             limit=limit,
@@ -219,6 +244,13 @@ def get_automation(
     automation = services.automation_scheduler.get_automation(automation_id)
     if automation is None:
         raise NotFoundError(f"Automation not found: {automation_id}")
+    auth = auth_context_from_request(request)
+    assert_owner(
+        owner_user_id=str(automation.get("user_id") or ""),
+        auth=auth,
+        resource_name="automation",
+        resource_id=automation_id,
+    )
     return {
         "automation": automation,
         "request_id": _request_id(request),
@@ -231,13 +263,23 @@ def pause_automation(
     automation_id: str = Path(..., min_length=1),
 ) -> dict[str, Any]:
     services = request.app.state.services
+    auth = auth_context_from_request(request)
     try:
+        existing = services.automation_scheduler.get_automation(automation_id)
+        if existing is None:
+            raise NotFoundError(f"Automation not found: {automation_id}")
+        assert_owner(
+            owner_user_id=str(existing.get("user_id") or ""),
+            auth=auth,
+            resource_name="automation",
+            resource_id=automation_id,
+        )
         automation = services.automation_scheduler.pause_automation(automation_id)
         receipt = _sign_action(
             request,
             action="automation_pause",
             payload={"automation_id": automation_id},
-            actor=str(automation.get("user_id") or ""),
+            actor=auth.user_id,
             target_id=automation_id,
         )
         return {
@@ -245,6 +287,16 @@ def pause_automation(
             "action_receipt": receipt,
             "request_id": _request_id(request),
         }
+    except NotFoundError:
+        _sign_action(
+            request,
+            action="automation_pause",
+            payload={"automation_id": automation_id},
+            target_id=automation_id,
+            status="failed",
+            details={"error": f"Automation not found: {automation_id}"},
+        )
+        raise
     except ValueError as exc:
         _sign_action(
             request,
@@ -273,13 +325,23 @@ def resume_automation(
     automation_id: str = Path(..., min_length=1),
 ) -> dict[str, Any]:
     services = request.app.state.services
+    auth = auth_context_from_request(request)
     try:
+        existing = services.automation_scheduler.get_automation(automation_id)
+        if existing is None:
+            raise NotFoundError(f"Automation not found: {automation_id}")
+        assert_owner(
+            owner_user_id=str(existing.get("user_id") or ""),
+            auth=auth,
+            resource_name="automation",
+            resource_id=automation_id,
+        )
         automation = services.automation_scheduler.resume_automation(automation_id)
         receipt = _sign_action(
             request,
             action="automation_resume",
             payload={"automation_id": automation_id},
-            actor=str(automation.get("user_id") or ""),
+            actor=auth.user_id,
             target_id=automation_id,
         )
         return {
@@ -287,6 +349,16 @@ def resume_automation(
             "action_receipt": receipt,
             "request_id": _request_id(request),
         }
+    except NotFoundError:
+        _sign_action(
+            request,
+            action="automation_resume",
+            payload={"automation_id": automation_id},
+            target_id=automation_id,
+            status="failed",
+            details={"error": f"Automation not found: {automation_id}"},
+        )
+        raise
     except ValueError as exc:
         _sign_action(
             request,
@@ -315,13 +387,23 @@ def run_automation_now(
     automation_id: str = Path(..., min_length=1),
 ) -> dict[str, Any]:
     services = request.app.state.services
+    auth = auth_context_from_request(request)
     try:
+        existing = services.automation_scheduler.get_automation(automation_id)
+        if existing is None:
+            raise NotFoundError(f"Automation not found: {automation_id}")
+        assert_owner(
+            owner_user_id=str(existing.get("user_id") or ""),
+            auth=auth,
+            resource_name="automation",
+            resource_id=automation_id,
+        )
         automation = services.automation_scheduler.run_now(automation_id)
         receipt = _sign_action(
             request,
             action="automation_run_now",
             payload={"automation_id": automation_id},
-            actor=str(automation.get("user_id") or ""),
+            actor=auth.user_id,
             target_id=automation_id,
         )
         return {
@@ -329,6 +411,16 @@ def run_automation_now(
             "action_receipt": receipt,
             "request_id": _request_id(request),
         }
+    except NotFoundError:
+        _sign_action(
+            request,
+            action="automation_run_now",
+            payload={"automation_id": automation_id},
+            target_id=automation_id,
+            status="failed",
+            details={"error": f"Automation not found: {automation_id}"},
+        )
+        raise
     except ValueError as exc:
         _sign_action(
             request,
@@ -357,7 +449,17 @@ def delete_automation(
     automation_id: str = Path(..., min_length=1),
 ) -> dict[str, Any]:
     services = request.app.state.services
+    auth = auth_context_from_request(request)
     try:
+        existing = services.automation_scheduler.get_automation(automation_id)
+        if existing is None:
+            raise NotFoundError(f"Automation not found: {automation_id}")
+        assert_owner(
+            owner_user_id=str(existing.get("user_id") or ""),
+            auth=auth,
+            resource_name="automation",
+            resource_id=automation_id,
+        )
         deleted = services.automation_scheduler.delete_automation(automation_id)
         if not deleted:
             raise NotFoundError(f"Automation not found: {automation_id}")
@@ -405,6 +507,13 @@ def list_automation_events(
     automation = services.automation_scheduler.get_automation(automation_id)
     if automation is None:
         raise NotFoundError(f"Automation not found: {automation_id}")
+    auth = auth_context_from_request(request)
+    assert_owner(
+        owner_user_id=str(automation.get("user_id") or ""),
+        auth=auth,
+        resource_name="automation",
+        resource_id=automation_id,
+    )
     try:
         items = services.automation_scheduler.list_events(automation_id=automation_id, limit=limit)
         return {

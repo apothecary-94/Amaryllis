@@ -30,8 +30,9 @@ from memory.user_memory import UserMemory
 from memory.working_memory import WorkingMemory
 from models.model_manager import ModelManager
 from planner.planner import Planner
+from runtime.auth import AuthManager
 from runtime.config import AppConfig
-from runtime.errors import AmaryllisError, InternalError
+from runtime.errors import AmaryllisError, InternalError, PermissionDeniedError
 from runtime.security import LocalIdentityManager, SecurityManager
 from runtime.telemetry import LocalTelemetry
 from storage.database import Database
@@ -65,6 +66,7 @@ class ServiceContainer:
     telemetry: LocalTelemetry
     identity_manager: LocalIdentityManager
     security_manager: SecurityManager
+    auth_manager: AuthManager
 
 
 logging.basicConfig(
@@ -86,6 +88,10 @@ def create_services() -> ServiceContainer:
         identity_manager=identity_manager,
         database=database,
         telemetry=telemetry,
+    )
+    auth_manager = AuthManager(
+        enabled=config.auth_enabled,
+        token_specs=config.auth_tokens,
     )
 
     episodic = EpisodicMemory(database)
@@ -238,6 +244,7 @@ def create_services() -> ServiceContainer:
         telemetry=telemetry,
         identity_manager=identity_manager,
         security_manager=security_manager,
+        auth_manager=auth_manager,
     )
 
 
@@ -310,6 +317,15 @@ def create_app() -> FastAPI:
     async def request_trace_middleware(request: Request, call_next):
         request_id = request.headers.get("x-request-id", "").strip() or str(uuid4())
         request.state.request_id = request_id
+        path = request.url.path
+
+        is_public = path == "/health"
+        if not is_public:
+            auth_context = services.auth_manager.authenticate_request(request)
+            request.state.auth_context = auth_context
+            if path.startswith("/security/") or path.startswith("/debug/"):
+                if not auth_context.is_admin:
+                    raise PermissionDeniedError("Admin scope is required")
 
         start = time.perf_counter()
         services.telemetry.emit(
@@ -317,14 +333,14 @@ def create_app() -> FastAPI:
             {
                 "request_id": request_id,
                 "method": request.method,
-                "path": request.url.path,
+                "path": path,
             },
         )
         logger.info(
             "request_start request_id=%s method=%s path=%s",
             request_id,
             request.method,
-            request.url.path,
+            path,
         )
 
         response = await call_next(request)
@@ -336,7 +352,7 @@ def create_app() -> FastAPI:
             {
                 "request_id": request_id,
                 "method": request.method,
-                "path": request.url.path,
+                "path": path,
                 "status_code": response.status_code,
                 "duration_ms": duration_ms,
             },
@@ -345,7 +361,7 @@ def create_app() -> FastAPI:
             "request_done request_id=%s method=%s path=%s status=%s duration_ms=%.2f",
             request_id,
             request.method,
-            request.url.path,
+            path,
             response.status_code,
             duration_ms,
         )

@@ -5,6 +5,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
+from runtime.auth import auth_context_from_request
 from runtime.errors import ProviderError, ValidationError
 
 router = APIRouter(tags=["models"])
@@ -19,6 +20,7 @@ def _sign_action(
     *,
     action: str,
     payload: dict[str, Any],
+    actor: str | None = None,
     status: str = "succeeded",
     details: dict[str, Any] | None = None,
     target_id: str | None = None,
@@ -29,7 +31,7 @@ def _sign_action(
             action=action,
             payload=payload,
             request_id=_request_id(request),
-            actor=None,
+            actor=actor,
             target_type="model",
             target_id=target_id,
             status=status,
@@ -147,6 +149,7 @@ def debug_model_failover(
 @router.post("/models/download")
 def download_model(payload: DownloadModelRequest, request: Request) -> dict[str, Any]:
     services = request.app.state.services
+    auth = auth_context_from_request(request)
     try:
         result = services.model_manager.download_model(
             model_id=payload.model_id,
@@ -156,6 +159,7 @@ def download_model(payload: DownloadModelRequest, request: Request) -> dict[str,
             request,
             action="model_download",
             payload=payload.model_dump(),
+            actor=auth.user_id,
             target_id=payload.model_id,
         )
         result["request_id"] = _request_id(request)
@@ -165,6 +169,7 @@ def download_model(payload: DownloadModelRequest, request: Request) -> dict[str,
             request,
             action="model_download",
             payload=payload.model_dump(),
+            actor=auth.user_id,
             target_id=payload.model_id,
             status="failed",
             details={"error": str(exc)},
@@ -175,6 +180,7 @@ def download_model(payload: DownloadModelRequest, request: Request) -> dict[str,
             request,
             action="model_download",
             payload=payload.model_dump(),
+            actor=auth.user_id,
             target_id=payload.model_id,
             status="failed",
             details={"error": str(exc)},
@@ -185,6 +191,7 @@ def download_model(payload: DownloadModelRequest, request: Request) -> dict[str,
 @router.post("/models/load")
 def load_model(payload: LoadModelRequest, request: Request) -> dict[str, Any]:
     services = request.app.state.services
+    auth = auth_context_from_request(request)
     try:
         result = services.model_manager.load_model(
             model_id=payload.model_id,
@@ -194,6 +201,7 @@ def load_model(payload: LoadModelRequest, request: Request) -> dict[str, Any]:
             request,
             action="model_load",
             payload=payload.model_dump(),
+            actor=auth.user_id,
             target_id=payload.model_id,
         )
         result["request_id"] = _request_id(request)
@@ -203,6 +211,7 @@ def load_model(payload: LoadModelRequest, request: Request) -> dict[str, Any]:
             request,
             action="model_load",
             payload=payload.model_dump(),
+            actor=auth.user_id,
             target_id=payload.model_id,
             status="failed",
             details={"error": str(exc)},
@@ -213,6 +222,7 @@ def load_model(payload: LoadModelRequest, request: Request) -> dict[str, Any]:
             request,
             action="model_load",
             payload=payload.model_dump(),
+            actor=auth.user_id,
             target_id=payload.model_id,
             status="failed",
             details={"error": str(exc)},

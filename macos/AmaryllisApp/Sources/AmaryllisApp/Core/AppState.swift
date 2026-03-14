@@ -13,6 +13,7 @@ final class AppState: ObservableObject {
     @Published var openAIAPIKey: String
     @Published var openRouterBaseURL: String
     @Published var openRouterAPIKey: String
+    @Published var runtimeAuthToken: String
     @Published var toolApprovalEnforcement: String
     @Published var toolIsolationProfile: String
     @Published var blockedTools: String
@@ -41,6 +42,7 @@ final class AppState: ObservableObject {
     private let selectedChatKey = "amaryllis.selectedChatID"
     private let openAIBaseURLKey = "amaryllis.openai.baseURL"
     private let openRouterBaseURLKey = "amaryllis.openrouter.baseURL"
+    private let runtimeAuthTokenKey = "amaryllis.runtime.authToken"
     private let toolApprovalEnforcementKey = "amaryllis.tools.approvalEnforcement"
     private let toolIsolationProfileKey = "amaryllis.tools.isolationProfile"
     private let blockedToolsKey = "amaryllis.tools.blockedTools"
@@ -59,9 +61,14 @@ final class AppState: ObservableObject {
     private let openAIKeychainAccount = "openai_api_key"
     private let openRouterKeychainAccount = "openrouter_api_key"
 
-    lazy var apiClient = AmaryllisAPIClient(baseURLProvider: { [unowned self] in
-        self.endpoint
-    })
+    lazy var apiClient = AmaryllisAPIClient(
+        baseURLProvider: { [unowned self] in
+            self.endpoint
+        },
+        authTokenProvider: { [unowned self] in
+            self.runtimeAuthToken
+        }
+    )
 
     init() {
         let defaults = UserDefaults.standard
@@ -70,7 +77,16 @@ final class AppState: ObservableObject {
         self.openRouterBaseURL = defaults.string(forKey: openRouterBaseURLKey) ?? "https://openrouter.ai/api/v1"
         self.openAIAPIKey = KeychainStore.get(service: keychainService, account: openAIKeychainAccount) ?? ""
         self.openRouterAPIKey = KeychainStore.get(service: keychainService, account: openRouterKeychainAccount) ?? ""
-        self.toolApprovalEnforcement = defaults.string(forKey: toolApprovalEnforcementKey) ?? "prompt_and_allow"
+        let persistedAuthToken = defaults.string(forKey: runtimeAuthTokenKey) ?? ""
+        let normalizedAuthToken = persistedAuthToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        if normalizedAuthToken.isEmpty {
+            let generated = Self.generateDefaultRuntimeAuthToken()
+            self.runtimeAuthToken = generated
+            defaults.set(generated, forKey: runtimeAuthTokenKey)
+        } else {
+            self.runtimeAuthToken = normalizedAuthToken
+        }
+        self.toolApprovalEnforcement = defaults.string(forKey: toolApprovalEnforcementKey) ?? "strict"
         self.toolIsolationProfile = defaults.string(forKey: toolIsolationProfileKey) ?? "balanced"
         self.blockedTools = defaults.string(forKey: blockedToolsKey) ?? ""
         self.allowedHighRiskTools = defaults.string(forKey: allowedHighRiskToolsKey) ?? ""
@@ -107,6 +123,7 @@ final class AppState: ObservableObject {
         defaults.set(runtimeDirectory.trimmingCharacters(in: .whitespacesAndNewlines), forKey: runtimeDirKey)
         defaults.set(openAIBaseURL.trimmingCharacters(in: .whitespacesAndNewlines), forKey: openAIBaseURLKey)
         defaults.set(openRouterBaseURL.trimmingCharacters(in: .whitespacesAndNewlines), forKey: openRouterBaseURLKey)
+        defaults.set(normalizedRuntimeAuthToken(), forKey: runtimeAuthTokenKey)
         defaults.set(normalizedApprovalMode(), forKey: toolApprovalEnforcementKey)
         defaults.set(normalizedIsolationProfile(), forKey: toolIsolationProfileKey)
         defaults.set(blockedTools.trimmingCharacters(in: .whitespacesAndNewlines), forKey: blockedToolsKey)
@@ -528,6 +545,7 @@ final class AppState: ObservableObject {
         let trimmedAllowedHighRiskTools = allowedHighRiskTools.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedPluginSigningKey = pluginSigningKey.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedMCPEndpoints = mcpEndpoints.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedAuthToken = normalizedRuntimeAuthToken()
 
         if !trimmedOpenAIBase.isEmpty {
             env["AMARYLLIS_OPENAI_BASE_URL"] = trimmedOpenAIBase
@@ -555,6 +573,8 @@ final class AppState: ObservableObject {
         env["AMARYLLIS_ALLOWED_HIGH_RISK_TOOLS"] = trimmedAllowedHighRiskTools
         env["AMARYLLIS_PLUGIN_SIGNING_KEY"] = trimmedPluginSigningKey
         env["AMARYLLIS_MCP_ENDPOINTS"] = trimmedMCPEndpoints
+        env["AMARYLLIS_AUTH_ENABLED"] = "true"
+        env["AMARYLLIS_AUTH_TOKENS"] = "\(normalizedAuthToken):user-001:admin|user"
         return env
     }
 
@@ -562,10 +582,20 @@ final class AppState: ObservableObject {
         let raw = toolApprovalEnforcement
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
-        if raw == "strict" {
-            return "strict"
+        if raw == "prompt_and_allow" {
+            return "prompt_and_allow"
         }
-        return "prompt_and_allow"
+        return "strict"
+    }
+
+    private func normalizedRuntimeAuthToken() -> String {
+        let trimmed = runtimeAuthToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            let generated = Self.generateDefaultRuntimeAuthToken()
+            runtimeAuthToken = generated
+            return generated
+        }
+        return trimmed
     }
 
     private func normalizedIsolationProfile() -> String {
@@ -627,6 +657,11 @@ final class AppState: ObservableObject {
         } else {
             _ = KeychainStore.set(service: keychainService, account: account, value: trimmed)
         }
+    }
+
+    private static func generateDefaultRuntimeAuthToken() -> String {
+        let suffix = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+        return "amaryllis-\(suffix)"
     }
 
     private static func discoverRuntimeDirectory() -> String {

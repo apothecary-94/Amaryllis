@@ -39,6 +39,12 @@ struct SettingsView: View {
                 TextField("Path to repository root", text: $appState.runtimeDirectory)
                     .textFieldStyle(AmaryllisTerminalTextFieldStyle())
 
+                Text("Runtime Auth Token")
+                    .font(AmaryllisTheme.bodyFont(size: 12, weight: .semibold))
+                    .foregroundStyle(AmaryllisTheme.textSecondary)
+                SecureField("Bearer token for runtime API", text: $appState.runtimeAuthToken)
+                    .textFieldStyle(AmaryllisTerminalTextFieldStyle())
+
                 Text("OpenAI Base URL")
                     .font(AmaryllisTheme.bodyFont(size: 12, weight: .semibold))
                     .foregroundStyle(AmaryllisTheme.textSecondary)

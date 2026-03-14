@@ -5,6 +5,7 @@ from typing import Any
 from fastapi import APIRouter, Path, Query, Request
 from pydantic import BaseModel, Field
 
+from runtime.auth import assert_owner, auth_context_from_request, resolve_user_id
 from runtime.errors import NotFoundError, ProviderError, ValidationError
 
 router = APIRouter(tags=["agents"])
@@ -74,19 +75,21 @@ class AgentRunCreateRequest(BaseModel):
 @router.post("/agents/create")
 def create_agent(payload: CreateAgentRequest, request: Request) -> dict[str, Any]:
     services = request.app.state.services
+    auth = auth_context_from_request(request)
+    effective_user_id = resolve_user_id(request_user_id=payload.user_id, auth=auth)
     try:
         agent = services.agent_manager.create_agent(
             name=payload.name,
             system_prompt=payload.system_prompt,
             model=payload.model,
             tools=payload.tools,
-            user_id=payload.user_id,
+            user_id=effective_user_id,
         )
         receipt = _sign_action(
             request,
             action="agent_create",
-            payload=payload.model_dump(),
-            actor=payload.user_id,
+            payload={**payload.model_dump(), "user_id": effective_user_id},
+            actor=auth.user_id,
             target_type="agent",
             target_id=agent.id,
         )
@@ -98,8 +101,8 @@ def create_agent(payload: CreateAgentRequest, request: Request) -> dict[str, Any
         _sign_action(
             request,
             action="agent_create",
-            payload=payload.model_dump(),
-            actor=payload.user_id,
+            payload={**payload.model_dump(), "user_id": effective_user_id},
+            actor=auth.user_id,
             target_type="agent",
             status="failed",
             details={"error": str(exc)},
@@ -109,8 +112,8 @@ def create_agent(payload: CreateAgentRequest, request: Request) -> dict[str, Any
         _sign_action(
             request,
             action="agent_create",
-            payload=payload.model_dump(),
-            actor=payload.user_id,
+            payload={**payload.model_dump(), "user_id": effective_user_id},
+            actor=auth.user_id,
             target_type="agent",
             status="failed",
             details={"error": str(exc)},
@@ -121,7 +124,9 @@ def create_agent(payload: CreateAgentRequest, request: Request) -> dict[str, Any
 @router.get("/agents")
 def list_agents(request: Request, user_id: str | None = Query(default=None)) -> dict[str, Any]:
     services = request.app.state.services
-    agents = services.agent_manager.list_agents(user_id=user_id)
+    auth = auth_context_from_request(request)
+    effective_user_id = resolve_user_id(request_user_id=user_id, auth=auth)
+    agents = services.agent_manager.list_agents(user_id=effective_user_id)
     return {
         "items": [agent.to_record() for agent in agents],
         "count": len(agents),
@@ -136,11 +141,13 @@ def create_agent_run(
     agent_id: str = Path(..., min_length=1),
 ) -> dict[str, Any]:
     services = request.app.state.services
+    auth = auth_context_from_request(request)
+    effective_user_id = resolve_user_id(request_user_id=payload.user_id, auth=auth)
     try:
         run = services.agent_manager.create_run(
             agent_id=agent_id,
             user_message=payload.message,
-            user_id=payload.user_id,
+            user_id=effective_user_id,
             session_id=payload.session_id,
             max_attempts=payload.max_attempts,
             budget=payload.budget.model_dump(exclude_none=True) if payload.budget is not None else None,
@@ -148,8 +155,8 @@ def create_agent_run(
         receipt = _sign_action(
             request,
             action="agent_run_create",
-            payload=payload.model_dump(),
-            actor=payload.user_id,
+            payload={**payload.model_dump(), "user_id": effective_user_id},
+            actor=auth.user_id,
             target_type="agent_run",
             target_id=str(run.get("id")),
             details={"agent_id": agent_id},
@@ -163,8 +170,8 @@ def create_agent_run(
         _sign_action(
             request,
             action="agent_run_create",
-            payload=payload.model_dump(),
-            actor=payload.user_id,
+            payload={**payload.model_dump(), "user_id": effective_user_id},
+            actor=auth.user_id,
             target_type="agent_run",
             details={"agent_id": agent_id, "error": str(exc)},
             status="failed",
@@ -174,8 +181,8 @@ def create_agent_run(
         _sign_action(
             request,
             action="agent_run_create",
-            payload=payload.model_dump(),
-            actor=payload.user_id,
+            payload={**payload.model_dump(), "user_id": effective_user_id},
+            actor=auth.user_id,
             target_type="agent_run",
             details={"agent_id": agent_id, "error": str(exc)},
             status="failed",
@@ -192,6 +199,8 @@ def list_agent_runs(
     limit: int = Query(default=50, ge=1, le=200),
 ) -> dict[str, Any]:
     services = request.app.state.services
+    auth = auth_context_from_request(request)
+    effective_user_id = resolve_user_id(request_user_id=user_id, auth=auth)
     try:
         if status is not None:
             normalized_status = status.strip().lower()
@@ -200,7 +209,7 @@ def list_agent_runs(
                 raise ValidationError(f"Invalid status: {status}. Allowed: {allowed}")
             status = normalized_status
         runs = services.agent_manager.list_runs(
-            user_id=user_id,
+            user_id=effective_user_id,
             agent_id=agent_id,
             status=status,
             limit=limit,
@@ -222,8 +231,15 @@ def get_agent_run(
     run_id: str = Path(..., min_length=1),
 ) -> dict[str, Any]:
     services = request.app.state.services
+    auth = auth_context_from_request(request)
     try:
         run = services.agent_manager.get_run(run_id=run_id)
+        assert_owner(
+            owner_user_id=str(run.get("user_id") or ""),
+            auth=auth,
+            resource_name="agent_run",
+            resource_id=run_id,
+        )
         return {
             "run": run,
             "request_id": _request_id(request),
@@ -240,7 +256,15 @@ def replay_agent_run(
     run_id: str = Path(..., min_length=1),
 ) -> dict[str, Any]:
     services = request.app.state.services
+    auth = auth_context_from_request(request)
     try:
+        run = services.agent_manager.get_run(run_id=run_id)
+        assert_owner(
+            owner_user_id=str(run.get("user_id") or ""),
+            auth=auth,
+            resource_name="agent_run",
+            resource_id=run_id,
+        )
         replay = services.agent_manager.replay_run(run_id=run_id)
         return {
             "replay": replay,
@@ -259,7 +283,15 @@ def list_agent_run_issues(
     limit: int = Query(default=200, ge=1, le=1000),
 ) -> dict[str, Any]:
     services = request.app.state.services
+    auth = auth_context_from_request(request)
     try:
+        run = services.agent_manager.get_run(run_id=run_id)
+        assert_owner(
+            owner_user_id=str(run.get("user_id") or ""),
+            auth=auth,
+            resource_name="agent_run",
+            resource_id=run_id,
+        )
         items = services.agent_manager.list_run_issues(run_id=run_id, limit=limit)
         return {
             "items": items,
@@ -280,7 +312,15 @@ def list_agent_run_artifacts(
     limit: int = Query(default=500, ge=1, le=5000),
 ) -> dict[str, Any]:
     services = request.app.state.services
+    auth = auth_context_from_request(request)
     try:
+        run = services.agent_manager.get_run(run_id=run_id)
+        assert_owner(
+            owner_user_id=str(run.get("user_id") or ""),
+            auth=auth,
+            resource_name="agent_run",
+            resource_id=run_id,
+        )
         items = services.agent_manager.list_run_artifacts(
             run_id=run_id,
             issue_id=issue_id,
@@ -303,13 +343,21 @@ def cancel_agent_run(
     run_id: str = Path(..., min_length=1),
 ) -> dict[str, Any]:
     services = request.app.state.services
+    auth = auth_context_from_request(request)
     try:
+        existing = services.agent_manager.get_run(run_id=run_id)
+        assert_owner(
+            owner_user_id=str(existing.get("user_id") or ""),
+            auth=auth,
+            resource_name="agent_run",
+            resource_id=run_id,
+        )
         run = services.agent_manager.cancel_run(run_id=run_id)
         receipt = _sign_action(
             request,
             action="agent_run_cancel",
             payload={"run_id": run_id},
-            actor=str(run.get("user_id") or ""),
+            actor=auth.user_id,
             target_type="agent_run",
             target_id=run_id,
         )
@@ -350,13 +398,21 @@ def resume_agent_run(
     run_id: str = Path(..., min_length=1),
 ) -> dict[str, Any]:
     services = request.app.state.services
+    auth = auth_context_from_request(request)
     try:
+        existing = services.agent_manager.get_run(run_id=run_id)
+        assert_owner(
+            owner_user_id=str(existing.get("user_id") or ""),
+            auth=auth,
+            resource_name="agent_run",
+            resource_id=run_id,
+        )
         run = services.agent_manager.resume_run(run_id=run_id)
         receipt = _sign_action(
             request,
             action="agent_run_resume",
             payload={"run_id": run_id},
-            actor=str(run.get("user_id") or ""),
+            actor=auth.user_id,
             target_type="agent_run",
             target_id=run_id,
         )
@@ -422,18 +478,29 @@ def chat_agent(
     agent_id: str = Path(..., min_length=1),
 ) -> dict[str, Any]:
     services = request.app.state.services
+    auth = auth_context_from_request(request)
+    effective_user_id = resolve_user_id(request_user_id=payload.user_id, auth=auth)
     try:
+        agent = services.agent_manager.get_agent(agent_id)
+        if agent is None:
+            raise NotFoundError(f"Agent not found: {agent_id}")
+        assert_owner(
+            owner_user_id=agent.user_id,
+            auth=auth,
+            resource_name="agent",
+            resource_id=agent_id,
+        )
         result = services.agent_manager.chat(
             agent_id=agent_id,
             user_message=payload.message,
-            user_id=payload.user_id,
+            user_id=effective_user_id,
             session_id=payload.session_id,
         )
         receipt = _sign_action(
             request,
             action="agent_chat_sync",
-            payload=payload.model_dump(),
-            actor=payload.user_id,
+            payload={**payload.model_dump(), "user_id": effective_user_id},
+            actor=auth.user_id,
             target_type="agent",
             target_id=agent_id,
         )
@@ -447,12 +514,24 @@ def chat_agent(
             "action_receipt": receipt,
             "request_id": _request_id(request),
         }
+    except NotFoundError:
+        _sign_action(
+            request,
+            action="agent_chat_sync",
+            payload={**payload.model_dump(), "user_id": effective_user_id},
+            actor=auth.user_id,
+            target_type="agent",
+            target_id=agent_id,
+            status="failed",
+            details={"error": f"Agent not found: {agent_id}"},
+        )
+        raise
     except ValueError as exc:
         _sign_action(
             request,
             action="agent_chat_sync",
-            payload=payload.model_dump(),
-            actor=payload.user_id,
+            payload={**payload.model_dump(), "user_id": effective_user_id},
+            actor=auth.user_id,
             target_type="agent",
             target_id=agent_id,
             status="failed",
@@ -463,8 +542,8 @@ def chat_agent(
         _sign_action(
             request,
             action="agent_chat_sync",
-            payload=payload.model_dump(),
-            actor=payload.user_id,
+            payload={**payload.model_dump(), "user_id": effective_user_id},
+            actor=auth.user_id,
             target_type="agent",
             target_id=agent_id,
             status="failed",

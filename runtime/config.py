@@ -1,8 +1,16 @@
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
+
+
+@dataclass(frozen=True)
+class AuthTokenConfig:
+    token: str
+    user_id: str
+    scopes: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -75,6 +83,8 @@ class AppConfig:
     cloud_rate_max_requests: int
     cloud_budget_window_sec: float
     cloud_budget_max_units: int
+    auth_enabled: bool
+    auth_tokens: tuple[AuthTokenConfig, ...]
     chat_max_messages: int
     chat_max_input_chars: int
     chat_max_tokens: int
@@ -164,10 +174,10 @@ class AppConfig:
         mcp_endpoints = tuple(_csv_items(os.getenv("AMARYLLIS_MCP_ENDPOINTS", "")))
         tool_approval_enforcement = os.getenv(
             "AMARYLLIS_TOOL_APPROVAL_ENFORCEMENT",
-            "prompt_and_allow",
+            "strict",
         ).strip().lower()
         if tool_approval_enforcement not in {"strict", "prompt_and_allow"}:
-            tool_approval_enforcement = "prompt_and_allow"
+            tool_approval_enforcement = "strict"
         tool_isolation_profile = os.getenv(
             "AMARYLLIS_TOOL_ISOLATION_PROFILE",
             "balanced",
@@ -176,10 +186,17 @@ class AppConfig:
             tool_isolation_profile = "balanced"
         plugin_signing_mode = os.getenv(
             "AMARYLLIS_PLUGIN_SIGNING_MODE",
-            "warn",
+            "strict",
         ).strip().lower()
         if plugin_signing_mode not in {"off", "warn", "strict"}:
-            plugin_signing_mode = "warn"
+            plugin_signing_mode = "strict"
+        auth_enabled = _parse_bool(os.getenv("AMARYLLIS_AUTH_ENABLED", "true"))
+        auth_tokens = tuple(
+            _parse_auth_tokens(
+                raw=os.getenv("AMARYLLIS_AUTH_TOKENS", ""),
+                single_token=os.getenv("AMARYLLIS_API_TOKEN", ""),
+            )
+        )
 
         return cls(
             app_name="Amaryllis",
@@ -305,6 +322,8 @@ class AppConfig:
             cloud_budget_max_units=max(
                 100, int(os.getenv("AMARYLLIS_CLOUD_BUDGET_MAX_UNITS", "400000"))
             ),
+            auth_enabled=auth_enabled,
+            auth_tokens=auth_tokens,
             chat_max_messages=max(1, int(os.getenv("AMARYLLIS_CHAT_MAX_MESSAGES", "80"))),
             chat_max_input_chars=max(2000, int(os.getenv("AMARYLLIS_CHAT_MAX_INPUT_CHARS", "50000"))),
             chat_max_tokens=max(64, int(os.getenv("AMARYLLIS_CHAT_MAX_TOKENS", "4096"))),
@@ -355,3 +374,94 @@ def _csv_items(value: str) -> list[str]:
 def _parse_bool(value: str) -> bool:
     normalized = str(value).strip().lower()
     return normalized in {"1", "true", "yes", "on"}
+
+
+def _parse_auth_tokens(*, raw: str, single_token: str) -> list[AuthTokenConfig]:
+    items: list[AuthTokenConfig] = []
+    seen_tokens: set[str] = set()
+
+    def add(token: str, user_id: str, scopes: list[str] | tuple[str, ...] | set[str]) -> None:
+        normalized_token = str(token or "").strip()
+        normalized_user = str(user_id or "").strip()
+        normalized_scopes = tuple(
+            sorted(
+                {
+                    str(scope or "").strip().lower()
+                    for scope in scopes
+                    if str(scope or "").strip()
+                }
+            )
+        )
+        if not normalized_token or not normalized_user:
+            return
+        if not normalized_scopes:
+            scope_tuple = ("user",)
+        else:
+            scope_tuple = normalized_scopes
+        if normalized_token in seen_tokens:
+            return
+        seen_tokens.add(normalized_token)
+        items.append(
+            AuthTokenConfig(
+                token=normalized_token,
+                user_id=normalized_user,
+                scopes=scope_tuple,
+            )
+        )
+
+    trimmed = str(raw or "").strip()
+    if trimmed:
+        parsed_json = None
+        if trimmed.startswith("{"):
+            try:
+                parsed_json = json.loads(trimmed)
+            except Exception:
+                parsed_json = None
+
+        if isinstance(parsed_json, dict):
+            for token, value in parsed_json.items():
+                token_str = str(token or "").strip()
+                if not token_str:
+                    continue
+                if isinstance(value, dict):
+                    user_id = str(
+                        value.get("user_id")
+                        or value.get("subject")
+                        or value.get("actor")
+                        or ""
+                    ).strip()
+                    scopes_raw = value.get("scopes")
+                    if isinstance(scopes_raw, list):
+                        scopes = [str(scope) for scope in scopes_raw]
+                    elif isinstance(scopes_raw, str):
+                        scopes = [part for part in scopes_raw.replace(",", "|").split("|")]
+                    else:
+                        scopes = ["user"]
+                    add(token_str, user_id, scopes)
+                    continue
+                if isinstance(value, str):
+                    add(token_str, value, ["user"])
+                    continue
+                add(token_str, "user", ["user"])
+        else:
+            for entry in trimmed.split(","):
+                part = str(entry or "").strip()
+                if not part:
+                    continue
+                token_segment, _, rest = part.partition(":")
+                token_str = token_segment.strip()
+                user_id = "user"
+                scopes = ["user"]
+                if rest:
+                    user_segment, _, scope_segment = rest.partition(":")
+                    if user_segment.strip():
+                        user_id = user_segment.strip()
+                    if scope_segment.strip():
+                        scopes = [item for item in scope_segment.replace(",", "|").split("|")]
+                add(token_str, user_id, scopes)
+
+    single = str(single_token or "").strip()
+    if single:
+        add(single, "admin", ["admin", "user"])
+
+    return items
