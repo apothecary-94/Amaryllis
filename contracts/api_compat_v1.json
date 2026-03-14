@@ -1,0 +1,90 @@
+{
+  "contract_version": "v1",
+  "endpoints": [
+    {
+      "method": "post",
+      "path": "/v1/chat/completions",
+      "request_required": [
+        "messages"
+      ],
+      "response_statuses": [
+        "200",
+        "422"
+      ]
+    },
+    {
+      "method": "get",
+      "path": "/v1/models",
+      "request_required": [],
+      "response_statuses": [
+        "200"
+      ]
+    },
+    {
+      "method": "post",
+      "path": "/v1/models/download",
+      "request_required": [
+        "model_id"
+      ],
+      "response_statuses": [
+        "200",
+        "422"
+      ]
+    },
+    {
+      "method": "post",
+      "path": "/v1/models/load",
+      "request_required": [
+        "model_id"
+      ],
+      "response_statuses": [
+        "200",
+        "422"
+      ]
+    },
+    {
+      "method": "post",
+      "path": "/v1/agents/create",
+      "request_required": [
+        "name",
+        "system_prompt"
+      ],
+      "response_statuses": [
+        "200",
+        "422"
+      ]
+    },
+    {
+      "method": "get",
+      "path": "/v1/agents",
+      "request_required": [],
+      "response_statuses": [
+        "200"
+      ]
+    },
+    {
+      "method": "get",
+      "path": "/v1/automations",
+      "request_required": [],
+      "response_statuses": [
+        "200"
+      ]
+    },
+    {
+      "method": "get",
+      "path": "/v1/tools",
+      "request_required": [],
+      "response_statuses": [
+        "200"
+      ]
+    },
+    {
+      "method": "get",
+      "path": "/v1/inbox",
+      "request_required": [],
+      "response_statuses": [
+        "200"
+      ]
+    }
+  ]
+}

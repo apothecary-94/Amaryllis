@@ -9,6 +9,7 @@ from uuid import uuid4
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.responses import PlainTextResponse
 
 from agents.agent_manager import AgentManager
 from agents.agent_run_manager import AgentRunManager
@@ -30,9 +31,11 @@ from memory.user_memory import UserMemory
 from memory.working_memory import WorkingMemory
 from models.model_manager import ModelManager
 from planner.planner import Planner
+from runtime.api_lifecycle import APILifecyclePolicy, canonical_api_path
 from runtime.auth import AuthContext, AuthManager, auth_context_from_request
 from runtime.config import AppConfig
 from runtime.errors import AmaryllisError, InternalError, PermissionDeniedError
+from runtime.observability import ObservabilityManager, ObservabilityTelemetry, SLOTargets
 from runtime.security import LocalIdentityManager, SecurityManager
 from runtime.telemetry import LocalTelemetry
 from storage.database import Database
@@ -64,7 +67,10 @@ class ServiceContainer:
     automation_scheduler: AutomationScheduler
     memory_consolidation_worker: MemoryConsolidationWorker | None
     mcp_registry: MCPClientRegistry | None
-    telemetry: LocalTelemetry
+    telemetry: Any
+    local_telemetry: LocalTelemetry
+    observability: ObservabilityManager
+    api_lifecycle: APILifecyclePolicy
     identity_manager: LocalIdentityManager
     security_manager: SecurityManager
     auth_manager: AuthManager
@@ -83,7 +89,30 @@ def create_services() -> ServiceContainer:
 
     database = Database(config.database_path)
     vector_store = VectorStore(config.vector_index_path)
-    telemetry = LocalTelemetry(config.telemetry_path)
+    local_telemetry = LocalTelemetry(config.telemetry_path)
+    observability = ObservabilityManager(
+        logger=logger,
+        service_name=config.app_name,
+        service_version=config.app_version,
+        environment=config.security_profile,
+        otel_enabled=config.observability_otel_enabled,
+        otlp_endpoint=config.observability_otlp_endpoint,
+        slo_targets=SLOTargets(
+            window_sec=config.observability_slo_window_sec,
+            request_availability_target=config.observability_request_availability_target,
+            request_latency_p95_ms_target=config.observability_request_latency_p95_ms_target,
+            run_success_target=config.observability_run_success_target,
+            min_request_samples=config.observability_min_request_samples,
+            min_run_samples=config.observability_min_run_samples,
+            incident_cooldown_sec=config.observability_incident_cooldown_sec,
+        ),
+    )
+    telemetry = ObservabilityTelemetry(base=local_telemetry, monitor=observability.sre)
+    api_lifecycle = APILifecyclePolicy(
+        version=config.api_version,
+        release_channel=config.api_release_channel,
+        deprecation_sunset_days=config.api_deprecation_sunset_days,
+    )
     identity_manager = LocalIdentityManager(config.identity_path)
     security_manager = SecurityManager(
         identity_manager=identity_manager,
@@ -263,6 +292,9 @@ def create_services() -> ServiceContainer:
         memory_consolidation_worker=memory_consolidation_worker,
         mcp_registry=mcp_registry,
         telemetry=telemetry,
+        local_telemetry=local_telemetry,
+        observability=observability,
+        api_lifecycle=api_lifecycle,
         identity_manager=identity_manager,
         security_manager=security_manager,
         auth_manager=auth_manager,
@@ -274,7 +306,7 @@ def create_app() -> FastAPI:
 
     app = FastAPI(
         title="Amaryllis Runtime",
-        version="0.1.0",
+        version=services.config.app_version,
         description="Local AI brain node runtime for macOS.",
     )
     app.state.services = services
@@ -282,8 +314,11 @@ def create_app() -> FastAPI:
         "runtime_start",
         {
             "app": services.config.app_name,
+            "version": services.config.app_version,
             "host": services.config.host,
             "port": services.config.port,
+            "api_version": services.config.api_version,
+            "release_channel": services.config.api_release_channel,
         },
     )
 
@@ -346,7 +381,7 @@ def create_app() -> FastAPI:
             request.url.path,
             message,
         )
-        return JSONResponse(
+        response = JSONResponse(
             status_code=status_code,
             content={
                 "error": {
@@ -355,36 +390,28 @@ def create_app() -> FastAPI:
                     "request_id": request_id,
                 }
             },
-            headers={"X-Request-ID": request_id},
+            headers={
+                "X-Request-ID": request_id,
+                "X-Trace-ID": str(getattr(request.state, "trace_id", request_id)),
+            },
         )
+        for key, value in services.api_lifecycle.response_headers(request.url.path).items():
+            response.headers[key] = value
+        return response
 
     @app.middleware("http")
     async def request_trace_middleware(request: Request, call_next):
         request_id = request.headers.get("x-request-id", "").strip() or str(uuid4())
         request.state.request_id = request_id
-        path = request.url.path
-
-        try:
-            is_public = path == "/health"
-            if not is_public:
-                auth_context = services.auth_manager.authenticate_request(request)
-                request.state.auth_context = auth_context
-                if path.startswith("/security/") or path.startswith("/debug/"):
-                    if not auth_context.is_admin:
-                        raise PermissionDeniedError("Admin scope is required")
-                elif path.startswith("/service/"):
-                    if not auth_context.has_any_scope("service", "admin"):
-                        raise PermissionDeniedError("Service scope is required")
-                elif not auth_context.has_any_scope("user", "admin"):
-                    raise PermissionDeniedError("User scope is required")
-        except AmaryllisError as exc:
-            return error_response(
-                request,
-                status_code=exc.status_code,
-                error_type=exc.error_type,
-                message=exc.message,
-            )
-
+        path = str(request.url.path)
+        auth_path = canonical_api_path(path)
+        request.state.api_path = auth_path
+        span_ctx = services.observability.start_request_span(
+            request_id=request_id,
+            method=request.method,
+            path=auth_path or path,
+        )
+        request.state.trace_id = span_ctx.trace_id or request_id
         start = time.perf_counter()
         services.telemetry.emit(
             "request_start",
@@ -392,19 +419,38 @@ def create_app() -> FastAPI:
                 "request_id": request_id,
                 "method": request.method,
                 "path": path,
+                "canonical_path": auth_path,
+                "trace_id": str(getattr(request.state, "trace_id", "")),
             },
         )
         logger.info(
-            "request_start request_id=%s method=%s path=%s",
+            "request_start request_id=%s trace_id=%s method=%s path=%s canonical_path=%s",
             request_id,
+            str(getattr(request.state, "trace_id", "")),
             request.method,
             path,
+            auth_path,
         )
 
+        response: JSONResponse | Any
+        error_type: str | None = None
         try:
+            is_public = auth_path == "/health"
+            if not is_public:
+                auth_context = services.auth_manager.authenticate_request(request)
+                request.state.auth_context = auth_context
+                if auth_path.startswith("/security/") or auth_path.startswith("/debug/"):
+                    if not auth_context.is_admin:
+                        raise PermissionDeniedError("Admin scope is required")
+                elif auth_path.startswith("/service/"):
+                    if not auth_context.has_any_scope("service", "admin"):
+                        raise PermissionDeniedError("Service scope is required")
+                elif not auth_context.has_any_scope("user", "admin"):
+                    raise PermissionDeniedError("User scope is required")
             response = await call_next(request)
         except AmaryllisError as exc:
-            return error_response(
+            error_type = exc.error_type
+            response = error_response(
                 request,
                 status_code=exc.status_code,
                 error_type=exc.error_type,
@@ -413,7 +459,8 @@ def create_app() -> FastAPI:
         except Exception as exc:
             logger.exception("unhandled_exception path=%s error=%s", request.url.path, exc)
             internal = InternalError()
-            return error_response(
+            error_type = internal.error_type
+            response = error_response(
                 request,
                 status_code=internal.status_code,
                 error_type=internal.error_type,
@@ -422,19 +469,31 @@ def create_app() -> FastAPI:
 
         duration_ms = round((time.perf_counter() - start) * 1000.0, 2)
         response.headers["X-Request-ID"] = request_id
+        response.headers["X-Trace-ID"] = str(getattr(request.state, "trace_id", request_id))
+        for key, value in services.api_lifecycle.response_headers(path).items():
+            response.headers[key] = value
         services.telemetry.emit(
             "request_done",
             {
                 "request_id": request_id,
                 "method": request.method,
                 "path": path,
+                "canonical_path": auth_path,
                 "status_code": response.status_code,
                 "duration_ms": duration_ms,
+                "trace_id": str(getattr(request.state, "trace_id", "")),
             },
         )
+        services.observability.finish_request_span(
+            context=span_ctx,
+            status_code=int(response.status_code),
+            duration_ms=duration_ms,
+            error_type=error_type,
+        )
         logger.info(
-            "request_done request_id=%s method=%s path=%s status=%s duration_ms=%.2f",
+            "request_done request_id=%s trace_id=%s method=%s path=%s status=%s duration_ms=%.2f",
             request_id,
+            str(getattr(request.state, "trace_id", "")),
             request.method,
             path,
             response.status_code,
@@ -494,6 +553,13 @@ def create_app() -> FastAPI:
     app.include_router(inbox_router)
     app.include_router(memory_router)
     app.include_router(tool_router)
+    # Versioned API aliases for lifecycle-managed stable contract.
+    app.include_router(model_router, prefix="/v1")
+    app.include_router(agent_router, prefix="/v1")
+    app.include_router(automation_router, prefix="/v1")
+    app.include_router(inbox_router, prefix="/v1")
+    app.include_router(memory_router, prefix="/v1")
+    app.include_router(tool_router, prefix="/v1")
     app.include_router(security_router)
 
     @app.get("/health")
@@ -533,6 +599,48 @@ def create_app() -> FastAPI:
             "active_provider": services.model_manager.active_provider,
             "active_model": services.model_manager.active_model,
             "providers": checks,
+        }
+
+    @app.get("/service/observability/slo")
+    def service_observability_slo(request: Request) -> dict[str, Any]:
+        auth = auth_context_from_request(request)
+        return {
+            "request_id": request_id_from_request(request),
+            "actor": auth.user_id,
+            "scopes": sorted(auth.scopes),
+            "snapshot": services.observability.sre.snapshot(),
+        }
+
+    @app.get("/service/observability/incidents")
+    def service_observability_incidents(request: Request, limit: int = 100) -> dict[str, Any]:
+        auth = auth_context_from_request(request)
+        return {
+            "request_id": request_id_from_request(request),
+            "actor": auth.user_id,
+            "scopes": sorted(auth.scopes),
+            "items": services.observability.sre.list_incidents(limit=max(1, min(limit, 1000))),
+        }
+
+    @app.get("/service/observability/metrics")
+    def service_observability_metrics(request: Request) -> PlainTextResponse:
+        _ = auth_context_from_request(request)
+        metrics = services.observability.sre.render_prometheus_metrics()
+        response = PlainTextResponse(content=metrics, media_type="text/plain; version=0.0.4")
+        response.headers["X-Request-ID"] = request_id_from_request(request)
+        response.headers["X-Trace-ID"] = str(getattr(request.state, "trace_id", request_id_from_request(request)))
+        for key, value in services.api_lifecycle.response_headers(request.url.path).items():
+            response.headers[key] = value
+        return response
+
+    @app.get("/service/api/lifecycle")
+    def service_api_lifecycle(request: Request) -> dict[str, Any]:
+        auth = auth_context_from_request(request)
+        return {
+            "request_id": request_id_from_request(request),
+            "actor": auth.user_id,
+            "scopes": sorted(auth.scopes),
+            "policy": services.api_lifecycle.describe(),
+            "compat_contract_path": str(services.config.api_compat_contract_path),
         }
 
     @app.on_event("shutdown")

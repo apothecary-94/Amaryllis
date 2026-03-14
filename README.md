@@ -14,7 +14,7 @@ This MVP is intentionally simple and modular, so it can evolve into a richer cog
 
 ## Privacy and Anonymity
 
-- no remote telemetry; runtime writes local telemetry file only
+- local telemetry is default; optional OpenTelemetry export can be enabled explicitly
 - no personal paths or machine-specific identifiers in repository files
 - local-first runtime, data stays on your machine unless tools/providers call external services
 
@@ -44,6 +44,12 @@ Implemented in this version:
 - provider diagnostics endpoint: `GET /health/providers`
 - SQLite migration framework (`schema_migrations`)
 - local structured telemetry (`telemetry.jsonl`)
+- OpenTelemetry-ready tracing/log correlation (`trace_id`) with graceful fallback if OTel deps are missing
+- SRE observability endpoints (`/service/observability/slo`, `/service/observability/incidents`, `/service/observability/metrics`)
+- automatic incident detection from SLO breaches (availability, latency p95, run success)
+- API lifecycle policy with version headers and legacy deprecation headers (`Deprecation`, `Sunset`)
+- versioned API aliases for core routes under `/v1/*` with compatibility contract gate
+- release gate assets: compatibility script, canary smoke script, rollback playbook
 - lease/CAS ownership for agent runs (single-owner execution under concurrent workers)
 - typed planner step execution with step contracts (pre/post conditions), verifier, retry and replan
 
@@ -66,6 +72,14 @@ Data storage location:
 
 Local telemetry log:
 - `~/Library/Application Support/amaryllis/data/telemetry.jsonl`
+
+Service observability endpoints:
+- `GET /service/observability/slo`
+- `GET /service/observability/incidents`
+- `GET /service/observability/metrics`
+
+Service API lifecycle endpoint:
+- `GET /service/api/lifecycle`
 
 ## Project Structure
 
@@ -1057,6 +1071,19 @@ Release/pull-request gate is blocking and includes:
   - `AMARYLLIS_MCP_TIMEOUT_SEC=10`
   - `AMARYLLIS_MCP_FAILURE_THRESHOLD=2`
   - `AMARYLLIS_MCP_QUARANTINE_SEC=60`
+  - `AMARYLLIS_OTEL_ENABLED=true|false`
+  - `AMARYLLIS_OTEL_OTLP_ENDPOINT=http://otel-collector:4318/v1/traces`
+  - `AMARYLLIS_SLO_WINDOW_SEC=3600`
+  - `AMARYLLIS_SLO_REQUEST_AVAILABILITY_TARGET=0.995`
+  - `AMARYLLIS_SLO_REQUEST_LATENCY_P95_MS_TARGET=1200`
+  - `AMARYLLIS_SLO_RUN_SUCCESS_TARGET=0.98`
+  - `AMARYLLIS_SLO_MIN_REQUEST_SAMPLES=50`
+  - `AMARYLLIS_SLO_MIN_RUN_SAMPLES=20`
+  - `AMARYLLIS_SLO_INCIDENT_COOLDOWN_SEC=300`
+  - `AMARYLLIS_API_VERSION=v1`
+  - `AMARYLLIS_RELEASE_CHANNEL=alpha|beta|stable`
+  - `AMARYLLIS_API_DEPRECATION_SUNSET_DAYS=180`
+  - `AMARYLLIS_API_COMPAT_CONTRACT_PATH=contracts/api_compat_v1.json`
 
 ## Example Environment Variables
 
@@ -1107,6 +1134,49 @@ export AMARYLLIS_MCP_ENDPOINTS=
 export AMARYLLIS_MCP_TIMEOUT_SEC=10
 export AMARYLLIS_MCP_FAILURE_THRESHOLD=2
 export AMARYLLIS_MCP_QUARANTINE_SEC=60
+export AMARYLLIS_OTEL_ENABLED=true
+export AMARYLLIS_OTEL_OTLP_ENDPOINT=
+export AMARYLLIS_SLO_WINDOW_SEC=3600
+export AMARYLLIS_SLO_REQUEST_AVAILABILITY_TARGET=0.995
+export AMARYLLIS_SLO_REQUEST_LATENCY_P95_MS_TARGET=1200
+export AMARYLLIS_SLO_RUN_SUCCESS_TARGET=0.98
+export AMARYLLIS_API_VERSION=v1
+export AMARYLLIS_RELEASE_CHANNEL=stable
+export AMARYLLIS_API_DEPRECATION_SUNSET_DAYS=180
+export AMARYLLIS_API_COMPAT_CONTRACT_PATH=contracts/api_compat_v1.json
+```
+
+## Observability and SRE
+
+- Dashboard template: `observability/grafana/dashboard-amaryllis.json`
+- Alert rules: `observability/alerts/prometheus-rules.yml`
+- Service endpoints:
+  - `GET /service/observability/slo`
+  - `GET /service/observability/incidents`
+  - `GET /service/observability/metrics`
+- Docs: `docs/observability-sre.md`
+
+## API Lifecycle and Release Process
+
+- Lifecycle policy docs: `docs/api-lifecycle.md`
+- Compatibility contract: `contracts/api_compat_v1.json`
+- Compatibility gate:
+
+```bash
+python scripts/release/api_compat_gate.py
+```
+
+- Canary smoke:
+
+```bash
+python scripts/release/canary_smoke.py
+```
+
+- Rollback playbook: `docs/release-playbook.md`
+- Local rollback helper:
+
+```bash
+scripts/release/rollback_local.sh <tag-or-commit>
 ```
 
 ## License

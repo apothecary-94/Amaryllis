@@ -20,6 +20,7 @@ class AuthTokenConfig:
 @dataclass(frozen=True)
 class AppConfig:
     app_name: str
+    app_version: str
     host: str
     port: int
     support_dir: Path
@@ -29,6 +30,19 @@ class AppConfig:
     database_path: Path
     vector_index_path: Path
     telemetry_path: Path
+    observability_otel_enabled: bool
+    observability_otlp_endpoint: str | None
+    observability_slo_window_sec: float
+    observability_request_availability_target: float
+    observability_request_latency_p95_ms_target: float
+    observability_run_success_target: float
+    observability_min_request_samples: int
+    observability_min_run_samples: int
+    observability_incident_cooldown_sec: float
+    api_version: str
+    api_release_channel: str
+    api_deprecation_sunset_days: int
+    api_compat_contract_path: Path
     default_provider: str
     default_model: str
     ollama_base_url: str
@@ -174,6 +188,12 @@ class AppConfig:
                 str(data_dir / "telemetry.jsonl"),
             )
         ).expanduser()
+        api_compat_contract_path = Path(
+            os.getenv(
+                "AMARYLLIS_API_COMPAT_CONTRACT_PATH",
+                str(Path.cwd() / "contracts" / "api_compat_v1.json"),
+            )
+        ).expanduser()
         identity_path = Path(
             os.getenv(
                 "AMARYLLIS_IDENTITY_PATH",
@@ -195,6 +215,12 @@ class AppConfig:
         ).strip().lower()
         if tool_approval_enforcement not in {"strict", "prompt_and_allow"}:
             tool_approval_enforcement = "strict"
+        api_release_channel = os.getenv(
+            "AMARYLLIS_RELEASE_CHANNEL",
+            "stable",
+        ).strip().lower()
+        if api_release_channel not in {"alpha", "beta", "stable"}:
+            api_release_channel = "stable"
         security_profile = os.getenv(
             "AMARYLLIS_SECURITY_PROFILE",
             "production",
@@ -243,6 +269,7 @@ class AppConfig:
         )
         config = cls(
             app_name="Amaryllis",
+            app_version=os.getenv("AMARYLLIS_APP_VERSION", "0.1.0"),
             host=os.getenv("AMARYLLIS_HOST", "localhost"),
             port=int(os.getenv("AMARYLLIS_PORT", "8000")),
             support_dir=support_dir,
@@ -252,6 +279,39 @@ class AppConfig:
             database_path=database_path,
             vector_index_path=vector_index_path,
             telemetry_path=telemetry_path,
+            observability_otel_enabled=_parse_bool(
+                os.getenv("AMARYLLIS_OTEL_ENABLED", "true")
+            ),
+            observability_otlp_endpoint=(os.getenv("AMARYLLIS_OTEL_OTLP_ENDPOINT") or "").strip() or None,
+            observability_slo_window_sec=max(
+                60.0, float(os.getenv("AMARYLLIS_SLO_WINDOW_SEC", "3600"))
+            ),
+            observability_request_availability_target=min(
+                0.9999,
+                max(0.5, float(os.getenv("AMARYLLIS_SLO_REQUEST_AVAILABILITY_TARGET", "0.995"))),
+            ),
+            observability_request_latency_p95_ms_target=max(
+                1.0, float(os.getenv("AMARYLLIS_SLO_REQUEST_LATENCY_P95_MS_TARGET", "1200"))
+            ),
+            observability_run_success_target=min(
+                0.9999,
+                max(0.5, float(os.getenv("AMARYLLIS_SLO_RUN_SUCCESS_TARGET", "0.98"))),
+            ),
+            observability_min_request_samples=max(
+                1, int(os.getenv("AMARYLLIS_SLO_MIN_REQUEST_SAMPLES", "50"))
+            ),
+            observability_min_run_samples=max(
+                1, int(os.getenv("AMARYLLIS_SLO_MIN_RUN_SAMPLES", "20"))
+            ),
+            observability_incident_cooldown_sec=max(
+                5.0, float(os.getenv("AMARYLLIS_SLO_INCIDENT_COOLDOWN_SEC", "300"))
+            ),
+            api_version=os.getenv("AMARYLLIS_API_VERSION", "v1").strip() or "v1",
+            api_release_channel=api_release_channel,
+            api_deprecation_sunset_days=max(
+                7, int(os.getenv("AMARYLLIS_API_DEPRECATION_SUNSET_DAYS", "180"))
+            ),
+            api_compat_contract_path=api_compat_contract_path,
             default_provider=os.getenv("AMARYLLIS_DEFAULT_PROVIDER", "mlx"),
             default_model=os.getenv(
                 "AMARYLLIS_DEFAULT_MODEL",

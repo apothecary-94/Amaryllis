@@ -727,6 +727,17 @@ class AgentRunManager:
                         "failure_class": "canceled",
                     },
                 )
+            self._emit(
+                "agent_run_canceled",
+                {
+                    "run_id": run_id,
+                    "agent_id": str(run.get("agent_id") or ""),
+                    "status": "canceled",
+                    "stop_reason": "canceled_by_user",
+                    "failure_class": "canceled",
+                    "duration_ms": 0.0,
+                },
+            )
             return lease_token
 
         status = str(run.get("status", ""))
@@ -761,6 +772,17 @@ class AgentRunManager:
                     attempt=max(1, int(run.get("attempts", 0)) + 1),
                     error_message=error_message,
                 )
+            self._emit(
+                "agent_run_failed",
+                {
+                    "run_id": run_id,
+                    "agent_id": str(run.get("agent_id") or ""),
+                    "status": "failed",
+                    "stop_reason": "agent_not_found",
+                    "failure_class": "not_found",
+                    "duration_ms": 0.0,
+                },
+            )
             return lease_token
 
         agent = Agent.from_record(agent_record)
@@ -797,6 +819,17 @@ class AgentRunManager:
                         "failure_class": "budget_exceeded",
                     },
                 )
+            self._emit(
+                "agent_run_failed",
+                {
+                    "run_id": run_id,
+                    "agent_id": str(run.get("agent_id") or ""),
+                    "status": "failed",
+                    "stop_reason": "budget_exceeded",
+                    "failure_class": "budget_exceeded",
+                    "duration_ms": 0.0,
+                },
+            )
             return lease_token
 
         with self.database.write_transaction():
@@ -963,6 +996,18 @@ class AgentRunManager:
                 if backoff_sec > 0:
                     time.sleep(backoff_sec)
                 self._queue.put(run_id)
+            else:
+                self._emit(
+                    "agent_run_canceled" if final_status == "canceled" else "agent_run_failed",
+                    {
+                        "run_id": run_id,
+                        "agent_id": str(run.get("agent_id") or ""),
+                        "status": final_status,
+                        "stop_reason": final_stop_reason,
+                        "failure_class": final_failure_class,
+                        "duration_ms": attempt_duration_ms,
+                    },
+                )
             return lease_token
 
         latest = self.database.get_agent_run(run_id)
@@ -994,6 +1039,17 @@ class AgentRunManager:
                     attempt=attempt,
                     message="Run canceled after task execution.",
                 )
+            self._emit(
+                "agent_run_canceled",
+                {
+                    "run_id": run_id,
+                    "agent_id": agent.id,
+                    "status": "canceled",
+                    "stop_reason": "canceled_by_user",
+                    "failure_class": "canceled",
+                    "duration_ms": float(metrics_final.get("total_attempt_duration_ms", 0.0)),
+                },
+            )
             return lease_token
 
         with self.database.write_transaction():
@@ -1028,7 +1084,11 @@ class AgentRunManager:
             {
                 "run_id": run_id,
                 "agent_id": agent.id,
+                "status": "succeeded",
+                "stop_reason": "completed",
+                "failure_class": None,
                 "attempts": attempt,
+                "duration_ms": float(metrics_final.get("total_attempt_duration_ms", 0.0)),
                 "metrics": metrics_final,
                 "budget": budget,
             },

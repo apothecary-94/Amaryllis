@@ -1,0 +1,39 @@
+groups:
+  - name: amaryllis-slo
+    rules:
+      - alert: AmaryllisRequestAvailabilityLow
+        expr: amaryllis_request_availability_ratio < 0.995
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Amaryllis request availability below SLO"
+          description: "Availability has dropped below 99.5% for 5 minutes."
+
+      - alert: AmaryllisRequestLatencyHigh
+        expr: amaryllis_request_latency_p95_ms > 1200
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Amaryllis p95 latency above SLO"
+          description: "Request latency p95 is above 1200ms for 10 minutes."
+
+      - alert: AmaryllisRunSuccessLow
+        expr: amaryllis_run_success_ratio < 0.98
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Amaryllis run success ratio below SLO"
+          description: "Run success ratio is below 98% for 10 minutes."
+
+      - alert: AmaryllisErrorBudgetBurnHigh
+        expr: amaryllis_error_budget_burn_rate{scope="requests"} > 2
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Amaryllis request error budget burning too fast"
+          description: "Request error budget burn rate is above 2x."
+

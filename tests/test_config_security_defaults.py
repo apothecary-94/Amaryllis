@@ -29,6 +29,9 @@ class ConfigSecurityDefaultsTests(unittest.TestCase):
         self.assertEqual(config.plugin_runtime_mode, "sandboxed")
         self.assertTrue(config.auth_enabled)
         self.assertGreaterEqual(config.run_lease_ttl_sec, config.run_attempt_timeout_sec + 5.0)
+        self.assertEqual(config.api_version, "v1")
+        self.assertEqual(config.api_release_channel, "stable")
+        self.assertTrue(config.observability_otel_enabled)
 
     def test_invalid_modes_fallback_to_strict(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amaryllis-config-tests-") as tmp:

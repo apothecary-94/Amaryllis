@@ -1,0 +1,57 @@
+{
+  "title": "Amaryllis Runtime SRE",
+  "schemaVersion": 39,
+  "version": 1,
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Request Availability",
+      "targets": [
+        {
+          "expr": "amaryllis_request_availability_ratio"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Request Latency p95 (ms)",
+      "targets": [
+        {
+          "expr": "amaryllis_request_latency_p95_ms"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Run Success Ratio",
+      "targets": [
+        {
+          "expr": "amaryllis_run_success_ratio"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Error Budget Burn Rate",
+      "targets": [
+        {
+          "expr": "amaryllis_error_budget_burn_rate{scope=\"requests\"}",
+          "legendFormat": "requests"
+        },
+        {
+          "expr": "amaryllis_error_budget_burn_rate{scope=\"runs\"}",
+          "legendFormat": "runs"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Open Incidents",
+      "targets": [
+        {
+          "expr": "amaryllis_open_incidents_total"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,105 @@
+from __future__ import annotations
+
+import importlib
+import json
+import os
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+try:
+    from fastapi.testclient import TestClient
+except Exception:  # pragma: no cover - dependency may be unavailable
+    TestClient = None  # type: ignore[assignment]
+
+
+@unittest.skipIf(TestClient is None, "fastapi dependency is not available")
+class APILifecycleTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls._tmp = tempfile.TemporaryDirectory(prefix="amaryllis-tests-api-lifecycle-")
+        support_dir = Path(cls._tmp.name) / "support"
+        auth_tokens = {
+            "admin-token": {"user_id": "admin", "scopes": ["admin", "user"]},
+            "user-token": {"user_id": "user-1", "scopes": ["user"]},
+            "service-token": {"user_id": "svc-runtime", "scopes": ["service"]},
+        }
+        cls._env_patch = patch.dict(
+            os.environ,
+            {
+                "AMARYLLIS_SUPPORT_DIR": str(support_dir),
+                "AMARYLLIS_AUTH_ENABLED": "true",
+                "AMARYLLIS_AUTH_TOKENS": json.dumps(auth_tokens, ensure_ascii=False),
+                "AMARYLLIS_MEMORY_CONSOLIDATION_ENABLED": "false",
+                "AMARYLLIS_MCP_ENDPOINTS": "",
+                "AMARYLLIS_SECURITY_PROFILE": "production",
+                "AMARYLLIS_API_VERSION": "v1",
+                "AMARYLLIS_RELEASE_CHANNEL": "stable",
+            },
+            clear=False,
+        )
+        cls._env_patch.start()
+
+        import runtime.server as server_module
+
+        cls.server_module = importlib.reload(server_module)
+        cls._client_cm = TestClient(cls.server_module.app)
+        cls.client = cls._client_cm.__enter__()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls._client_cm.__exit__(None, None, None)
+        cls._env_patch.stop()
+        cls._tmp.cleanup()
+
+    @staticmethod
+    def _auth(token: str) -> dict[str, str]:
+        return {"Authorization": f"Bearer {token}"}
+
+    def test_legacy_endpoint_has_deprecation_headers(self) -> None:
+        response = self.client.get("/models", headers=self._auth("user-token"))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get("Deprecation"), "true")
+        self.assertTrue(str(response.headers.get("Sunset", "")).strip())
+        self.assertEqual(response.headers.get("X-Amaryllis-API-Version"), "v1")
+        self.assertEqual(response.headers.get("X-Amaryllis-Release-Channel"), "stable")
+
+    def test_versioned_endpoint_available_without_deprecation_header(self) -> None:
+        response = self.client.get("/v1/models", headers=self._auth("user-token"))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get("X-Amaryllis-API-Version"), "v1")
+        self.assertNotEqual(response.headers.get("Deprecation"), "true")
+
+    def test_canonical_auth_is_applied_for_versioned_debug_endpoint(self) -> None:
+        response = self.client.get("/v1/debug/models/failover", headers=self._auth("user-token"))
+        self.assertEqual(response.status_code, 403)
+        payload = response.json()
+        self.assertEqual(payload["error"]["type"], "permission_denied")
+        self.assertIn("Admin scope is required", payload["error"]["message"])
+
+    def test_service_api_lifecycle_endpoint(self) -> None:
+        response = self.client.get("/service/api/lifecycle", headers=self._auth("service-token"))
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        policy = payload.get("policy", {})
+        self.assertEqual(str(policy.get("version")), "v1")
+        self.assertEqual(str(policy.get("release_channel")), "stable")
+
+    def test_service_observability_endpoints_require_service_scope(self) -> None:
+        denied = self.client.get("/service/observability/slo", headers=self._auth("user-token"))
+        self.assertEqual(denied.status_code, 403)
+
+        allowed = self.client.get("/service/observability/slo", headers=self._auth("service-token"))
+        self.assertEqual(allowed.status_code, 200)
+        payload = allowed.json()
+        self.assertIn("snapshot", payload)
+
+        metrics = self.client.get("/service/observability/metrics", headers=self._auth("service-token"))
+        self.assertEqual(metrics.status_code, 200)
+        self.assertIn("amaryllis_request_availability_ratio", metrics.text)
+
+
+if __name__ == "__main__":
+    unittest.main()
+
