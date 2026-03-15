@@ -276,7 +276,7 @@ struct ModelsView: View {
                     }
                 }
                 .buttonStyle(AmaryllisPrimaryButtonStyle())
-                .disabled(isDownloading || appState.isBusy)
+                .disabled(isDownloading)
             }
 
             if let job, isDownloading {
@@ -324,7 +324,7 @@ struct ModelsView: View {
                     }
                 }
                 .buttonStyle(AmaryllisPrimaryButtonStyle())
-                .disabled(manualIsDownloading || appState.isBusy)
+                .disabled(manualIsDownloading)
             }
 
             if let manualJob, manualIsDownloading {
@@ -403,7 +403,7 @@ struct ModelsView: View {
                                                 }
                                             }
                                             .buttonStyle(AmaryllisPrimaryButtonStyle())
-                                            .disabled(downloading || appState.isBusy)
+                                            .disabled(downloading)
                                         }
                                         .padding(.vertical, 2)
                                         .contentShape(Rectangle())
@@ -555,13 +555,25 @@ struct ModelsView: View {
     }
 
     private var suggestedForDisplay: [String: [APIModelCatalog.SuggestedModel]] {
+        let allowedProviders = downloadableProviders
+
         if let suggested = appState.modelCatalog?.suggested {
             let nonEmpty = suggested.values.contains { !$0.isEmpty }
             if nonEmpty {
-                return suggested
+                var filtered: [String: [APIModelCatalog.SuggestedModel]] = [:]
+                for provider in suggested.keys.sorted() where allowedProviders.contains(provider) {
+                    filtered[provider] = suggested[provider] ?? []
+                }
+                if filtered.values.contains(where: { !$0.isEmpty }) {
+                    return filtered
+                }
             }
         }
-        return fallbackSuggested
+        var filteredFallback: [String: [APIModelCatalog.SuggestedModel]] = [:]
+        for provider in fallbackSuggested.keys.sorted() where allowedProviders.contains(provider) {
+            filteredFallback[provider] = fallbackSuggested[provider] ?? []
+        }
+        return filteredFallback
     }
 
     private var hasSuggestedModels: Bool {
@@ -588,6 +600,10 @@ struct ModelsView: View {
             }
         }
         return ["mlx", "ollama"]
+    }
+
+    private var downloadableProviders: Set<String> {
+        Set(providerOptions)
     }
 
     private func startDownload(modelId: String, provider: String) async {

@@ -256,22 +256,35 @@ final class AppState: ObservableObject {
         let resolvedProvider = resolveProviderForModelAction(provider)
         let key = modelDownloadKey(modelId: modelId, provider: resolvedProvider)
         do {
-            let started = try await apiClient.startModelDownload(modelId: modelId, provider: resolvedProvider)
-            modelDownloadJobs[key] = started.job
-            var job = started.job
-            while !job.isTerminal {
-                try await Task.sleep(nanoseconds: 700_000_000)
-                let refreshed = try await apiClient.getModelDownload(jobId: job.id)
-                job = refreshed.job
-                modelDownloadJobs[key] = job
-            }
+            lastError = "Downloading \(modelId)..."
+            do {
+                let started = try await apiClient.startModelDownload(modelId: modelId, provider: resolvedProvider)
+                modelDownloadJobs[key] = started.job
+                var job = started.job
+                while !job.isTerminal {
+                    try await Task.sleep(nanoseconds: 700_000_000)
+                    let refreshed = try await apiClient.getModelDownload(jobId: job.id)
+                    job = refreshed.job
+                    modelDownloadJobs[key] = job
+                }
 
-            if job.status.lowercased() == "succeeded" {
-                await refreshModels()
-                lastError = nil
-            } else {
-                let message = job.error ?? job.message ?? "Model download failed."
-                lastError = message
+                if job.status.lowercased() == "succeeded" {
+                    await refreshModels()
+                    lastError = nil
+                } else {
+                    let message = job.error ?? job.message ?? "Model download failed."
+                    lastError = message
+                }
+            } catch {
+                let detail = error.localizedDescription.lowercased()
+                let missingAsyncDownloadAPI = detail.contains("404") || detail.contains("not found")
+                if missingAsyncDownloadAPI {
+                    _ = try await apiClient.downloadModel(modelId: modelId, provider: resolvedProvider)
+                    await refreshModels()
+                    lastError = nil
+                    return
+                }
+                throw error
             }
         } catch {
             lastError = error.localizedDescription
