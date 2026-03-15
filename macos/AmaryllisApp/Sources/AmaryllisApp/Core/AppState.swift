@@ -646,11 +646,11 @@ final class AppState: ObservableObject {
         }
     }
 
-    func updateCurrentChatMessageStreaming(id: UUID, content: String) {
+    func finalizeCurrentChatMessage(id: UUID, content: String) {
         mutateSelectedChat(
             reorderToTop: false,
-            touchUpdatedAt: false,
-            persistMode: .none
+            touchUpdatedAt: true,
+            persistMode: .debounced
         ) { session in
             guard let index = messageIndex(in: session, messageID: id) else { return false }
             if session.messages[index].content == content {
@@ -661,23 +661,7 @@ final class AppState: ObservableObject {
         }
     }
 
-    func finalizeCurrentChatMessage(id: UUID, content: String) {
-        mutateSelectedChat(
-            reorderToTop: false,
-            touchUpdatedAt: true,
-            persistMode: .debounced
-        ) { session in
-            guard let index = messageIndex(in: session, messageID: id) else { return false }
-            if session.messages[index].content == content {
-                return true
-            }
-            session.messages[index].content = content
-            return true
-        }
-    }
-
     private enum ChatPersistMode {
-        case none
         case immediate
         case debounced
     }
@@ -718,24 +702,28 @@ final class AppState: ObservableObject {
         guard selectedChatID != nil else { return false }
         guard let index = resolvedSelectedChatIndex() else { return false }
 
-        var session = chatSessions[index]
-        guard update(&session) else { return false }
-        if touchUpdatedAt {
-            session.updatedAt = Date()
-        }
-
         if reorderToTop, index != 0 {
-            chatSessions.remove(at: index)
+            var session = chatSessions.remove(at: index)
+            guard update(&session) else {
+                chatSessions.insert(session, at: index)
+                return false
+            }
+            if touchUpdatedAt {
+                session.updatedAt = Date()
+            }
             chatSessions.insert(session, at: 0)
             selectedChatIndex = 0
+            self.selectedChatID = session.id
         } else {
-            chatSessions[index] = session
+            guard update(&chatSessions[index]) else { return false }
+            if touchUpdatedAt {
+                chatSessions[index].updatedAt = Date()
+            }
             selectedChatIndex = index
+            self.selectedChatID = chatSessions[index].id
         }
-        self.selectedChatID = session.id
+
         switch persistMode {
-        case .none:
-            break
         case .immediate:
             cancelPendingChatPersistence()
             persistChats()

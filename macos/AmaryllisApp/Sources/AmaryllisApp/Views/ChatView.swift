@@ -13,11 +13,15 @@ struct ChatView: View {
     @State private var toolsEnabled: Bool = true
     @State private var isSending: Bool = false
     @State private var showAdvancedControls: Bool = false
+    @State private var streamingAssistantID: UUID?
+    @State private var streamingAssistantText: String = ""
+    @State private var showFullHistory: Bool = false
 
     private let systemPrompt = "You are Amaryllis, a concise and practical local AI assistant."
     private let maxHistoryMessages: Int = 48
-    private let streamingRenderInterval: TimeInterval = 0.14
-    private let streamingChunkThreshold: Int = 96
+    private let maxVisibleMessages: Int = 80
+    private let streamingRenderInterval: TimeInterval = 0.22
+    private let streamingChunkThreshold: Int = 220
 
     var body: some View {
         VStack(spacing: 10) {
@@ -33,22 +37,34 @@ struct ChatView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 8) {
+                        if isHistoryTruncated {
+                            HStack(spacing: 8) {
+                                Text("Showing latest \(displayedMessages.count) of \(currentMessages.count) messages.")
+                                    .font(AmaryllisTheme.bodyFont(size: 11, weight: .medium))
+                                    .foregroundStyle(AmaryllisTheme.textSecondary)
+                                Button("Show Full History") {
+                                    showFullHistory = true
+                                }
+                                .buttonStyle(AmaryllisSecondaryButtonStyle())
+                                Spacer()
+                            }
+                        }
                         if currentMessages.isEmpty {
                             Text("Start a new conversation.")
                                 .font(AmaryllisTheme.bodyFont(size: 13, weight: .medium))
                                 .foregroundStyle(AmaryllisTheme.textSecondary)
                                 .padding(.top, 8)
                         } else {
-                            ForEach(currentMessages) { message in
-                                bubble(for: message)
+                            ForEach(displayedMessages) { message in
+                                bubble(for: message, content: renderedContent(for: message))
                                     .id(message.id)
                             }
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .onChange(of: currentMessages.count) { _ in
-                    guard let last = currentMessages.last else { return }
+                .onChange(of: currentMessages.last?.id) { _ in
+                    guard let last = displayedMessages.last else { return }
                     withAnimation(.easeOut(duration: 0.2)) {
                         proxy.scrollTo(last.id, anchor: .bottom)
                     }
@@ -94,10 +110,33 @@ struct ChatView: View {
                 selectedModelID = appState.selectedModel ?? ""
             }
         }
+        .onChange(of: appState.selectedChatID) { _ in
+            showFullHistory = false
+            streamingAssistantID = nil
+            streamingAssistantText = ""
+        }
     }
 
     private var currentMessages: [LocalChatMessage] {
         appState.currentChatMessages
+    }
+
+    private var isHistoryTruncated: Bool {
+        currentMessages.count > maxVisibleMessages && !showFullHistory
+    }
+
+    private var displayedMessages: [LocalChatMessage] {
+        if showFullHistory || currentMessages.count <= maxVisibleMessages {
+            return currentMessages
+        }
+        return Array(currentMessages.suffix(maxVisibleMessages))
+    }
+
+    private func renderedContent(for message: LocalChatMessage) -> String {
+        if message.id == streamingAssistantID {
+            return streamingAssistantText
+        }
+        return message.content
     }
 
     private var sessionBar: some View {
@@ -281,30 +320,10 @@ struct ChatView: View {
         .amaryllisCard()
     }
 
-    private func bubble(for message: LocalChatMessage) -> some View {
-        let isUser = message.role == "user"
-
-        return HStack {
-            if isUser { Spacer() }
-            VStack(alignment: .leading, spacing: 4) {
-                Text(isUser ? "You" : "Amaryllis")
-                    .font(AmaryllisTheme.bodyFont(size: 10, weight: .bold))
-                    .foregroundStyle(AmaryllisTheme.textSecondary)
-                Text(message.content)
-                    .font(AmaryllisTheme.bodyFont(size: 14, weight: .medium))
-                    .foregroundStyle(AmaryllisTheme.textPrimary)
-                    .textSelection(.enabled)
-            }
-            .padding(10)
-            .background(isUser ? AmaryllisTheme.accentSoft : AmaryllisTheme.surfaceAlt)
-            .clipShape(RoundedRectangle(cornerRadius: 4))
-            .overlay(
-                RoundedRectangle(cornerRadius: 4)
-                    .stroke(isUser ? AmaryllisTheme.accent.opacity(0.9) : AmaryllisTheme.border.opacity(0.35), lineWidth: 1)
-            )
-            .frame(maxWidth: 680, alignment: .leading)
-            if !isUser { Spacer() }
-        }
+    private func bubble(for message: LocalChatMessage, content: String) -> some View {
+        let visibleContent = content.isEmpty && message.id == streamingAssistantID ? "…" : content
+        return ChatBubbleView(role: message.role, content: visibleContent)
+            .equatable()
     }
 
     private var modelOptions: [APIModelItem] {
@@ -395,6 +414,10 @@ struct ChatView: View {
                     var combined = ""
                     var rendered = ""
                     var lastRender = Date.distantPast
+                    await MainActor.run {
+                        streamingAssistantID = assistantID
+                        streamingAssistantText = ""
+                    }
                     do {
                         let stream = appState.apiClient.streamChatCompletions(
                             model: modelTarget,
@@ -417,7 +440,7 @@ struct ChatView: View {
                                 rendered = combined
                                 lastRender = now
                                 await MainActor.run {
-                                    appState.updateCurrentChatMessageStreaming(id: assistantID, content: rendered)
+                                    streamingAssistantText = rendered
                                 }
                             }
                         }
@@ -441,6 +464,8 @@ struct ChatView: View {
                     }
 
                     await MainActor.run {
+                        streamingAssistantID = nil
+                        streamingAssistantText = ""
                         if combined.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                             appState.finalizeCurrentChatMessage(
                                 id: assistantID,
@@ -452,6 +477,10 @@ struct ChatView: View {
                         }
                     }
                 } else {
+                    await MainActor.run {
+                        streamingAssistantID = nil
+                        streamingAssistantText = ""
+                    }
                     if isStreaming && !tools.isEmpty {
                         await MainActor.run {
                             appState.lastError = "Streaming with tools is disabled; using non-stream mode for tool loop."
@@ -534,6 +563,8 @@ struct ChatView: View {
                 await appState.refreshHealth()
             } catch {
                 await MainActor.run {
+                    streamingAssistantID = nil
+                    streamingAssistantText = ""
                     let message = renderUserFacingError(error.localizedDescription)
                     appState.finalizeCurrentChatMessage(id: assistantID, content: message)
                     appState.lastError = message
@@ -713,5 +744,38 @@ struct ChatView: View {
             return true
         }
         return false
+    }
+}
+
+private struct ChatBubbleView: View, Equatable {
+    let role: String
+    let content: String
+
+    static func == (lhs: ChatBubbleView, rhs: ChatBubbleView) -> Bool {
+        lhs.role == rhs.role && lhs.content == rhs.content
+    }
+
+    var body: some View {
+        let isUser = role == "user"
+        HStack {
+            if isUser { Spacer() }
+            VStack(alignment: .leading, spacing: 4) {
+                Text(isUser ? "You" : "Amaryllis")
+                    .font(AmaryllisTheme.bodyFont(size: 10, weight: .bold))
+                    .foregroundStyle(AmaryllisTheme.textSecondary)
+                Text(content)
+                    .font(AmaryllisTheme.bodyFont(size: 14, weight: .medium))
+                    .foregroundStyle(AmaryllisTheme.textPrimary)
+            }
+            .padding(10)
+            .background(isUser ? AmaryllisTheme.accentSoft : AmaryllisTheme.surfaceAlt)
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+            .overlay(
+                RoundedRectangle(cornerRadius: 4)
+                    .stroke(isUser ? AmaryllisTheme.accent.opacity(0.9) : AmaryllisTheme.border.opacity(0.35), lineWidth: 1)
+            )
+            .frame(maxWidth: 680, alignment: .leading)
+            if !isUser { Spacer() }
+        }
     }
 }
