@@ -45,6 +45,9 @@ struct ModelsView: View {
         VStack(alignment: .leading, spacing: 10) {
             header
             activeCard
+            if !activeDownloadJobs.isEmpty {
+                downloadsCard
+            }
             installedCard
             simpleLibraryCard
 
@@ -191,6 +194,39 @@ struct ModelsView: View {
                     }
                     .padding(.vertical, 2)
                 }
+            }
+        }
+        .amaryllisCard()
+    }
+
+    private var downloadsCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Active downloads")
+                    .font(AmaryllisTheme.sectionFont(size: 17))
+                    .foregroundStyle(AmaryllisTheme.textPrimary)
+                Spacer()
+                Text("\(activeDownloadJobs.count)")
+                    .font(AmaryllisTheme.monoFont(size: 11, weight: .semibold))
+                    .foregroundStyle(AmaryllisTheme.textSecondary)
+            }
+
+            ForEach(activeDownloadJobs) { job in
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 8) {
+                        Text("\(job.provider.uppercased())/\(job.model)")
+                            .font(AmaryllisTheme.monoFont(size: 11, weight: .regular))
+                            .foregroundStyle(AmaryllisTheme.textPrimary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer()
+                        Text(job.status.uppercased())
+                            .font(AmaryllisTheme.monoFont(size: 10, weight: .regular))
+                            .foregroundStyle(AmaryllisTheme.textSecondary)
+                    }
+                    modelDownloadProgress(job: job)
+                }
+                .padding(.vertical, 2)
             }
         }
         .amaryllisCard()
@@ -651,6 +687,17 @@ struct ModelsView: View {
             }
             return lhs.model.label.localizedCaseInsensitiveCompare(rhs.model.label) == .orderedAscending
         }
+    }
+
+    private var activeDownloadJobs: [APIModelDownloadJob] {
+        appState.modelDownloadJobs.values
+            .filter { !$0.isTerminal }
+            .sorted { lhs, rhs in
+                if lhs.provider != rhs.provider {
+                    return lhs.provider < rhs.provider
+                }
+                return lhs.model < rhs.model
+            }
     }
 
     private var installedModels: [InstalledModel] {

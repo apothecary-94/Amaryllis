@@ -255,6 +255,18 @@ final class AppState: ObservableObject {
 
         let resolvedProvider = resolveProviderForModelAction(provider)
         let key = modelDownloadKey(modelId: modelId, provider: resolvedProvider)
+        let provisionalJobID = "local-\(UUID().uuidString.lowercased())"
+        modelDownloadJobs[key] = APIModelDownloadJob(
+            id: provisionalJobID,
+            provider: resolvedProvider,
+            model: modelId,
+            status: "running",
+            progress: 0.0,
+            completedBytes: nil,
+            totalBytes: nil,
+            message: "Starting download...",
+            error: nil
+        )
         do {
             lastError = "Downloading \(modelId)..."
             do {
@@ -279,7 +291,29 @@ final class AppState: ObservableObject {
                 let detail = error.localizedDescription.lowercased()
                 let missingAsyncDownloadAPI = detail.contains("404") || detail.contains("not found")
                 if missingAsyncDownloadAPI {
+                    modelDownloadJobs[key] = APIModelDownloadJob(
+                        id: provisionalJobID,
+                        provider: resolvedProvider,
+                        model: modelId,
+                        status: "running",
+                        progress: 0.0,
+                        completedBytes: nil,
+                        totalBytes: nil,
+                        message: "Downloading (legacy runtime mode)...",
+                        error: nil
+                    )
                     _ = try await apiClient.downloadModel(modelId: modelId, provider: resolvedProvider)
+                    modelDownloadJobs[key] = APIModelDownloadJob(
+                        id: provisionalJobID,
+                        provider: resolvedProvider,
+                        model: modelId,
+                        status: "succeeded",
+                        progress: 1.0,
+                        completedBytes: nil,
+                        totalBytes: nil,
+                        message: "Download completed",
+                        error: nil
+                    )
                     await refreshModels()
                     lastError = nil
                     return
@@ -287,6 +321,17 @@ final class AppState: ObservableObject {
                 throw error
             }
         } catch {
+            modelDownloadJobs[key] = APIModelDownloadJob(
+                id: provisionalJobID,
+                provider: resolvedProvider,
+                model: modelId,
+                status: "failed",
+                progress: 0.0,
+                completedBytes: nil,
+                totalBytes: nil,
+                message: "Download failed",
+                error: error.localizedDescription
+            )
             lastError = error.localizedDescription
         }
     }
