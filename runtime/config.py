@@ -120,6 +120,7 @@ class AppConfig:
     cloud_rate_max_requests: int
     cloud_budget_window_sec: float
     cloud_budget_max_units: int
+    request_trace_logs_enabled: bool
     security_profile: str
     security_allow_insecure_modes: bool
     auth_enabled: bool
@@ -508,6 +509,9 @@ class AppConfig:
             ),
             cloud_budget_max_units=max(
                 100, int(os.getenv("AMARYLLIS_CLOUD_BUDGET_MAX_UNITS", "400000"))
+            ),
+            request_trace_logs_enabled=_parse_bool(
+                os.getenv("AMARYLLIS_REQUEST_TRACE_LOGS_ENABLED", "true")
             ),
             security_profile=security_profile,
             security_allow_insecure_modes=security_allow_insecure_modes,

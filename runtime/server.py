@@ -461,14 +461,15 @@ def create_app() -> FastAPI:
                 "trace_id": str(getattr(request.state, "trace_id", "")),
             },
         )
-        logger.info(
-            "request_start request_id=%s trace_id=%s method=%s path=%s canonical_path=%s",
-            request_id,
-            str(getattr(request.state, "trace_id", "")),
-            request.method,
-            path,
-            auth_path,
-        )
+        if services.config.request_trace_logs_enabled:
+            logger.info(
+                "request_start request_id=%s trace_id=%s method=%s path=%s canonical_path=%s",
+                request_id,
+                str(getattr(request.state, "trace_id", "")),
+                request.method,
+                path,
+                auth_path,
+            )
 
         response: JSONResponse | Any
         error_type: str | None = None
@@ -537,15 +538,16 @@ def create_app() -> FastAPI:
             duration_ms=duration_ms,
             error_type=error_type,
         )
-        logger.info(
-            "request_done request_id=%s trace_id=%s method=%s path=%s status=%s duration_ms=%.2f",
-            request_id,
-            str(getattr(request.state, "trace_id", "")),
-            request.method,
-            path,
-            response.status_code,
-            duration_ms,
-        )
+        if services.config.request_trace_logs_enabled:
+            logger.info(
+                "request_done request_id=%s trace_id=%s method=%s path=%s status=%s duration_ms=%.2f",
+                request_id,
+                str(getattr(request.state, "trace_id", "")),
+                request.method,
+                path,
+                response.status_code,
+                duration_ms,
+            )
         return response
 
     @app.exception_handler(AmaryllisError)

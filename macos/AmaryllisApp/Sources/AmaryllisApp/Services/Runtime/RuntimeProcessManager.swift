@@ -21,6 +21,11 @@ final class RuntimeProcessManager: ObservableObject {
 
     private var process: Process?
     private var outputPipe: Pipe?
+    private var pendingLogs: [String] = []
+    private var logFlushTask: Task<Void, Never>?
+    private var trailingPartialLine: String = ""
+    private let maxLogLines: Int = 120
+    private let logFlushDelayNanos: UInt64 = 120_000_000
 
     var isRunning: Bool {
         processState == .running
@@ -56,7 +61,8 @@ final class RuntimeProcessManager: ObservableObject {
             "--host",
             host,
             "--port",
-            String(port)
+            String(port),
+            "--no-access-log"
         ]
 
         let proc = Process()
@@ -111,20 +117,79 @@ final class RuntimeProcessManager: ObservableObject {
     }
 
     private func cleanup() {
+        flushPendingLogs()
+        logFlushTask?.cancel()
+        logFlushTask = nil
+        trailingPartialLine = ""
         outputPipe?.fileHandleForReading.readabilityHandler = nil
         outputPipe = nil
         process = nil
     }
 
     private func appendLog(_ text: String) {
-        let lines = text
-            .split(separator: "\n", omittingEmptySubsequences: false)
-            .map(String.init)
-            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        let lines = normalizedLogLines(from: text)
+        guard !lines.isEmpty else { return }
+        pendingLogs.append(contentsOf: lines)
+        scheduleLogFlushIfNeeded()
+    }
 
-        logs.append(contentsOf: lines)
-        if logs.count > 400 {
-            logs.removeFirst(logs.count - 400)
+    private func normalizedLogLines(from text: String) -> [String] {
+        var combined = text
+        if !trailingPartialLine.isEmpty {
+            combined = trailingPartialLine + combined
+            trailingPartialLine = ""
+        }
+
+        let endsWithNewline = combined.hasSuffix("\n")
+        var parts = combined.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+
+        if !endsWithNewline, let last = parts.popLast() {
+            trailingPartialLine = last
+        }
+
+        return parts
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .filter { line in
+                // Drop high-volume per-request noise that makes the UI laggy.
+                if line.contains("request_start request_id=") || line.contains("request_done request_id=") {
+                    return false
+                }
+                if line.contains(" HTTP/1.1\" ") && line.contains("INFO:") {
+                    return false
+                }
+                if line.contains("\"GET /health HTTP/1.1\"") || line.contains("\"GET /models HTTP/1.1\"") {
+                    return false
+                }
+                return true
+            }
+    }
+
+    private func scheduleLogFlushIfNeeded() {
+        guard logFlushTask == nil else { return }
+        logFlushTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: self?.logFlushDelayNanos ?? 120_000_000)
+            await self?.flushPendingLogsAsync()
+        }
+    }
+
+    private func flushPendingLogsAsync() async {
+        flushPendingLogs()
+    }
+
+    private func flushPendingLogs() {
+        guard !pendingLogs.isEmpty else {
+            logFlushTask = nil
+            return
+        }
+        logs.append(contentsOf: pendingLogs)
+        pendingLogs.removeAll(keepingCapacity: true)
+        if logs.count > maxLogLines {
+            logs.removeFirst(logs.count - maxLogLines)
+        }
+        logFlushTask = nil
+        if !pendingLogs.isEmpty {
+            scheduleLogFlushIfNeeded()
         }
     }
 

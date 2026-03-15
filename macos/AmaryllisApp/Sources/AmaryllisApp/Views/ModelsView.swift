@@ -82,7 +82,7 @@ struct ModelsView: View {
             if !providerOptions.contains(providerForDownload) {
                 providerForDownload = providerOptions.first ?? "mlx"
             }
-            Task { await appState.refreshModels(includeSuggested: true) }
+            Task { await appState.refreshModels(includeSuggested: true, includeRemoteProviders: false) }
         }
         .onChange(of: providerOptions) { options in
             if !options.contains(providerForDownload) {
@@ -118,7 +118,11 @@ struct ModelsView: View {
             .buttonStyle(AmaryllisPrimaryButtonStyle())
             .disabled(appState.isQuickSetupRunning)
             Button("Refresh") {
-                Task { await appState.refreshModels(includeSuggested: true) }
+                Task { await appState.refreshModels(includeSuggested: true, includeRemoteProviders: false) }
+            }
+            .buttonStyle(AmaryllisSecondaryButtonStyle())
+            Button("Sync Cloud") {
+                Task { await appState.refreshModels(includeSuggested: true, includeRemoteProviders: true) }
             }
             .buttonStyle(AmaryllisSecondaryButtonStyle())
         }

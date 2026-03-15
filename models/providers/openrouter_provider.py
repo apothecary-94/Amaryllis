@@ -19,19 +19,35 @@ class OpenRouterProvider:
             payload = response.json()
 
         result: list[dict[str, Any]] = []
-        for item in payload.get("data", []):
+        raw_items = payload.get("data", [])
+        if not isinstance(raw_items, list):
+            raw_items = []
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
             model_id = item.get("id")
             if not model_id:
                 continue
+            model_id_text = str(model_id).strip()
+            if not model_id_text:
+                continue
+            metadata: dict[str, Any] = {}
+            owner = item.get("owned_by")
+            context_length = item.get("context_length")
+            if owner is not None:
+                metadata["owned_by"] = owner
+            if context_length is not None:
+                metadata["context_length"] = context_length
             result.append(
                 {
-                    "id": str(model_id),
+                    "id": model_id_text,
                     "provider": "openrouter",
-                    "active": model_id == self.active_model,
-                    "metadata": item,
+                    "active": model_id_text == self.active_model,
+                    "metadata": metadata,
                 }
             )
-        return result
+        result.sort(key=lambda row: str(row.get("id", "")))
+        return result[:180]
 
     def health_check(self) -> dict[str, Any]:
         if not self.api_key:

@@ -118,6 +118,11 @@ class ModelManager:
         self._suggested_cache_ttl_seconds = 6 * 60 * 60
         self._suggested_cache_lock = Lock()
         self._suggested_refresh_inflight = False
+        self._provider_models_cache: dict[str, dict[str, Any]] = {}
+        self._provider_models_refreshing: set[str] = set()
+        self._provider_models_cache_lock = Lock()
+        self._provider_models_cache_ttl_local_sec = 20.0
+        self._provider_models_cache_ttl_cloud_sec = 180.0
         self._provider_states: dict[str, _ProviderRuntimeState] = {}
         self._provider_state_lock = Lock()
         self._cloud_rate_records: dict[str, deque[float]] = {}
@@ -130,11 +135,18 @@ class ModelManager:
         self._download_jobs: dict[str, _ModelDownloadJob] = {}
         self._download_job_order: deque[str] = deque(maxlen=800)
 
-    def list_models(self, *, include_suggested: bool = True) -> dict[str, Any]:
+    def list_models(
+        self,
+        *,
+        include_suggested: bool = True,
+        include_remote_providers: bool = True,
+    ) -> dict[str, Any]:
         active_provider, active_model = self._active_target()
         provider_payload: dict[str, Any] = {}
 
         for name, provider in self.providers.items():
+            is_cloud = self._is_cloud_provider(name)
+            include_provider = include_remote_providers or not is_cloud
             try:
                 if self._is_provider_circuit_open(name):
                     provider_payload[name] = {
@@ -148,15 +160,21 @@ class ModelManager:
                         "circuit_open": True,
                     }
                     continue
-                provider_payload[name] = {
-                    "available": True,
-                    "error": None,
-                    "items": self._call_provider_resilient(
+                if include_provider:
+                    provider_available, provider_error, provider_items = self._list_provider_models_cached(
                         provider_name=name,
-                        operation="list_models",
-                        call=provider.list_models,
-                        max_attempts=1,
-                    ),
+                        provider=provider,
+                        allow_background_refresh=is_cloud,
+                    )
+                else:
+                    provider_available, provider_error, provider_items = self._cached_provider_payload_or_default(
+                        provider_name=name,
+                        include_items=not is_cloud,
+                    )
+                provider_payload[name] = {
+                    "available": provider_available,
+                    "error": provider_error,
+                    "items": provider_items,
                     "failure_count": self._provider_failure_count(name),
                     "circuit_open": False,
                     "guardrails": self._provider_guardrail_status(name),
@@ -413,6 +431,7 @@ class ModelManager:
             model_id=model_id,
             progress_callback=None,
         )
+        self._invalidate_provider_models_cache(provider_name)
         self._invalidate_suggested_cache()
         return result
 
@@ -484,6 +503,7 @@ class ModelManager:
 
         result = selected.load_model(model_id)
         self._set_active_target(provider_name=provider_name, model_name=model_id)
+        self._invalidate_provider_models_cache(provider_name)
 
         self.database.set_setting("active_provider", provider_name)
         self.database.set_setting("active_model", model_id)
@@ -1087,6 +1107,167 @@ class ModelManager:
             suggested[provider_name] = rows
         return suggested
 
+    def _list_provider_models_cached(
+        self,
+        *,
+        provider_name: str,
+        provider: ModelProvider,
+        allow_background_refresh: bool,
+    ) -> tuple[bool, str | None, list[dict[str, Any]]]:
+        now = time.time()
+        cache = self._provider_models_cache_snapshot(provider_name=provider_name)
+        ttl = self._provider_models_cache_ttl(provider_name)
+        if cache is not None:
+            age = max(0.0, now - float(cache.get("timestamp", 0.0)))
+            if age <= ttl:
+                return (
+                    bool(cache.get("available", True)),
+                    cache.get("error"),
+                    self._copy_provider_items(cache.get("items")),
+                )
+            if allow_background_refresh:
+                self._refresh_provider_models_async(provider_name=provider_name, provider=provider)
+                return (
+                    bool(cache.get("available", True)),
+                    cache.get("error"),
+                    self._copy_provider_items(cache.get("items")),
+                )
+
+        try:
+            items = self._call_provider_resilient(
+                provider_name=provider_name,
+                operation="list_models",
+                call=provider.list_models,
+                max_attempts=1,
+            )
+            normalized = self._normalize_provider_items(items)
+            self._store_provider_models_cache(
+                provider_name=provider_name,
+                available=True,
+                error=None,
+                items=normalized,
+            )
+            return True, None, self._copy_provider_items(normalized)
+        except Exception as exc:
+            message = str(exc)
+            self._store_provider_models_cache(
+                provider_name=provider_name,
+                available=False,
+                error=message,
+                items=[],
+            )
+            if cache is not None:
+                return (
+                    bool(cache.get("available", False)),
+                    cache.get("error") or message,
+                    self._copy_provider_items(cache.get("items")),
+                )
+            return False, message, []
+
+    def _cached_provider_payload_or_default(
+        self,
+        *,
+        provider_name: str,
+        include_items: bool = True,
+    ) -> tuple[bool, str | None, list[dict[str, Any]]]:
+        cache = self._provider_models_cache_snapshot(provider_name=provider_name)
+        if cache is None:
+            return True, None, []
+        items = self._copy_provider_items(cache.get("items")) if include_items else []
+        return (
+            bool(cache.get("available", True)),
+            cache.get("error"),
+            items,
+        )
+
+    def _refresh_provider_models_async(self, *, provider_name: str, provider: ModelProvider) -> None:
+        with self._provider_models_cache_lock:
+            if provider_name in self._provider_models_refreshing:
+                return
+            self._provider_models_refreshing.add(provider_name)
+
+        def worker() -> None:
+            try:
+                try:
+                    items = self._call_provider_resilient(
+                        provider_name=provider_name,
+                        operation="list_models",
+                        call=provider.list_models,
+                        max_attempts=1,
+                    )
+                    normalized = self._normalize_provider_items(items)
+                    self._store_provider_models_cache(
+                        provider_name=provider_name,
+                        available=True,
+                        error=None,
+                        items=normalized,
+                    )
+                except Exception as exc:
+                    self._store_provider_models_cache(
+                        provider_name=provider_name,
+                        available=False,
+                        error=str(exc),
+                        items=[],
+                    )
+            finally:
+                with self._provider_models_cache_lock:
+                    self._provider_models_refreshing.discard(provider_name)
+
+        Thread(target=worker, daemon=True).start()
+
+    def _provider_models_cache_snapshot(self, *, provider_name: str) -> dict[str, Any] | None:
+        with self._provider_models_cache_lock:
+            raw = self._provider_models_cache.get(provider_name)
+            if raw is None:
+                return None
+            return {
+                "timestamp": float(raw.get("timestamp", 0.0)),
+                "available": bool(raw.get("available", True)),
+                "error": raw.get("error"),
+                "items": self._copy_provider_items(raw.get("items")),
+            }
+
+    def _store_provider_models_cache(
+        self,
+        *,
+        provider_name: str,
+        available: bool,
+        error: str | None,
+        items: list[dict[str, Any]],
+    ) -> None:
+        with self._provider_models_cache_lock:
+            self._provider_models_cache[provider_name] = {
+                "timestamp": time.time(),
+                "available": bool(available),
+                "error": error,
+                "items": self._copy_provider_items(items),
+            }
+
+    def _provider_models_cache_ttl(self, provider_name: str) -> float:
+        if self._is_cloud_provider(provider_name):
+            return float(self._provider_models_cache_ttl_cloud_sec)
+        return float(self._provider_models_cache_ttl_local_sec)
+
+    @staticmethod
+    def _normalize_provider_items(items: Any) -> list[dict[str, Any]]:
+        if not isinstance(items, list):
+            return []
+        rows: list[dict[str, Any]] = []
+        for item in items:
+            if isinstance(item, dict):
+                rows.append(dict(item))
+        return rows
+
+    @staticmethod
+    def _copy_provider_items(items: Any) -> list[dict[str, Any]]:
+        if not isinstance(items, list):
+            return []
+        rows: list[dict[str, Any]] = []
+        for item in items:
+            if isinstance(item, dict):
+                rows.append(dict(item))
+        return rows
+
     @staticmethod
     def _normalize_suggested(items: Any) -> list[dict[str, Any]]:
         normalized: list[dict[str, Any]] = []
@@ -1345,6 +1526,13 @@ class ModelManager:
         with self._suggested_cache_lock:
             self._suggested_cache_until = 0.0
 
+    def _invalidate_provider_models_cache(self, provider_name: str | None = None) -> None:
+        with self._provider_models_cache_lock:
+            if provider_name is None:
+                self._provider_models_cache = {}
+                return
+            self._provider_models_cache.pop(provider_name, None)
+
     def _find_running_download_unlocked(
         self,
         *,
@@ -1396,6 +1584,7 @@ class ModelManager:
                 model_id=model_id,
                 progress_callback=progress_callback,
             )
+            self._invalidate_provider_models_cache(provider_name)
             self._invalidate_suggested_cache()
             completed = self._to_int_or_none(result.get("size_bytes"))
             self._update_download_job(

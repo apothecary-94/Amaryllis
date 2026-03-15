@@ -268,6 +268,28 @@ class ModelFailoverTests(unittest.TestCase):
         self.assertEqual(quota.error_class, "quota")
         self.assertFalse(quota.retryable)
 
+    def test_list_models_hides_cloud_items_when_remote_catalog_is_disabled(self) -> None:
+        openai = _ScriptedProvider(
+            "openai",
+            local=False,
+            scripted_chat=["cloud-ok"],
+        )
+        mlx = _ScriptedProvider(
+            "mlx",
+            local=True,
+            scripted_chat=["local-ok"],
+        )
+        self.manager.providers = {"openai": openai, "mlx": mlx}
+        self.manager.active_provider = "mlx"
+        self.manager.active_model = "mlx-model"
+
+        with_remote = self.manager.list_models(include_suggested=False, include_remote_providers=True)
+        without_remote = self.manager.list_models(include_suggested=False, include_remote_providers=False)
+
+        self.assertTrue(with_remote["providers"]["openai"]["items"])
+        self.assertEqual(without_remote["providers"]["openai"]["items"], [])
+        self.assertTrue(without_remote["providers"]["mlx"]["items"])
+
     def test_provider_circuit_state_is_thread_safe_under_concurrent_failures(self) -> None:
         self.manager.providers = {"openai": _AlwaysFailProvider("openai", local=False)}
         self.manager.active_provider = "openai"

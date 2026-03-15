@@ -68,6 +68,7 @@ struct AgentsView: View {
     @State private var isAutomationActionLoading: Bool = false
     @State private var isLoadingInbox: Bool = false
     @State private var isInboxActionLoading: Bool = false
+    @State private var inboxRefreshDebounceTask: Task<Void, Never>?
 
     var body: some View {
         HStack(spacing: 12) {
@@ -97,7 +98,7 @@ struct AgentsView: View {
             Task { await refreshInbox() }
         }
         .onChange(of: userID) { _ in
-            Task { await refreshInbox() }
+            scheduleDebouncedInboxRefresh()
         }
         .onChange(of: replaySearchQuery) { _ in
             replayTimelineLimit = replayTimelinePageSize
@@ -110,6 +111,10 @@ struct AgentsView: View {
         }
         .onChange(of: replayPreset) { _ in
             replayTimelineLimit = replayTimelinePageSize
+        }
+        .onDisappear {
+            inboxRefreshDebounceTask?.cancel()
+            inboxRefreshDebounceTask = nil
         }
     }
 
@@ -1287,6 +1292,21 @@ struct AgentsView: View {
             return .gray
         default:
             return AmaryllisTheme.textSecondary
+        }
+    }
+
+    private func scheduleDebouncedInboxRefresh() {
+        inboxRefreshDebounceTask?.cancel()
+        inboxRefreshDebounceTask = Task {
+            do {
+                try await Task.sleep(nanoseconds: 400_000_000)
+            } catch {
+                return
+            }
+            if Task.isCancelled {
+                return
+            }
+            await refreshInbox()
         }
     }
 

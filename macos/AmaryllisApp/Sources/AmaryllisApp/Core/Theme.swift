@@ -68,30 +68,43 @@ struct AmaryllisTerminalBackground: View {
             )
             .ignoresSafeArea()
 
-            GeometryReader { geometry in
-                let lineStep: CGFloat = 3
-                Canvas { context, size in
-                    var path = Path()
-                    var y: CGFloat = 0
-                    while y < size.height {
-                        path.addRect(CGRect(x: 0, y: y, width: size.width, height: 1))
-                        y += lineStep
-                    }
-                    context.fill(path, with: .color(Color.black.opacity(0.20)))
-                }
-                .frame(width: geometry.size.width, height: geometry.size.height)
+            Rectangle()
+                .fill(
+                    LinearGradient(
+                        stops: [
+                            .init(color: Color.black.opacity(0.18), location: 0.0),
+                            .init(color: Color.clear, location: 0.08),
+                            .init(color: Color.black.opacity(0.16), location: 0.16),
+                            .init(color: Color.clear, location: 0.24),
+                            .init(color: Color.black.opacity(0.14), location: 0.32),
+                            .init(color: Color.clear, location: 0.40),
+                            .init(color: Color.black.opacity(0.12), location: 0.48),
+                            .init(color: Color.clear, location: 0.56),
+                            .init(color: Color.black.opacity(0.10), location: 0.64),
+                            .init(color: Color.clear, location: 0.72),
+                            .init(color: Color.black.opacity(0.08), location: 0.80),
+                            .init(color: Color.clear, location: 0.88),
+                            .init(color: Color.black.opacity(0.06), location: 0.96),
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+                .ignoresSafeArea()
                 .allowsHitTesting(false)
-            }
 
-            RadialGradient(
-                colors: [Color.white.opacity(0.04), Color.clear],
-                center: .center,
-                startRadius: 40,
-                endRadius: 900
-            )
-            .ignoresSafeArea()
-            .blendMode(.screen)
-            .allowsHitTesting(false)
+            Rectangle()
+                .fill(
+                    RadialGradient(
+                        colors: [Color.white.opacity(0.03), Color.clear],
+                        center: .center,
+                        startRadius: 60,
+                        endRadius: 720
+                    )
+                )
+                .ignoresSafeArea()
+                .blendMode(.screen)
+                .allowsHitTesting(false)
         }
     }
 }

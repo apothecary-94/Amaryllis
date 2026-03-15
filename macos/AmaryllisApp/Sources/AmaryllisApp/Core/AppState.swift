@@ -203,7 +203,10 @@ final class AppState: ObservableObject {
         }
     }
 
-    func refreshModels(includeSuggested: Bool = false) async {
+    func refreshModels(
+        includeSuggested: Bool = false,
+        includeRemoteProviders: Bool = false
+    ) async {
         if modelsRefreshInFlight {
             if includeSuggested {
                 pendingModelsRefreshWithSuggested = true
@@ -222,7 +225,10 @@ final class AppState: ObservableObject {
         }
 
         do {
-            let catalog = try await apiClient.listModels(includeSuggested: shouldIncludeSuggested)
+            let catalog = try await apiClient.listModels(
+                includeSuggested: shouldIncludeSuggested,
+                includeRemoteProviders: includeRemoteProviders
+            )
             modelCatalog = catalog
             selectedModel = catalog.active.model
             selectedProvider = catalog.active.provider
@@ -234,7 +240,7 @@ final class AppState: ObservableObject {
         modelsRefreshInFlight = false
         if pendingModelsRefreshWithSuggested {
             pendingModelsRefreshWithSuggested = false
-            await refreshModels(includeSuggested: true)
+            await refreshModels(includeSuggested: true, includeRemoteProviders: includeRemoteProviders)
         }
     }
 
@@ -386,7 +392,7 @@ final class AppState: ObservableObject {
 
         do {
             _ = try await apiClient.loadModel(modelId: modelId, provider: resolvedProvider)
-            let catalog = try await apiClient.listModels(includeSuggested: false)
+            let catalog = try await apiClient.listModels(includeSuggested: false, includeRemoteProviders: false)
             modelCatalog = catalog
             selectedModel = catalog.active.model
             selectedProvider = catalog.active.provider
@@ -777,6 +783,8 @@ final class AppState: ObservableObject {
         env["AMARYLLIS_ALLOWED_HIGH_RISK_TOOLS"] = trimmedAllowedHighRiskTools
         env["AMARYLLIS_PLUGIN_SIGNING_KEY"] = trimmedPluginSigningKey
         env["AMARYLLIS_MCP_ENDPOINTS"] = trimmedMCPEndpoints
+        env["AMARYLLIS_REQUEST_TRACE_LOGS_ENABLED"] = "false"
+        env["AMARYLLIS_OTEL_ENABLED"] = "false"
         env["AMARYLLIS_AUTH_ENABLED"] = "true"
         env["AMARYLLIS_AUTH_TOKENS"] = "\(normalizedAuthToken):user-001:admin|user"
         return env
