@@ -65,9 +65,7 @@ struct ChatView: View {
                 }
                 .onChange(of: currentMessages.last?.id) { _ in
                     guard let last = displayedMessages.last else { return }
-                    withAnimation(.easeOut(duration: 0.2)) {
-                        proxy.scrollTo(last.id, anchor: .bottom)
-                    }
+                    proxy.scrollTo(last.id, anchor: .bottom)
                 }
             }
             .amaryllisCard()
@@ -275,9 +273,7 @@ struct ChatView: View {
             Spacer()
 
             Button(showAdvancedControls ? "Hide Advanced" : "Advanced") {
-                withAnimation(.easeInOut(duration: 0.18)) {
-                    showAdvancedControls.toggle()
-                }
+                showAdvancedControls.toggle()
             }
             .buttonStyle(AmaryllisSecondaryButtonStyle())
             .disabled(isSending)

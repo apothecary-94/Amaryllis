@@ -60,52 +60,8 @@ enum AmaryllisTheme {
 
 struct AmaryllisTerminalBackground: View {
     var body: some View {
-        ZStack {
-            LinearGradient(
-                colors: [AmaryllisTheme.background, AmaryllisTheme.backgroundMid, AmaryllisTheme.background],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
+        AmaryllisTheme.background
             .ignoresSafeArea()
-
-            Rectangle()
-                .fill(
-                    LinearGradient(
-                        stops: [
-                            .init(color: Color.black.opacity(0.18), location: 0.0),
-                            .init(color: Color.clear, location: 0.08),
-                            .init(color: Color.black.opacity(0.16), location: 0.16),
-                            .init(color: Color.clear, location: 0.24),
-                            .init(color: Color.black.opacity(0.14), location: 0.32),
-                            .init(color: Color.clear, location: 0.40),
-                            .init(color: Color.black.opacity(0.12), location: 0.48),
-                            .init(color: Color.clear, location: 0.56),
-                            .init(color: Color.black.opacity(0.10), location: 0.64),
-                            .init(color: Color.clear, location: 0.72),
-                            .init(color: Color.black.opacity(0.08), location: 0.80),
-                            .init(color: Color.clear, location: 0.88),
-                            .init(color: Color.black.opacity(0.06), location: 0.96),
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
-                .ignoresSafeArea()
-                .allowsHitTesting(false)
-
-            Rectangle()
-                .fill(
-                    RadialGradient(
-                        colors: [Color.white.opacity(0.03), Color.clear],
-                        center: .center,
-                        startRadius: 60,
-                        endRadius: 720
-                    )
-                )
-                .ignoresSafeArea()
-                .blendMode(.screen)
-                .allowsHitTesting(false)
-        }
     }
 }
 
@@ -175,11 +131,6 @@ extension View {
                             .stroke(AmaryllisTheme.borderSoft, lineWidth: 1)
                     )
             )
-            .overlay(alignment: .topLeading) {
-                Rectangle()
-                    .fill(AmaryllisTheme.border.opacity(0.55))
-                    .frame(height: 1)
-            }
     }
 
     func amaryllisEditorSurface() -> some View {

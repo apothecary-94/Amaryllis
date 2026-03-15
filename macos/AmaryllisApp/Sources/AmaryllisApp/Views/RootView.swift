@@ -16,10 +16,10 @@ struct RootView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .padding(14)
                 }
-                .background(Color.clear)
+                .background(AmaryllisTheme.background)
             }
             .navigationSplitViewStyle(.balanced)
-            .background(Color.clear)
+            .background(AmaryllisTheme.background)
         }
     }
 
@@ -67,7 +67,7 @@ struct RootView: View {
         .padding(14)
         .background(
             RoundedRectangle(cornerRadius: 0)
-                .fill(AmaryllisTheme.surface.opacity(0.92))
+                .fill(AmaryllisTheme.surface)
         )
         .overlay(alignment: .trailing) {
             Rectangle()
@@ -103,7 +103,7 @@ struct RootView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .background(AmaryllisTheme.surface.opacity(0.86))
+        .background(AmaryllisTheme.surface)
         .overlay(alignment: .bottom) {
             Rectangle()
                 .fill(AmaryllisTheme.borderSoft)
