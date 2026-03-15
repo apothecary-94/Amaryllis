@@ -117,6 +117,7 @@ class ModelManager:
         self._suggested_cache_until: float = 0.0
         self._suggested_cache_ttl_seconds = 6 * 60 * 60
         self._suggested_cache_lock = Lock()
+        self._suggested_refresh_inflight = False
         self._provider_states: dict[str, _ProviderRuntimeState] = {}
         self._provider_state_lock = Lock()
         self._cloud_rate_records: dict[str, deque[float]] = {}
@@ -129,7 +130,7 @@ class ModelManager:
         self._download_jobs: dict[str, _ModelDownloadJob] = {}
         self._download_job_order: deque[str] = deque(maxlen=800)
 
-    def list_models(self) -> dict[str, Any]:
+    def list_models(self, *, include_suggested: bool = True) -> dict[str, Any]:
         active_provider, active_model = self._active_target()
         provider_payload: dict[str, Any] = {}
 
@@ -154,6 +155,7 @@ class ModelManager:
                         provider_name=name,
                         operation="list_models",
                         call=provider.list_models,
+                        max_attempts=1,
                     ),
                     "failure_count": self._provider_failure_count(name),
                     "circuit_open": False,
@@ -176,7 +178,7 @@ class ModelManager:
             },
             "providers": provider_payload,
             "capabilities": self.provider_capabilities(),
-            "suggested": self._get_suggested_models(),
+            "suggested": self._get_suggested_models() if include_suggested else {},
             "routing_modes": [
                 "balanced",
                 "local_first",
@@ -1002,30 +1004,88 @@ class ModelManager:
 
     def _get_suggested_models(self) -> dict[str, list[dict[str, Any]]]:
         now = time.time()
+        cached: dict[str, list[dict[str, Any]]] = {}
+        cache_fresh = False
         with self._suggested_cache_lock:
-            if self._suggested_cache and now < self._suggested_cache_until:
-                return self._clone_suggested_map(self._suggested_cache)
+            if self._suggested_cache:
+                cached = self._clone_suggested_map(self._suggested_cache)
+                cache_fresh = now < self._suggested_cache_until
 
+        if not cached:
+            cached = self._build_fallback_suggested_map(limit=120)
+            with self._suggested_cache_lock:
+                if not self._suggested_cache:
+                    self._suggested_cache = self._clone_suggested_map(cached)
+                    # Keep fallback cache short-lived so runtime can refresh quickly in background.
+                    self._suggested_cache_until = now + 120.0
+
+        if not cache_fresh:
+            self._refresh_suggested_cache_async(limit=160)
+
+        return cached
+
+    def _refresh_suggested_cache_async(self, *, limit: int) -> None:
+        with self._suggested_cache_lock:
+            if self._suggested_refresh_inflight:
+                return
+            self._suggested_refresh_inflight = True
+
+        def worker() -> None:
+            try:
+                suggested: dict[str, list[dict[str, Any]]] = {}
+                for provider_name, provider in self.providers.items():
+                    suggested[provider_name] = self._load_suggested_models_once(
+                        provider_name=provider_name,
+                        provider=provider,
+                        limit=limit,
+                    )
+
+                with self._suggested_cache_lock:
+                    self._suggested_cache = self._clone_suggested_map(suggested)
+                    self._suggested_cache_until = time.time() + self._suggested_cache_ttl_seconds
+            finally:
+                with self._suggested_cache_lock:
+                    self._suggested_refresh_inflight = False
+
+        Thread(target=worker, daemon=True).start()
+
+    def _load_suggested_models_once(
+        self,
+        *,
+        provider_name: str,
+        provider: ModelProvider,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        suggested_getter = getattr(provider, "suggested_models", None)
+        if callable(suggested_getter):
+            try:
+                raw_items = suggested_getter(limit=limit)
+                items = self._normalize_suggested(raw_items)
+            except Exception as exc:
+                self.logger.warning(
+                    "provider_suggested_models_failed provider=%s error=%s",
+                    provider_name,
+                    exc,
+                )
+        return items
+
+    def _build_fallback_suggested_map(self, *, limit: int) -> dict[str, list[dict[str, Any]]]:
         suggested: dict[str, list[dict[str, Any]]] = {}
         for provider_name, provider in self.providers.items():
-            items: list[dict[str, str]] = []
-            suggested_getter = getattr(provider, "suggested_models", None)
-            if callable(suggested_getter):
+            rows: list[dict[str, Any]] = []
+            fallback_getter = getattr(provider, "fallback_suggested_models", None)
+            if callable(fallback_getter):
                 try:
-                    raw_items = suggested_getter(limit=400)
-                    items = self._normalize_suggested(raw_items)
+                    rows = self._normalize_suggested(fallback_getter(limit=limit))
                 except Exception as exc:
-                    self.logger.warning(
-                        "provider_suggested_models_failed provider=%s error=%s",
+                    self.logger.debug(
+                        "provider_fallback_suggested_failed provider=%s error=%s",
                         provider_name,
                         exc,
                     )
-            suggested[provider_name] = items
-
-        with self._suggested_cache_lock:
-            self._suggested_cache = self._clone_suggested_map(suggested)
-            self._suggested_cache_until = now + self._suggested_cache_ttl_seconds
-            return self._clone_suggested_map(self._suggested_cache)
+            suggested[provider_name] = rows
+        return suggested
 
     @staticmethod
     def _normalize_suggested(items: Any) -> list[dict[str, Any]]:
@@ -1283,7 +1343,6 @@ class ModelManager:
 
     def _invalidate_suggested_cache(self) -> None:
         with self._suggested_cache_lock:
-            self._suggested_cache = {}
             self._suggested_cache_until = 0.0
 
     def _find_running_download_unlocked(
@@ -1573,6 +1632,7 @@ class ModelManager:
         operation: str,
         call: Any,
         before_call: Any | None = None,
+        max_attempts: int | None = None,
     ) -> Any:
         if self._is_provider_circuit_open(provider_name):
             remaining = self._provider_cooldown_remaining(provider_name)
@@ -1593,7 +1653,8 @@ class ModelManager:
                 )
             )
 
-        attempts = max(1, int(self.config.provider_retry_attempts))
+        attempts = max_attempts if max_attempts is not None else int(self.config.provider_retry_attempts)
+        attempts = max(1, int(attempts))
         last_info: ProviderErrorInfo | None = None
         for attempt in range(1, attempts + 1):
             call_started_at = time.monotonic()

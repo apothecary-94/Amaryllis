@@ -44,8 +44,9 @@ final class AmaryllisAPIClient {
         try await request(path: "/health", method: "GET", body: Optional<Data>.none)
     }
 
-    func listModels() async throws -> APIModelCatalog {
-        try await request(path: "/models", method: "GET", body: Optional<Data>.none)
+    func listModels(includeSuggested: Bool = true) async throws -> APIModelCatalog {
+        let path = includeSuggested ? "/models?include_suggested=true" : "/models?include_suggested=false"
+        return try await request(path: path, method: "GET", body: Optional<Data>.none)
     }
 
     func downloadModel(modelId: String, provider: String?) async throws -> APIModelActionResponse {

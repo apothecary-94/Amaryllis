@@ -376,6 +376,16 @@ struct ChatView: View {
         let chatSessionID = appState.selectedChatID?.uuidString
 
         Task {
+            let runtimeReady = await appState.ensureChatReady()
+            if !runtimeReady {
+                await MainActor.run {
+                    let message = appState.lastError ?? "Could not connect to runtime."
+                    appState.updateCurrentChatMessage(id: assistantID, content: "Error: \(message)")
+                    isSending = false
+                }
+                return
+            }
+
             do {
                 if shouldUseStreaming {
                     var combined = ""

@@ -38,6 +38,8 @@ final class AppState: ObservableObject {
     @Published var lastError: String?
 
     let runtimeManager = RuntimeProcessManager()
+    private var modelsRefreshInFlight: Bool = false
+    private var pendingModelsRefreshWithSuggested: Bool = false
 
     private let endpointKey = "amaryllis.endpoint"
     private let runtimeDirKey = "amaryllis.runtimeDirectory"
@@ -180,7 +182,7 @@ final class AppState: ObservableObject {
             return
         }
 
-        await refreshModels()
+        await refreshModels(includeSuggested: false)
         await refreshToolingState()
 
         if !hasActiveModelConfigured {
@@ -201,22 +203,38 @@ final class AppState: ObservableObject {
         }
     }
 
-    func refreshModels() async {
+    func refreshModels(includeSuggested: Bool = false) async {
+        if modelsRefreshInFlight {
+            if includeSuggested {
+                pendingModelsRefreshWithSuggested = true
+            }
+            return
+        }
+        let shouldIncludeSuggested = includeSuggested || pendingModelsRefreshWithSuggested
+        pendingModelsRefreshWithSuggested = false
+        modelsRefreshInFlight = true
         isBusy = true
-        defer { isBusy = false }
 
         guard await ensureRuntimeOnline() else {
+            isBusy = false
+            modelsRefreshInFlight = false
             return
         }
 
         do {
-            let catalog = try await apiClient.listModels()
+            let catalog = try await apiClient.listModels(includeSuggested: shouldIncludeSuggested)
             modelCatalog = catalog
             selectedModel = catalog.active.model
             selectedProvider = catalog.active.provider
             lastError = nil
         } catch {
             lastError = error.localizedDescription
+        }
+        isBusy = false
+        modelsRefreshInFlight = false
+        if pendingModelsRefreshWithSuggested {
+            pendingModelsRefreshWithSuggested = false
+            await refreshModels(includeSuggested: true)
         }
     }
 
@@ -241,7 +259,7 @@ final class AppState: ObservableObject {
 
         do {
             _ = try await apiClient.loadModel(modelId: modelId, provider: provider)
-            await refreshModels()
+            await refreshModels(includeSuggested: false)
             lastError = nil
         } catch {
             lastError = error.localizedDescription
@@ -285,7 +303,7 @@ final class AppState: ObservableObject {
                 }
 
                 if job.status.lowercased() == "succeeded" {
-                    await refreshModels()
+                    await refreshModels(includeSuggested: false)
                     lastError = nil
                 } else {
                     let message = job.error ?? job.message ?? "Model download failed."
@@ -324,7 +342,7 @@ final class AppState: ObservableObject {
                         updatedAt: Self.isoNow(),
                         finishedAt: Self.isoNow()
                     )
-                    await refreshModels()
+                    await refreshModels(includeSuggested: false)
                     lastError = nil
                     return
                 }
@@ -368,7 +386,7 @@ final class AppState: ObservableObject {
 
         do {
             _ = try await apiClient.loadModel(modelId: modelId, provider: resolvedProvider)
-            let catalog = try await apiClient.listModels()
+            let catalog = try await apiClient.listModels(includeSuggested: false)
             modelCatalog = catalog
             selectedModel = catalog.active.model
             selectedProvider = catalog.active.provider
@@ -376,6 +394,25 @@ final class AppState: ObservableObject {
         } catch {
             lastError = error.localizedDescription
         }
+    }
+
+    func ensureChatReady() async -> Bool {
+        guard await ensureRuntimeOnline() else {
+            return false
+        }
+
+        if modelCatalog == nil {
+            await refreshModels(includeSuggested: false)
+        }
+
+        if !hasActiveModelConfigured {
+            await refreshModels(includeSuggested: false)
+            if !hasActiveModelConfigured {
+                lastError = "Runtime is online, but no model is active. Open Models and install a model first."
+                return false
+            }
+        }
+        return true
     }
 
     func refreshToolingState() async {

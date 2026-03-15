@@ -13,7 +13,7 @@ class OpenAIProvider:
         self.active_model: str | None = None
 
     def list_models(self) -> list[dict[str, Any]]:
-        with httpx.Client(base_url=self.base_url, timeout=30.0, headers=self._headers()) as client:
+        with httpx.Client(base_url=self.base_url, timeout=8.0, headers=self._headers()) as client:
             response = client.get("/models")
             response.raise_for_status()
             payload = response.json()

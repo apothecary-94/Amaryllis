@@ -82,7 +82,7 @@ struct ModelsView: View {
             if !providerOptions.contains(providerForDownload) {
                 providerForDownload = providerOptions.first ?? "mlx"
             }
-            Task { await appState.refreshModels() }
+            Task { await appState.refreshModels(includeSuggested: true) }
         }
         .onChange(of: providerOptions) { options in
             if !options.contains(providerForDownload) {
@@ -90,7 +90,9 @@ struct ModelsView: View {
             }
         }
         .onReceive(Self.progressTimer) { value in
-            progressTick = value
+            if !activeDownloadJobs.isEmpty {
+                progressTick = value
+            }
         }
     }
 
@@ -116,7 +118,7 @@ struct ModelsView: View {
             .buttonStyle(AmaryllisPrimaryButtonStyle())
             .disabled(appState.isQuickSetupRunning)
             Button("Refresh") {
-                Task { await appState.refreshModels() }
+                Task { await appState.refreshModels(includeSuggested: true) }
             }
             .buttonStyle(AmaryllisSecondaryButtonStyle())
         }

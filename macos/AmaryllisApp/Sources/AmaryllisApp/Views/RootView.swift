@@ -23,7 +23,7 @@ struct RootView: View {
         }
         .task {
             await appState.refreshHealth()
-            await appState.refreshModels()
+            await appState.refreshModels(includeSuggested: false)
         }
     }
 

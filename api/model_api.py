@@ -98,9 +98,12 @@ class ModelDownloadJobsListResponse(BaseModel):
 
 
 @router.get("/models")
-def list_models(request: Request) -> dict[str, Any]:
+def list_models(request: Request, include_suggested: bool = True) -> dict[str, Any]:
     services = request.app.state.services
-    payload = services.model_manager.list_models()
+    try:
+        payload = services.model_manager.list_models(include_suggested=include_suggested)
+    except TypeError:
+        payload = services.model_manager.list_models()
     payload["request_id"] = _request_id(request)
     return payload
 

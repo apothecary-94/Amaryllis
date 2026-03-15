@@ -59,7 +59,7 @@ class OllamaProvider:
         self.logger = logging.getLogger("amaryllis.models.ollama")
 
     def list_models(self) -> list[dict[str, Any]]:
-        with httpx.Client(base_url=self.base_url, timeout=20.0) as client:
+        with httpx.Client(base_url=self.base_url, timeout=4.0) as client:
             response = client.get("/api/tags")
             response.raise_for_status()
             payload = response.json()
@@ -104,9 +104,29 @@ class OllamaProvider:
             "requires_api_key": False,
         }
 
-    def suggested_models(self, limit: int = 200) -> list[dict[str, Any]]:
+    def fallback_suggested_models(self, limit: int = 200) -> list[dict[str, Any]]:
         suggestions: list[dict[str, Any]] = []
         seen: set[str] = set()
+        for model_id in FALLBACK_OLLAMA_SUGGESTED_MODELS:
+            normalized = model_id.strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            suggestions.append(
+                {
+                    "id": normalized,
+                    "label": self._label_from_model_id(normalized),
+                    "size_bytes": self._estimate_download_size_bytes(normalized),
+                }
+            )
+            if len(suggestions) >= max(1, limit):
+                break
+        return suggestions
+
+    def suggested_models(self, limit: int = 200) -> list[dict[str, Any]]:
+        target_limit = max(1, min(int(limit), 220))
+        suggestions = self.fallback_suggested_models(limit=target_limit)
+        seen = {str(item.get("id", "")).strip() for item in suggestions if isinstance(item, dict)}
 
         def add(model_id: str) -> None:
             normalized = model_id.strip()
@@ -121,19 +141,20 @@ class OllamaProvider:
                     "size_bytes": size_bytes,
                 }
             )
+            if len(suggestions) > target_limit:
+                del suggestions[target_limit:]
 
         try:
             for item in self.list_models():
                 model_id = str(item.get("id", "")).strip()
                 if model_id:
                     add(model_id)
+                    if len(suggestions) >= target_limit:
+                        break
         except Exception as exc:
             self.logger.warning("ollama_local_models_unavailable error=%s", exc)
 
-        for model_id in FALLBACK_OLLAMA_SUGGESTED_MODELS:
-            add(model_id)
-
-        return suggestions[:limit]
+        return suggestions[:target_limit]
 
     def download_model(
         self,

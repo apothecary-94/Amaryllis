@@ -108,12 +108,16 @@ class MLXProvider:
                 except Exception:
                     metadata = {}
 
+            model_id = metadata.get("model_id") or self._folder_to_model(item.name)
             size_bytes = _to_int(metadata.get("size_bytes"))
             if size_bytes is None:
-                size_bytes = self._folder_size_bytes(item)
-                metadata["size_bytes"] = size_bytes
-
-            model_id = metadata.get("model_id") or self._folder_to_model(item.name)
+                size_bytes = _to_int(metadata.get("estimated_total_bytes"))
+            if size_bytes is None:
+                estimated = estimate_model_size_b(str(model_id))
+                if estimated is not None:
+                    size_bytes = int(estimated * 1_000_000_000 * 0.56)
+            if size_bytes is not None and size_bytes > 0:
+                metadata["size_bytes"] = int(size_bytes)
             models.append(
                 {
                     "id": model_id,
@@ -143,46 +147,60 @@ class MLXProvider:
             "requires_api_key": False,
         }
 
-    def suggested_models(self, limit: int = 300) -> list[dict[str, Any]]:
+    def fallback_suggested_models(self, limit: int = 300) -> list[dict[str, Any]]:
         suggestions: list[dict[str, Any]] = []
         seen: set[str] = set()
+        for model_id in FALLBACK_MLX_SUGGESTED_MODELS:
+            normalized = model_id.strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            suggestions.append(
+                {
+                    "id": normalized,
+                    "label": self._label_from_model_id(normalized),
+                    "size_bytes": self._estimate_download_size_bytes(normalized),
+                }
+            )
+            if len(suggestions) >= max(1, limit):
+                break
+        return suggestions
+
+    def suggested_models(self, limit: int = 300) -> list[dict[str, Any]]:
+        target_limit = max(1, min(int(limit), 220))
+        suggestions = self.fallback_suggested_models(limit=target_limit)
+        seen = {str(item.get("id", "")).strip() for item in suggestions if isinstance(item, dict)}
 
         def add(model_id: str) -> None:
             normalized = model_id.strip()
             if not normalized or normalized in seen:
                 return
             seen.add(normalized)
-            size_bytes = self._estimate_download_size_bytes(normalized)
             suggestions.append(
                 {
                     "id": normalized,
                     "label": self._label_from_model_id(normalized),
-                    "size_bytes": size_bytes,
+                    "size_bytes": self._estimate_download_size_bytes(normalized),
                 }
             )
-
-        for item in self.list_models():
-            model_id = str(item.get("id", "")).strip()
-            if model_id:
-                add(model_id)
+            if len(suggestions) > target_limit:
+                del suggestions[target_limit:]
 
         try:
             from huggingface_hub import HfApi  # type: ignore
 
             api = HfApi()
-            for model in api.list_models(author="mlx-community", limit=max(limit, 300)):
+            for model in api.list_models(author="mlx-community", limit=target_limit):
                 model_id = getattr(model, "id", None) or getattr(model, "modelId", None)
                 if isinstance(model_id, str):
                     add(model_id)
+                    if len(suggestions) >= target_limit:
+                        break
 
-            self.logger.info("mlx_suggested_catalog_loaded count=%s", len(suggestions))
+            self.logger.info("mlx_suggested_catalog_loaded count=%s", len(suggestions[:target_limit]))
         except Exception as exc:  # pragma: no cover - runtime dependency/network
             self.logger.warning("mlx_suggested_catalog_fetch_failed error=%s", exc)
-
-        for model_id in FALLBACK_MLX_SUGGESTED_MODELS:
-            add(model_id)
-
-        return suggestions[:limit]
+        return suggestions[:target_limit]
 
     def download_model(
         self,
