@@ -232,7 +232,8 @@ final class AppState: ObservableObject {
         do {
             let catalog = try await apiClient.listModels(
                 includeSuggested: shouldIncludeSuggested,
-                includeRemoteProviders: includeRemoteProviders
+                includeRemoteProviders: includeRemoteProviders,
+                itemLimit: 80
             )
             modelCatalog = catalog
             selectedModel = catalog.active.model
@@ -397,7 +398,11 @@ final class AppState: ObservableObject {
 
         do {
             _ = try await apiClient.loadModel(modelId: modelId, provider: resolvedProvider)
-            let catalog = try await apiClient.listModels(includeSuggested: false, includeRemoteProviders: false)
+            let catalog = try await apiClient.listModels(
+                includeSuggested: false,
+                includeRemoteProviders: false,
+                itemLimit: 80
+            )
             modelCatalog = catalog
             selectedModel = catalog.active.model
             selectedProvider = catalog.active.provider

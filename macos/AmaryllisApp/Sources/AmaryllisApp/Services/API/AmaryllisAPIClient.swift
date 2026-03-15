@@ -46,11 +46,13 @@ final class AmaryllisAPIClient {
 
     func listModels(
         includeSuggested: Bool = true,
-        includeRemoteProviders: Bool = true
+        includeRemoteProviders: Bool = true,
+        itemLimit: Int = 80
     ) async throws -> APIModelCatalog {
         let includeSuggestedValue = includeSuggested ? "true" : "false"
         let includeRemoteValue = includeRemoteProviders ? "true" : "false"
-        let path = "/models?include_suggested=\(includeSuggestedValue)&include_remote_providers=\(includeRemoteValue)"
+        let normalizedLimit = max(1, min(itemLimit, 500))
+        let path = "/models?include_suggested=\(includeSuggestedValue)&include_remote_providers=\(includeRemoteValue)&item_limit=\(normalizedLimit)"
         return try await request(path: path, method: "GET", body: Optional<Data>.none)
     }
 

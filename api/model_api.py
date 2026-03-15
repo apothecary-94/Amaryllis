@@ -102,15 +102,21 @@ def list_models(
     request: Request,
     include_suggested: bool = True,
     include_remote_providers: bool = True,
+    item_limit: int = 80,
 ) -> dict[str, Any]:
     services = request.app.state.services
+    normalized_limit = max(1, min(item_limit, 500))
     try:
         payload = services.model_manager.list_models(
             include_suggested=include_suggested,
             include_remote_providers=include_remote_providers,
+            max_items_per_provider=normalized_limit,
         )
     except TypeError:
-        payload = services.model_manager.list_models()
+        payload = services.model_manager.list_models(
+            include_suggested=include_suggested,
+            include_remote_providers=include_remote_providers,
+        )
     payload["request_id"] = _request_id(request)
     return payload
 

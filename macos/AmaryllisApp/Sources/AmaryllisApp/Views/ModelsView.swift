@@ -9,7 +9,7 @@ struct ModelsView: View {
     @State private var quickSearch: String = ""
     @State private var showAdvancedModelManagement: Bool = false
     @State private var loadingModelID: String?
-    private let maxSuggestedPerProvider: Int = 48
+    private let maxSuggestedPerProvider: Int = 24
 
     private let fallbackSuggested: [String: [APIModelCatalog.SuggestedModel]] = [
         "mlx": [
@@ -54,12 +54,14 @@ struct ModelsView: View {
                 simpleLibraryCard
 
                 DisclosureGroup(isExpanded: $showAdvancedModelManagement) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        downloadCard
-                        suggestedCard(suggestedForDisplay)
-                        advancedProviderCatalog
+                    if showAdvancedModelManagement {
+                        VStack(alignment: .leading, spacing: 10) {
+                            downloadCard
+                            suggestedCard(advancedSuggestedForDisplay)
+                            advancedProviderCatalog
+                        }
+                        .padding(.top, 8)
                     }
-                    .padding(.top, 8)
                 } label: {
                     Text("Advanced model management")
                         .font(AmaryllisTheme.bodyFont(size: 13, weight: .semibold))
@@ -607,7 +609,17 @@ struct ModelsView: View {
         .padding(.leading, 2)
     }
 
-    private var suggestedForDisplay: [String: [APIModelCatalog.SuggestedModel]] {
+    private var quickSuggestedForDisplay: [String: [APIModelCatalog.SuggestedModel]] {
+        let allowedProviders = downloadableProviders
+        var filtered: [String: [APIModelCatalog.SuggestedModel]] = [:]
+        for provider in fallbackSuggested.keys.sorted() where allowedProviders.contains(provider) {
+            let items = fallbackSuggested[provider] ?? []
+            filtered[provider] = Array(items.prefix(maxSuggestedPerProvider))
+        }
+        return filtered
+    }
+
+    private var advancedSuggestedForDisplay: [String: [APIModelCatalog.SuggestedModel]] {
         let allowedProviders = downloadableProviders
 
         if let suggested = appState.modelCatalog?.suggested {
@@ -632,7 +644,7 @@ struct ModelsView: View {
     }
 
     private var hasSuggestedModels: Bool {
-        suggestedForDisplay.values.contains { !$0.isEmpty }
+        advancedSuggestedForDisplay.values.contains { !$0.isEmpty }
     }
 
     private var providerOptions: [String] {
@@ -676,8 +688,8 @@ struct ModelsView: View {
     private var filteredQuickSuggestions: [QuickSuggestion] {
         let term = quickSearch.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         var items: [QuickSuggestion] = []
-        for provider in suggestedForDisplay.keys.sorted() {
-            let suggested = suggestedForDisplay[provider] ?? []
+        for provider in quickSuggestedForDisplay.keys.sorted() {
+            let suggested = quickSuggestedForDisplay[provider] ?? []
             for item in suggested {
                 let candidate = "\(provider) \(item.id) \(item.label)".lowercased()
                 if term.isEmpty || candidate.contains(term) {

@@ -140,9 +140,11 @@ class ModelManager:
         *,
         include_suggested: bool = True,
         include_remote_providers: bool = True,
+        max_items_per_provider: int | None = None,
     ) -> dict[str, Any]:
         active_provider, active_model = self._active_target()
         provider_payload: dict[str, Any] = {}
+        item_limit = max(1, int(max_items_per_provider)) if max_items_per_provider else None
 
         for name, provider in self.providers.items():
             is_cloud = self._is_cloud_provider(name)
@@ -171,6 +173,8 @@ class ModelManager:
                         provider_name=name,
                         include_items=not is_cloud,
                     )
+                if item_limit is not None and len(provider_items) > item_limit:
+                    provider_items = provider_items[:item_limit]
                 provider_payload[name] = {
                     "available": provider_available,
                     "error": provider_error,
