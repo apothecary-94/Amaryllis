@@ -9,7 +9,7 @@ struct ModelsView: View {
     @State private var quickSearch: String = ""
     @State private var showAdvancedModelManagement: Bool = false
     @State private var loadingModelID: String?
-    @State private var progressTick: Date = Date()
+    private let maxSuggestedPerProvider: Int = 48
 
     private let fallbackSuggested: [String: [APIModelCatalog.SuggestedModel]] = [
         "mlx": [
@@ -83,17 +83,12 @@ struct ModelsView: View {
                 providerForDownload = providerOptions.first ?? "mlx"
             }
             if appState.modelCatalog == nil {
-                Task { await appState.refreshModels(includeSuggested: true, includeRemoteProviders: false) }
+                Task { await appState.refreshModels(includeSuggested: false, includeRemoteProviders: false) }
             }
         }
         .onChange(of: providerOptions) { options in
             if !options.contains(providerForDownload) {
                 providerForDownload = options.first ?? "mlx"
-            }
-        }
-        .onReceive(Self.progressTimer) { value in
-            if !activeDownloadJobs.isEmpty {
-                progressTick = value
             }
         }
     }
@@ -120,11 +115,11 @@ struct ModelsView: View {
             .buttonStyle(AmaryllisPrimaryButtonStyle())
             .disabled(appState.isQuickSetupRunning)
             Button("Refresh") {
-                Task { await appState.refreshModels(includeSuggested: true, includeRemoteProviders: false) }
+                Task { await appState.refreshModels(includeSuggested: false, includeRemoteProviders: false) }
             }
             .buttonStyle(AmaryllisSecondaryButtonStyle())
             Button("Sync Cloud") {
-                Task { await appState.refreshModels(includeSuggested: true, includeRemoteProviders: true) }
+                Task { await appState.refreshModels(includeSuggested: false, includeRemoteProviders: true) }
             }
             .buttonStyle(AmaryllisSecondaryButtonStyle())
         }
@@ -620,7 +615,8 @@ struct ModelsView: View {
             if nonEmpty {
                 var filtered: [String: [APIModelCatalog.SuggestedModel]] = [:]
                 for provider in suggested.keys.sorted() where allowedProviders.contains(provider) {
-                    filtered[provider] = suggested[provider] ?? []
+                    let items = suggested[provider] ?? []
+                    filtered[provider] = Array(items.prefix(maxSuggestedPerProvider))
                 }
                 if filtered.values.contains(where: { !$0.isEmpty }) {
                     return filtered
@@ -629,7 +625,8 @@ struct ModelsView: View {
         }
         var filteredFallback: [String: [APIModelCatalog.SuggestedModel]] = [:]
         for provider in fallbackSuggested.keys.sorted() where allowedProviders.contains(provider) {
-            filteredFallback[provider] = fallbackSuggested[provider] ?? []
+            let items = fallbackSuggested[provider] ?? []
+            filteredFallback[provider] = Array(items.prefix(maxSuggestedPerProvider))
         }
         return filteredFallback
     }
@@ -785,8 +782,7 @@ struct ModelsView: View {
 
     private func inferredSizeBytes(fromModelID modelID: String) -> Int? {
         let text = modelID.lowercased()
-        let pattern = #"(\d+(?:\.\d+)?)\s*b"#
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
+        guard let regex = Self.modelSizeRegex else {
             return nil
         }
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
@@ -853,11 +849,7 @@ struct ModelsView: View {
         if job.status.lowercased() == "failed" {
             return 0.0
         }
-        let created = parseISODate(job.createdAt) ?? progressTick
-        let elapsed = max(0.0, progressTick.timeIntervalSince(created))
-        let baseline = min(0.92, 0.06 + (elapsed / 75.0))
-        let wave = (sin(progressTick.timeIntervalSince1970 * 2.5) + 1.0) * 0.02
-        return max(0.05, min(0.94, baseline + wave))
+        return 0.06
     }
 
     private func parseISODate(_ value: String?) -> Date? {
@@ -870,7 +862,7 @@ struct ModelsView: View {
         return Self.isoFormatterBasic.date(from: value)
     }
 
-    private static let progressTimer = Timer.publish(every: 0.4, on: .main, in: .common).autoconnect()
+    private static let modelSizeRegex = try? NSRegularExpression(pattern: #"(\d+(?:\.\d+)?)\s*b"#, options: [])
     private static let isoFormatterWithFractional: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
