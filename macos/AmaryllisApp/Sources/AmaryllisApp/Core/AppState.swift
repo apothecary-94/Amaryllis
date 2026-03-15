@@ -33,6 +33,7 @@ final class AppState: ObservableObject {
     @Published var chatSessions: [LocalChatSession] = []
     @Published var selectedChatID: UUID?
     @Published var isBusy: Bool = false
+    @Published var isQuickSetupRunning: Bool = false
     @Published var lastError: String?
 
     let runtimeManager = RuntimeProcessManager()
@@ -147,6 +148,47 @@ final class AppState: ObservableObject {
         lastError = nil
     }
 
+    var hasActiveModelConfigured: Bool {
+        guard let catalog = modelCatalog else { return false }
+        let model = catalog.active.model.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !model.isEmpty && model != "-"
+    }
+
+    var needsQuickSetup: Bool {
+        runtimeManager.connectionState != .online || !hasActiveModelConfigured
+    }
+
+    func quickSetup() async {
+        if isQuickSetupRunning {
+            return
+        }
+        isQuickSetupRunning = true
+        defer { isQuickSetupRunning = false }
+
+        persistSettings()
+
+        if !(await checkHealthOnce()) {
+            if runtimeManager.isRunning {
+                await refreshHealth()
+            } else {
+                await startRuntimeFromSettings()
+            }
+        }
+
+        guard await ensureRuntimeOnline() else {
+            return
+        }
+
+        await refreshModels()
+        await refreshToolingState()
+
+        if !hasActiveModelConfigured {
+            lastError = "Runtime is online, but no model is active yet. Open Models and press Install & Use on a recommended model."
+        } else {
+            lastError = nil
+        }
+    }
+
     func refreshHealth() async {
         do {
             _ = try await apiClient.health()
@@ -205,6 +247,27 @@ final class AppState: ObservableObject {
         do {
             _ = try await apiClient.downloadModel(modelId: modelId, provider: provider)
             await refreshModels()
+            lastError = nil
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    func installAndActivateModel(modelId: String, provider: String?) async {
+        isBusy = true
+        defer { isBusy = false }
+
+        guard await ensureRuntimeOnline() else {
+            return
+        }
+
+        do {
+            _ = try await apiClient.downloadModel(modelId: modelId, provider: provider)
+            _ = try await apiClient.loadModel(modelId: modelId, provider: provider)
+            let catalog = try await apiClient.listModels()
+            modelCatalog = catalog
+            selectedModel = catalog.active.model
+            selectedProvider = catalog.active.provider
             lastError = nil
         } catch {
             lastError = error.localizedDescription

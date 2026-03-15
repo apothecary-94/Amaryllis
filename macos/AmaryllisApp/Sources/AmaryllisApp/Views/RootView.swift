@@ -82,6 +82,22 @@ struct RootView: View {
         HStack(spacing: 10) {
             statusDot(label: "RUNTIME", on: appState.runtimeManager.isRunning)
             statusDot(label: "API", on: appState.runtimeManager.connectionState == .online)
+            if appState.needsQuickSetup {
+                Button {
+                    Task { await appState.quickSetup() }
+                } label: {
+                    if appState.isQuickSetupRunning {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(AmaryllisTheme.textPrimary)
+                            .frame(width: 92)
+                    } else {
+                        Text("Quick Setup")
+                            .frame(width: 92)
+                    }
+                }
+                .buttonStyle(AmaryllisPrimaryButtonStyle())
+            }
             Spacer()
             Text(appState.endpoint)
                 .font(AmaryllisTheme.monoFont(size: 12, weight: .regular))

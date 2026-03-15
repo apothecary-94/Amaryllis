@@ -35,8 +35,11 @@ Implemented in this version:
 - plugin discovery from `plugins/`
 - sequential task loop: meta-controller -> planner -> reasoning -> tools -> response
 - local runtime controls from the desktop app (start/stop/check)
+- one-click `Quick Setup` in desktop app (runtime start + API check + model readiness)
 - streaming chat UI
+- simplified chat controls (model/stream/tools first, advanced routing hidden behind `Advanced`)
 - model load/download progress indicators
+- simplified models flow with searchable `Simple Library` and one-click `Install & Use`
 - persistent local chat history (multi-chat sessions) in macOS app
 - Agents tab automation UI with `watch_fs` + inbox read/unread controls
 - centralized structured API errors (`error.type`, `error.message`, `error.request_id`)
@@ -306,16 +309,22 @@ Output:
 macos/AmaryllisApp/dist/Amaryllis.dmg
 ```
 
-In app settings:
-- set `API Endpoint` (default `http://localhost:8000`)
-- set `Runtime Directory` to your repository root
-- set optional cloud provider URLs and API keys:
+First launch (recommended):
+1. Open app.
+2. Go to `Settings` once and set:
+   - `API Endpoint` (default `http://localhost:8000`)
+   - `Runtime Directory` (repository root)
+3. Press `Quick Setup` in top bar.
+4. If no model is active yet, open `Models` and press `Install & Use` on a suggested model.
+5. Start chatting in `Chat`.
+
+Notes:
+- API keys entered in app settings are stored in macOS Keychain
+- optional cloud providers:
   - OpenAI (`https://api.openai.com/v1`)
   - OpenRouter (`https://openrouter.ai/api/v1`)
-- use `Start Runtime` to run the Python backend from UI
-- API keys entered in app settings are stored in macOS Keychain
-- use `Memory Debug` section to inspect context/retrieval/extractions/conflicts directly from UI
 - in `Agents` tab, configure interval/hourly/weekly/watcher automations and process inbox alerts
+- `Settings` also contains advanced runtime/tools/memory debug controls
 - desktop UI theme uses retro terminal styling (80s-inspired) with bundled `OlivettiThin 9x14` bitmap font
 
 Font attribution:
@@ -325,7 +334,9 @@ Chat tab behavior:
 - create multiple chats (`New Chat`)
 - switch chats from the chat selector
 - full chat history is saved automatically and restored after restart
-- supports `Auto Route` policy modes (`balanced`, `local_first`, `quality_first`, `coding`, `reasoning`)
+- default controls are simplified: `Model`, `Stream`, `Tools`
+- routing/provider policy controls are available under `Advanced`
+- if runtime/model is not ready, use `Quick Setup` card in Chat
 
 Local chat file:
 - `~/Library/Application Support/amaryllis/chat_sessions.json`
@@ -383,7 +394,7 @@ curl -X POST http://localhost:8000/models/download \
   }'
 ```
 
-Tip: `/models` now returns `suggested` model lists for both `mlx` and `ollama`, and UI shows quick download actions for them.
+Tip: `/models` returns `suggested` lists for `mlx` and `ollama`; desktop UI uses them in `Models -> Simple Library` with one-click `Install & Use` (download + activate).
 
 ### Load model
 

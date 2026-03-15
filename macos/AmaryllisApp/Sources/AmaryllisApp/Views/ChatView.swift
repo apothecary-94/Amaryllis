@@ -12,13 +12,20 @@ struct ChatView: View {
     @State private var routingMode: String = "balanced"
     @State private var toolsEnabled: Bool = true
     @State private var isSending: Bool = false
+    @State private var showAdvancedControls: Bool = false
 
     private let systemPrompt = "You are Amaryllis, a concise and practical local AI assistant."
 
     var body: some View {
         VStack(spacing: 10) {
+            if shouldShowSetupCard {
+                setupCard
+            }
             sessionBar
-            controlBar
+            simpleControlBar
+            if showAdvancedControls {
+                advancedControlBar
+            }
 
             ScrollViewReader { proxy in
                 ScrollView {
@@ -143,17 +150,67 @@ struct ChatView: View {
         .amaryllisCard()
     }
 
-    private var controlBar: some View {
-        HStack(spacing: 8) {
-            Picker("Provider", selection: $selectedProvider) {
-                Text("auto").tag("")
-                ForEach(providerNames, id: \.self) { provider in
-                    Text(provider).tag(provider)
+    private var shouldShowSetupCard: Bool {
+        appState.needsQuickSetup || appState.modelCatalog == nil
+    }
+
+    private var setupCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Quick Start")
+                        .font(AmaryllisTheme.sectionFont(size: 17))
+                        .foregroundStyle(AmaryllisTheme.textPrimary)
+                    Text("One click to connect runtime and prepare a model.")
+                        .font(AmaryllisTheme.bodyFont(size: 12, weight: .medium))
+                        .foregroundStyle(AmaryllisTheme.textSecondary)
                 }
+                Spacer()
+                Button {
+                    Task { await appState.quickSetup() }
+                } label: {
+                    if appState.isQuickSetupRunning {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(AmaryllisTheme.textPrimary)
+                            .frame(width: 106)
+                    } else {
+                        Text("Run Setup")
+                            .frame(width: 106)
+                    }
+                }
+                .buttonStyle(AmaryllisPrimaryButtonStyle())
+                .disabled(appState.isQuickSetupRunning)
             }
-            .pickerStyle(.menu)
-            .frame(width: 140)
-            .disabled(autoRoutingEnabled)
+
+            HStack(spacing: 12) {
+                setupStatus(label: "Runtime", ready: appState.runtimeManager.isRunning)
+                setupStatus(label: "API", ready: appState.runtimeManager.connectionState == .online)
+                setupStatus(label: "Model", ready: appState.hasActiveModelConfigured)
+            }
+        }
+        .amaryllisCard()
+    }
+
+    private func setupStatus(label: String, ready: Bool) -> some View {
+        HStack(spacing: 6) {
+            Rectangle()
+                .fill(ready ? AmaryllisTheme.okGreen : AmaryllisTheme.accent)
+                .frame(width: 8, height: 8)
+            Text(label)
+                .font(AmaryllisTheme.bodyFont(size: 11, weight: .semibold))
+                .foregroundStyle(AmaryllisTheme.textSecondary)
+            Text(ready ? "ready" : "pending")
+                .font(AmaryllisTheme.monoFont(size: 11, weight: .regular))
+                .foregroundStyle(AmaryllisTheme.textPrimary)
+        }
+    }
+
+    private var simpleControlBar: some View {
+        HStack(spacing: 8) {
+            Text("Model")
+                .font(AmaryllisTheme.bodyFont(size: 12, weight: .semibold))
+                .foregroundStyle(AmaryllisTheme.textSecondary)
 
             Picker("Model", selection: $selectedModelID) {
                 Text("active").tag("")
@@ -162,7 +219,41 @@ struct ChatView: View {
                 }
             }
             .pickerStyle(.menu)
-            .frame(maxWidth: .infinity)
+            .frame(maxWidth: 460)
+
+            Toggle("Stream", isOn: $isStreaming)
+                .toggleStyle(.switch)
+                .font(AmaryllisTheme.bodyFont(size: 12, weight: .semibold))
+                .frame(width: 110)
+
+            Toggle("Tools", isOn: $toolsEnabled)
+                .toggleStyle(.switch)
+                .font(AmaryllisTheme.bodyFont(size: 12, weight: .semibold))
+                .frame(width: 95)
+
+            Spacer()
+
+            Button(showAdvancedControls ? "Hide Advanced" : "Advanced") {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    showAdvancedControls.toggle()
+                }
+            }
+            .buttonStyle(AmaryllisSecondaryButtonStyle())
+            .disabled(isSending)
+        }
+        .amaryllisCard()
+    }
+
+    private var advancedControlBar: some View {
+        HStack(spacing: 8) {
+            Picker("Provider", selection: $selectedProvider) {
+                Text("auto").tag("")
+                ForEach(providerNames, id: \.self) { provider in
+                    Text(provider).tag(provider)
+                }
+            }
+            .pickerStyle(.menu)
+            .frame(width: 160)
             .disabled(autoRoutingEnabled)
 
             Toggle("Auto Route", isOn: $autoRoutingEnabled)
@@ -176,18 +267,13 @@ struct ChatView: View {
                 }
             }
             .pickerStyle(.menu)
-            .frame(width: 130)
+            .frame(width: 170)
             .disabled(!autoRoutingEnabled)
 
-            Toggle("Stream", isOn: $isStreaming)
-                .toggleStyle(.switch)
-                .font(AmaryllisTheme.bodyFont(size: 12, weight: .semibold))
-                .frame(width: 120)
-
-            Toggle("Tools", isOn: $toolsEnabled)
-                .toggleStyle(.switch)
-                .font(AmaryllisTheme.bodyFont(size: 12, weight: .semibold))
-                .frame(width: 110)
+            Spacer()
+            Text("Advanced routing")
+                .font(AmaryllisTheme.monoFont(size: 11, weight: .regular))
+                .foregroundStyle(AmaryllisTheme.textSecondary)
         }
         .amaryllisCard()
     }

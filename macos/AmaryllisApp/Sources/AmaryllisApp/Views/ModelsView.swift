@@ -5,6 +5,8 @@ struct ModelsView: View {
 
     @State private var modelToDownload: String = ""
     @State private var providerForDownload: String = "mlx"
+    @State private var quickSearch: String = ""
+    @State private var showAdvancedModelManagement: Bool = false
     @State private var loadingModelID: String?
     @State private var downloadingModelID: String?
 
@@ -43,24 +45,21 @@ struct ModelsView: View {
         VStack(alignment: .leading, spacing: 10) {
             header
             activeCard
-            downloadCard
-            suggestedCard(suggestedForDisplay)
+            simpleLibraryCard
 
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 8) {
-                    if let catalog = appState.modelCatalog {
-                        ForEach(catalog.providers.keys.sorted(), id: \.self) { providerName in
-                            if let payload = catalog.providers[providerName] {
-                                providerSection(name: providerName, payload: payload)
-                            }
-                        }
-                    } else {
-                        Text("No model data yet")
-                            .font(AmaryllisTheme.bodyFont(size: 12, weight: .medium))
-                            .foregroundStyle(AmaryllisTheme.textSecondary)
-                    }
+            DisclosureGroup(isExpanded: $showAdvancedModelManagement) {
+                VStack(alignment: .leading, spacing: 10) {
+                    downloadCard
+                    suggestedCard(suggestedForDisplay)
+                    advancedProviderCatalog
                 }
+                .padding(.top, 8)
+            } label: {
+                Text("Advanced model management")
+                    .font(AmaryllisTheme.bodyFont(size: 13, weight: .semibold))
+                    .foregroundStyle(AmaryllisTheme.textSecondary)
             }
+            .amaryllisCard()
 
             if let error = appState.lastError {
                 Text(error)
@@ -90,6 +89,21 @@ struct ModelsView: View {
                 .font(AmaryllisTheme.titleFont(size: 30))
                 .foregroundStyle(AmaryllisTheme.textPrimary)
             Spacer()
+            Button {
+                Task { await appState.quickSetup() }
+            } label: {
+                if appState.isQuickSetupRunning {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(AmaryllisTheme.textPrimary)
+                        .frame(width: 106)
+                } else {
+                    Text("Quick Setup")
+                        .frame(width: 106)
+                }
+            }
+            .buttonStyle(AmaryllisPrimaryButtonStyle())
+            .disabled(appState.isQuickSetupRunning)
             Button("Refresh") {
                 Task { await appState.refreshModels() }
             }
@@ -105,6 +119,63 @@ struct ModelsView: View {
             Text("\(appState.modelCatalog?.active.provider ?? "-") / \(appState.modelCatalog?.active.model ?? "-")")
                 .font(AmaryllisTheme.monoFont(size: 12, weight: .regular))
                 .foregroundStyle(AmaryllisTheme.textPrimary)
+            Spacer()
+            Text(appState.hasActiveModelConfigured ? "ready" : "install model")
+                .font(AmaryllisTheme.bodyFont(size: 11, weight: .semibold))
+                .foregroundStyle(appState.hasActiveModelConfigured ? AmaryllisTheme.okGreen : AmaryllisTheme.accent)
+        }
+        .amaryllisCard()
+    }
+
+    private var simpleLibraryCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Simple Library")
+                .font(AmaryllisTheme.sectionFont(size: 17))
+                .foregroundStyle(AmaryllisTheme.textPrimary)
+
+            Text("Pick one model and press Install & Use. Amaryllis will download it and activate it automatically.")
+                .font(AmaryllisTheme.bodyFont(size: 12, weight: .medium))
+                .foregroundStyle(AmaryllisTheme.textSecondary)
+
+            TextField("Search model", text: $quickSearch)
+                .textFieldStyle(AmaryllisTerminalTextFieldStyle())
+
+            if filteredQuickSuggestions.isEmpty {
+                Text("No models found for current filter.")
+                    .font(AmaryllisTheme.bodyFont(size: 12, weight: .medium))
+                    .foregroundStyle(AmaryllisTheme.textSecondary)
+            } else {
+                ForEach(filteredQuickSuggestions.prefix(8)) { suggestion in
+                    HStack(spacing: 8) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(suggestion.model.label)
+                                .font(AmaryllisTheme.bodyFont(size: 12, weight: .semibold))
+                                .foregroundStyle(AmaryllisTheme.textPrimary)
+                            Text("\(suggestion.provider)/\(suggestion.model.id)")
+                                .font(AmaryllisTheme.monoFont(size: 11, weight: .regular))
+                                .foregroundStyle(AmaryllisTheme.textSecondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                        Spacer()
+                        Button {
+                            Task {
+                                quickSearch = ""
+                                await installAndActivate(modelID: suggestion.model.id, provider: suggestion.provider)
+                            }
+                        } label: {
+                            if appState.isBusy, downloadingModelID == suggestion.model.id {
+                                ProgressView().controlSize(.small).frame(width: 110)
+                            } else {
+                                Text("Install & Use").frame(width: 110)
+                            }
+                        }
+                        .buttonStyle(AmaryllisPrimaryButtonStyle())
+                        .disabled(appState.isBusy)
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
         }
         .amaryllisCard()
     }
@@ -275,6 +346,25 @@ struct ModelsView: View {
         .amaryllisCard()
     }
 
+    private var advancedProviderCatalog: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 8) {
+                if let catalog = appState.modelCatalog {
+                    ForEach(catalog.providers.keys.sorted(), id: \.self) { providerName in
+                        if let payload = catalog.providers[providerName] {
+                            providerSection(name: providerName, payload: payload)
+                        }
+                    }
+                } else {
+                    Text("No model data yet")
+                        .font(AmaryllisTheme.bodyFont(size: 12, weight: .medium))
+                        .foregroundStyle(AmaryllisTheme.textSecondary)
+                }
+            }
+        }
+        .frame(maxHeight: 260)
+    }
+
     private var suggestedForDisplay: [String: [APIModelCatalog.SuggestedModel]] {
         if let suggested = appState.modelCatalog?.suggested {
             let nonEmpty = suggested.values.contains { !$0.isEmpty }
@@ -305,5 +395,42 @@ struct ModelsView: View {
         downloadingModelID = modelId
         await appState.downloadModel(modelId: modelId, provider: provider)
         downloadingModelID = nil
+    }
+
+    private func installAndActivate(modelID: String, provider: String) async {
+        providerForDownload = provider
+        modelToDownload = modelID
+        downloadingModelID = modelID
+        await appState.installAndActivateModel(modelId: modelID, provider: provider)
+        loadingModelID = modelID
+        downloadingModelID = nil
+        loadingModelID = nil
+    }
+
+    private var filteredQuickSuggestions: [QuickSuggestion] {
+        let term = quickSearch.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        var items: [QuickSuggestion] = []
+        for provider in suggestedForDisplay.keys.sorted() {
+            let suggested = suggestedForDisplay[provider] ?? []
+            for item in suggested {
+                let candidate = "\(provider) \(item.id) \(item.label)".lowercased()
+                if term.isEmpty || candidate.contains(term) {
+                    items.append(
+                        QuickSuggestion(
+                            id: "\(provider)::\(item.id)",
+                            provider: provider,
+                            model: item
+                        )
+                    )
+                }
+            }
+        }
+        return items
+    }
+
+    private struct QuickSuggestion: Identifiable {
+        let id: String
+        let provider: String
+        let model: APIModelCatalog.SuggestedModel
     }
 }
