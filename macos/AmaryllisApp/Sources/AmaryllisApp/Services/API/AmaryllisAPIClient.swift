@@ -279,9 +279,15 @@ final class AmaryllisAPIClient {
         agentId: String,
         userId: String?,
         status: String? = nil,
-        limit: Int = 50
+        limit: Int = 50,
+        includeResult: Bool = false,
+        includeCheckpoints: Bool = false
     ) async throws -> APIAgentRunListResponse {
-        var queryItems = [URLQueryItem(name: "limit", value: String(limit))]
+        var queryItems = [
+            URLQueryItem(name: "limit", value: String(limit)),
+            URLQueryItem(name: "include_result", value: includeResult ? "true" : "false"),
+            URLQueryItem(name: "include_checkpoints", value: includeCheckpoints ? "true" : "false")
+        ]
         if let userId, !userId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             queryItems.append(URLQueryItem(name: "user_id", value: userId))
         }

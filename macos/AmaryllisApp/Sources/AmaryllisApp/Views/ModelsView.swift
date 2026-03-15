@@ -82,7 +82,9 @@ struct ModelsView: View {
             if !providerOptions.contains(providerForDownload) {
                 providerForDownload = providerOptions.first ?? "mlx"
             }
-            Task { await appState.refreshModels(includeSuggested: true, includeRemoteProviders: false) }
+            if appState.modelCatalog == nil {
+                Task { await appState.refreshModels(includeSuggested: true, includeRemoteProviders: false) }
+            }
         }
         .onChange(of: providerOptions) { options in
             if !options.contains(providerForDownload) {

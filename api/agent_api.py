@@ -212,6 +212,8 @@ def list_agent_runs(
     user_id: str | None = Query(default=None),
     status: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
+    include_result: bool = Query(default=False),
+    include_checkpoints: bool = Query(default=False),
 ) -> dict[str, Any]:
     services = request.app.state.services
     auth = auth_context_from_request(request)
@@ -229,6 +231,16 @@ def list_agent_runs(
             status=status,
             limit=limit,
         )
+        if not include_result or not include_checkpoints:
+            compact_runs: list[dict[str, Any]] = []
+            for run in runs:
+                row = dict(run)
+                if not include_result:
+                    row["result"] = None
+                if not include_checkpoints:
+                    row["checkpoints"] = []
+                compact_runs.append(row)
+            runs = compact_runs
         return {
             "items": runs,
             "count": len(runs),

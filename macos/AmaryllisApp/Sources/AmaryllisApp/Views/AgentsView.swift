@@ -80,9 +80,9 @@ struct AgentsView: View {
         }
         .task {
             await refreshAgents()
-            await refreshRuns()
-            await refreshAutomations()
-            await refreshInbox()
+            if selectedAgentID == nil {
+                await refreshInbox()
+            }
         }
         .onChange(of: selectedAgentID ?? "") { _ in
             Task {
@@ -92,7 +92,22 @@ struct AgentsView: View {
             }
         }
         .onChange(of: selectedRunID ?? "") { _ in
-            Task { await loadReplayForSelectedRun(silent: true) }
+            guard let run = selectedRun else {
+                selectedRunReplay = nil
+                replayStatusMessage = "Replay not loaded."
+                return
+            }
+            if selectedRunReplay?.runId != run.id {
+                selectedRunReplay = nil
+                replayStatusMessage = "Replay not loaded for selected run. Press Load Replay."
+                replaySearchQuery = ""
+                replayStageFilter = "all"
+                replayAttemptFilter = "all"
+                replayPreset = "all"
+                replayCompareLeftAttempt = "auto"
+                replayCompareRightAttempt = "auto"
+                replayTimelineLimit = replayTimelinePageSize
+            }
         }
         .onChange(of: inboxUnreadOnly) { _ in
             Task { await refreshInbox() }
@@ -622,15 +637,13 @@ struct AgentsView: View {
                             .frame(maxHeight: 120)
                         }
 
-                        Text("Raw Checkpoints (\(run.checkpoints.count))")
+                        Text("Raw Checkpoints (\(rawCheckpointCount(for: run)))")
                             .font(AmaryllisTheme.bodyFont(size: 11, weight: .semibold))
                             .foregroundStyle(AmaryllisTheme.textSecondary)
                         ScrollView {
                             LazyVStack(alignment: .leading, spacing: 4) {
-                                ForEach(Array(run.checkpoints.suffix(20))) { checkpoint in
-                                    let stage = checkpoint.stage ?? "-"
-                                    let message = checkpoint.message ?? "-"
-                                    Text("[\(checkpoint.timestamp)] \(stage) \(message)")
+                                ForEach(Array(rawCheckpointPreviewLines(for: run).enumerated()), id: \.offset) { _, line in
+                                    Text(line)
                                         .font(AmaryllisTheme.monoFont(size: 10, weight: .regular))
                                         .foregroundStyle(AmaryllisTheme.textSecondary)
                                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1120,7 +1133,9 @@ struct AgentsView: View {
                 agentId: agent.id,
                 userId: userID,
                 status: nil,
-                limit: 100
+                limit: 30,
+                includeResult: false,
+                includeCheckpoints: false
             )
             runs = response.items
             if selectedRunID == nil || !runs.contains(where: { $0.id == selectedRunID }) {
@@ -1137,17 +1152,6 @@ struct AgentsView: View {
         } catch {
             appState.lastError = error.localizedDescription
         }
-    }
-
-    private func loadReplayForSelectedRun(silent: Bool) async {
-        guard let run = selectedRun else {
-            if !silent {
-                replayStatusMessage = "Select a run to load replay."
-            }
-            selectedRunReplay = nil
-            return
-        }
-        await loadReplay(runID: run.id, silent: silent)
     }
 
     private func loadReplay(runID: String, silent: Bool = false) async {
@@ -1276,6 +1280,27 @@ struct AgentsView: View {
             return nestedResponse
         }
         return nil
+    }
+
+    private func rawCheckpointCount(for run: APIAgentRunRecord) -> Int {
+        if let replay = selectedRunReplay, replay.runId == run.id {
+            return replay.checkpointCount
+        }
+        return run.checkpoints.count
+    }
+
+    private func rawCheckpointPreviewLines(for run: APIAgentRunRecord) -> [String] {
+        if let replay = selectedRunReplay, replay.runId == run.id {
+            let timeline = replay.timeline.suffix(20)
+            return timeline.map { item in
+                "[\(item.timestamp)] \(item.stage) \(item.message)"
+            }
+        }
+        return run.checkpoints.suffix(20).map { checkpoint in
+            let stage = checkpoint.stage ?? "-"
+            let message = checkpoint.message ?? "-"
+            return "[\(checkpoint.timestamp)] \(stage) \(message)"
+        }
     }
 
     private func runStatusColor(_ status: String) -> Color {
