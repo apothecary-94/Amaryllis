@@ -15,6 +15,9 @@ struct ChatView: View {
     @State private var showAdvancedControls: Bool = false
 
     private let systemPrompt = "You are Amaryllis, a concise and practical local AI assistant."
+    private let maxHistoryMessages: Int = 48
+    private let streamingRenderInterval: TimeInterval = 0.14
+    private let streamingChunkThreshold: Int = 96
 
     var body: some View {
         VStack(spacing: 10) {
@@ -352,10 +355,11 @@ struct ChatView: View {
             APIChatMessage(role: "system", content: systemPrompt, name: nil)
         ]
 
-        for row in appState.currentChatMessages where row.role == "user" || row.role == "assistant" {
-            if !row.content.isEmpty {
-                payload.append(APIChatMessage(role: row.role, content: row.content, name: nil))
-            }
+        let chatHistory = appState.currentChatMessages.filter { row in
+            (row.role == "user" || row.role == "assistant") && !row.content.isEmpty
+        }
+        for row in chatHistory.suffix(maxHistoryMessages) {
+            payload.append(APIChatMessage(role: row.role, content: row.content, name: nil))
         }
 
         let provider = selectedProvider.isEmpty ? nil : selectedProvider
@@ -380,7 +384,7 @@ struct ChatView: View {
             if !runtimeReady {
                 await MainActor.run {
                     let message = appState.lastError ?? "Could not connect to runtime."
-                    appState.updateCurrentChatMessage(id: assistantID, content: "Error: \(message)")
+                    appState.finalizeCurrentChatMessage(id: assistantID, content: "Error: \(message)")
                     isSending = false
                 }
                 return
@@ -407,13 +411,13 @@ struct ChatView: View {
                             let now = Date()
                             let deltaCount = combined.count - rendered.count
                             let shouldRender = rendered.isEmpty
-                                || now.timeIntervalSince(lastRender) >= 0.08
-                                || deltaCount >= 48
+                                || now.timeIntervalSince(lastRender) >= streamingRenderInterval
+                                || deltaCount >= streamingChunkThreshold
                             if shouldRender {
                                 rendered = combined
                                 lastRender = now
                                 await MainActor.run {
-                                    appState.updateCurrentChatMessage(id: assistantID, content: rendered)
+                                    appState.updateCurrentChatMessageStreaming(id: assistantID, content: rendered)
                                 }
                             }
                         }
@@ -436,19 +440,15 @@ struct ChatView: View {
                         }
                     }
 
-                    if rendered != combined {
-                        await MainActor.run {
-                            appState.updateCurrentChatMessage(id: assistantID, content: combined)
-                        }
-                    }
-
-                    if combined.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        await MainActor.run {
-                            appState.updateCurrentChatMessage(
+                    await MainActor.run {
+                        if combined.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            appState.finalizeCurrentChatMessage(
                                 id: assistantID,
                                 content: "Error: Empty response from provider. Check API key, quota, and model access."
                             )
                             appState.lastError = "Empty response from provider."
+                        } else {
+                            appState.finalizeCurrentChatMessage(id: assistantID, content: combined)
                         }
                     }
                 } else {
@@ -483,7 +483,7 @@ struct ChatView: View {
                     }
 
                     await MainActor.run {
-                        appState.updateCurrentChatMessage(id: assistantID, content: content)
+                        appState.finalizeCurrentChatMessage(id: assistantID, content: content)
                     }
 
                     if !pendingPromptIDs.isEmpty {
@@ -516,7 +516,7 @@ struct ChatView: View {
                                 retriedContent += "\n\n\(retryPolicyWarning)"
                             }
                             await MainActor.run {
-                                appState.updateCurrentChatMessage(id: assistantID, content: retriedContent)
+                                appState.finalizeCurrentChatMessage(id: assistantID, content: retriedContent)
                                 appState.lastError = nil
                             }
                         } else if approvalState == .denied {
@@ -535,7 +535,7 @@ struct ChatView: View {
             } catch {
                 await MainActor.run {
                     let message = renderUserFacingError(error.localizedDescription)
-                    appState.updateCurrentChatMessage(id: assistantID, content: message)
+                    appState.finalizeCurrentChatMessage(id: assistantID, content: message)
                     appState.lastError = message
                 }
             }
