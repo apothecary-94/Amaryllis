@@ -18,6 +18,7 @@ struct RootView: View {
                 }
                 .background(Color.clear)
             }
+            .navigationSplitViewStyle(.balanced)
             .background(Color.clear)
         }
         .task {
@@ -66,6 +67,7 @@ struct RootView: View {
 
             Spacer()
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding(14)
         .background(
             RoundedRectangle(cornerRadius: 0)

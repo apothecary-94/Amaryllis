@@ -135,6 +135,9 @@ struct APIModelDownloadJob: Decodable, Identifiable {
     let totalBytes: Int?
     let message: String?
     let error: String?
+    let createdAt: String?
+    let updatedAt: String?
+    let finishedAt: String?
 
     var isTerminal: Bool {
         let normalized = status.lowercased()
@@ -151,6 +154,9 @@ struct APIModelDownloadJob: Decodable, Identifiable {
         case totalBytes = "total_bytes"
         case message
         case error
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
+        case finishedAt = "finished_at"
     }
 }
 

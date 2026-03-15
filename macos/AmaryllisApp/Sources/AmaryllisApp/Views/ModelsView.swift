@@ -9,6 +9,7 @@ struct ModelsView: View {
     @State private var quickSearch: String = ""
     @State private var showAdvancedModelManagement: Bool = false
     @State private var loadingModelID: String?
+    @State private var progressTick: Date = Date()
 
     private let fallbackSuggested: [String: [APIModelCatalog.SuggestedModel]] = [
         "mlx": [
@@ -42,34 +43,37 @@ struct ModelsView: View {
     ]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            header
-            activeCard
-            if !activeDownloadJobs.isEmpty {
-                downloadsCard
-            }
-            installedCard
-            simpleLibraryCard
-
-            DisclosureGroup(isExpanded: $showAdvancedModelManagement) {
-                VStack(alignment: .leading, spacing: 10) {
-                    downloadCard
-                    suggestedCard(suggestedForDisplay)
-                    advancedProviderCatalog
+        ScrollView {
+            VStack(alignment: .leading, spacing: 10) {
+                header
+                activeCard
+                if !activeDownloadJobs.isEmpty {
+                    downloadsCard
                 }
-                .padding(.top, 8)
-            } label: {
-                Text("Advanced model management")
-                    .font(AmaryllisTheme.bodyFont(size: 13, weight: .semibold))
-                    .foregroundStyle(AmaryllisTheme.textSecondary)
-            }
-            .amaryllisCard()
+                installedCard
+                simpleLibraryCard
 
-            if let error = appState.lastError {
-                Text(error)
-                    .font(AmaryllisTheme.bodyFont(size: 12, weight: .medium))
-                    .foregroundStyle(AmaryllisTheme.accent)
+                DisclosureGroup(isExpanded: $showAdvancedModelManagement) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        downloadCard
+                        suggestedCard(suggestedForDisplay)
+                        advancedProviderCatalog
+                    }
+                    .padding(.top, 8)
+                } label: {
+                    Text("Advanced model management")
+                        .font(AmaryllisTheme.bodyFont(size: 13, weight: .semibold))
+                        .foregroundStyle(AmaryllisTheme.textSecondary)
+                }
+                .amaryllisCard()
+
+                if let error = appState.lastError {
+                    Text(error)
+                        .font(AmaryllisTheme.bodyFont(size: 12, weight: .medium))
+                        .foregroundStyle(AmaryllisTheme.accent)
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .onAppear {
             if modelToDownload.isEmpty {
@@ -84,6 +88,9 @@ struct ModelsView: View {
             if !options.contains(providerForDownload) {
                 providerForDownload = options.first ?? "mlx"
             }
+        }
+        .onReceive(Self.progressTimer) { value in
+            progressTick = value
         }
     }
 
@@ -565,18 +572,19 @@ struct ModelsView: View {
     }
 
     private func modelDownloadProgress(job: APIModelDownloadJob) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            if job.progress > 0 {
-                ProgressView(value: max(0.0, min(1.0, job.progress)))
-                    .progressViewStyle(.linear)
-                    .tint(AmaryllisTheme.accent)
-            } else {
-                ProgressView()
-                    .controlSize(.small)
-            }
+        let progress = displayProgress(for: job)
+        return VStack(alignment: .leading, spacing: 4) {
+            ProgressView(value: progress)
+                .progressViewStyle(.linear)
+                .tint(AmaryllisTheme.accent)
             HStack(spacing: 6) {
                 if let message = job.message, !message.isEmpty {
                     Text(message)
+                        .font(AmaryllisTheme.monoFont(size: 10, weight: .regular))
+                        .foregroundStyle(AmaryllisTheme.textSecondary)
+                        .lineLimit(1)
+                } else if !job.isTerminal && job.progress <= 0 {
+                    Text("Estimating progress...")
                         .font(AmaryllisTheme.monoFont(size: 10, weight: .regular))
                         .foregroundStyle(AmaryllisTheme.textSecondary)
                         .lineLimit(1)
@@ -586,8 +594,8 @@ struct ModelsView: View {
                     Text("\(byteCountFormatter.string(fromByteCount: Int64(completed))) / \(byteCountFormatter.string(fromByteCount: Int64(total)))")
                         .font(AmaryllisTheme.monoFont(size: 10, weight: .regular))
                         .foregroundStyle(AmaryllisTheme.textSecondary)
-                } else if job.progress > 0 {
-                    Text("\(Int((job.progress * 100).rounded()))%")
+                } else {
+                    Text("\(Int((progress * 100).rounded()))%")
                         .font(AmaryllisTheme.monoFont(size: 10, weight: .regular))
                         .foregroundStyle(AmaryllisTheme.textSecondary)
                 }
@@ -693,6 +701,11 @@ struct ModelsView: View {
         appState.modelDownloadJobs.values
             .filter { !$0.isTerminal }
             .sorted { lhs, rhs in
+                let lhsDate = parseISODate(lhs.createdAt) ?? .distantPast
+                let rhsDate = parseISODate(rhs.createdAt) ?? .distantPast
+                if lhsDate != rhsDate {
+                    return lhsDate > rhsDate
+                }
                 if lhs.provider != rhs.provider {
                     return lhs.provider < rhs.provider
                 }
@@ -820,4 +833,44 @@ struct ModelsView: View {
     private var byteCountFormatter: ByteCountFormatter {
         Self._byteCountFormatter
     }
+
+    private func displayProgress(for job: APIModelDownloadJob) -> Double {
+        let explicit = max(0.0, min(1.0, job.progress))
+        if explicit > 0 {
+            return explicit
+        }
+        if job.status.lowercased() == "succeeded" {
+            return 1.0
+        }
+        if job.status.lowercased() == "failed" {
+            return 0.0
+        }
+        let created = parseISODate(job.createdAt) ?? progressTick
+        let elapsed = max(0.0, progressTick.timeIntervalSince(created))
+        let baseline = min(0.92, 0.06 + (elapsed / 75.0))
+        let wave = (sin(progressTick.timeIntervalSince1970 * 2.5) + 1.0) * 0.02
+        return max(0.05, min(0.94, baseline + wave))
+    }
+
+    private func parseISODate(_ value: String?) -> Date? {
+        guard let value, !value.isEmpty else {
+            return nil
+        }
+        if let precise = Self.isoFormatterWithFractional.date(from: value) {
+            return precise
+        }
+        return Self.isoFormatterBasic.date(from: value)
+    }
+
+    private static let progressTimer = Timer.publish(every: 0.4, on: .main, in: .common).autoconnect()
+    private static let isoFormatterWithFractional: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+    private static let isoFormatterBasic: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
 }

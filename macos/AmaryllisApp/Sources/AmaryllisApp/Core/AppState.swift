@@ -256,6 +256,7 @@ final class AppState: ObservableObject {
         let resolvedProvider = resolveProviderForModelAction(provider)
         let key = modelDownloadKey(modelId: modelId, provider: resolvedProvider)
         let provisionalJobID = "local-\(UUID().uuidString.lowercased())"
+        let now = Self.isoNow()
         modelDownloadJobs[key] = APIModelDownloadJob(
             id: provisionalJobID,
             provider: resolvedProvider,
@@ -265,7 +266,10 @@ final class AppState: ObservableObject {
             completedBytes: nil,
             totalBytes: nil,
             message: "Starting download...",
-            error: nil
+            error: nil,
+            createdAt: now,
+            updatedAt: now,
+            finishedAt: nil
         )
         do {
             lastError = "Downloading \(modelId)..."
@@ -300,7 +304,10 @@ final class AppState: ObservableObject {
                         completedBytes: nil,
                         totalBytes: nil,
                         message: "Downloading (legacy runtime mode)...",
-                        error: nil
+                        error: nil,
+                        createdAt: now,
+                        updatedAt: Self.isoNow(),
+                        finishedAt: nil
                     )
                     _ = try await apiClient.downloadModel(modelId: modelId, provider: resolvedProvider)
                     modelDownloadJobs[key] = APIModelDownloadJob(
@@ -312,7 +319,10 @@ final class AppState: ObservableObject {
                         completedBytes: nil,
                         totalBytes: nil,
                         message: "Download completed",
-                        error: nil
+                        error: nil,
+                        createdAt: now,
+                        updatedAt: Self.isoNow(),
+                        finishedAt: Self.isoNow()
                     )
                     await refreshModels()
                     lastError = nil
@@ -330,7 +340,10 @@ final class AppState: ObservableObject {
                 completedBytes: nil,
                 totalBytes: nil,
                 message: "Download failed",
-                error: error.localizedDescription
+                error: error.localizedDescription,
+                createdAt: now,
+                updatedAt: Self.isoNow(),
+                finishedAt: Self.isoNow()
             )
             lastError = error.localizedDescription
         }
@@ -836,6 +849,10 @@ final class AppState: ObservableObject {
     private static func generateDefaultRuntimeAuthToken() -> String {
         let suffix = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
         return "amaryllis-\(suffix)"
+    }
+
+    private static func isoNow() -> String {
+        ISO8601DateFormatter().string(from: Date())
     }
 
     private static func discoverRuntimeDirectory() -> String {
