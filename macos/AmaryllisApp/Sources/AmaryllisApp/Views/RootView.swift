@@ -43,6 +43,7 @@ struct RootView: View {
                             .tracking(0.7)
                         Spacer()
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.vertical, 8)
                     .padding(.horizontal, 10)
                     .background(
@@ -56,7 +57,9 @@ struct RootView: View {
                                 lineWidth: 1
                             )
                     )
+                    .contentShape(Rectangle())
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .buttonStyle(.plain)
                 .foregroundStyle(appState.selectedTab == tab ? AmaryllisTheme.textPrimary : AmaryllisTheme.textSecondary)
             }
