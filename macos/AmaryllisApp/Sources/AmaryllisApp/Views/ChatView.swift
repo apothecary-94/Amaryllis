@@ -387,8 +387,10 @@ struct ChatView: View {
         let model = selectedModelID.isEmpty ? nil : selectedModelID
         let inferredProvider = model.flatMap(providerForModel)
         let resolvedProvider = inferredProvider ?? provider
-        let tools = toolsEnabled ? chatTools : []
         let useAutoRouting = autoRoutingEnabled && model == nil
+        let providerSupportsToolCalls = useAutoRouting ? true : providerSupportsTools(resolvedProvider)
+        let effectiveToolsEnabled = toolsEnabled && providerSupportsToolCalls
+        let tools = effectiveToolsEnabled ? chatTools : []
         let route = useAutoRouting ? APIChatRoutingOptions(
             mode: routingMode,
             requireStream: isStreaming && tools.isEmpty,
@@ -406,6 +408,12 @@ struct ChatView: View {
         Task {
             if toolsEnabled && appState.availableTools.isEmpty {
                 await appState.refreshToolingState()
+            }
+            if toolsEnabled && !providerSupportsToolCalls {
+                await MainActor.run {
+                    let providerLabel = (providerTarget ?? resolvedProvider ?? "selected provider")
+                    appState.lastError = "Tools are not supported for \(providerLabel). Sent as regular chat."
+                }
             }
             let runtimeReady = await appState.ensureChatReady()
             if !runtimeReady {
@@ -506,16 +514,29 @@ struct ChatView: View {
 
                     let pendingPromptIDs = pendingPermissionPromptIDs(from: response.toolEvents)
                     var content = response.choices.first?.message.content ?? ""
+                    let hasToolEvents = !pendingPromptIDs.isEmpty || !(response.toolEvents ?? []).isEmpty
+                    if effectiveToolsEnabled && !hasToolEvents && looksLikeToolCallJSON(content) {
+                        let retryWithoutTools = try await appState.apiClient.chatCompletions(
+                            model: modelTarget,
+                            provider: providerTarget,
+                            sessionId: chatSessionID,
+                            messages: payload,
+                            tools: nil,
+                            routing: route
+                        )
+                        response = retryWithoutTools
+                        content = retryWithoutTools.choices.first?.message.content ?? content
+                    }
                     let routingTrace = renderRoutingTrace(response.routing)
-                    if !routingTrace.isEmpty {
+                    if showAdvancedControls && !routingTrace.isEmpty {
                         content += "\n\n\(routingTrace)"
                     }
                     let firstTrace = renderToolTrace(response.toolEvents)
-                    if !firstTrace.isEmpty {
+                    if showAdvancedControls && !firstTrace.isEmpty {
                         content += "\n\n\(firstTrace)"
                     }
                     let firstPolicyWarning = renderPolicyWarning(events: response.toolEvents, errorText: nil)
-                    if !firstPolicyWarning.isEmpty {
+                    if showAdvancedControls && !firstPolicyWarning.isEmpty {
                         content += "\n\n\(firstPolicyWarning)"
                     }
 
@@ -541,15 +562,15 @@ struct ChatView: View {
 
                             var retriedContent = response.choices.first?.message.content ?? content
                             let retryRoutingTrace = renderRoutingTrace(response.routing)
-                            if !retryRoutingTrace.isEmpty {
+                            if showAdvancedControls && !retryRoutingTrace.isEmpty {
                                 retriedContent += "\n\n\(retryRoutingTrace)"
                             }
                             let retryTrace = renderToolTrace(response.toolEvents)
-                            if !retryTrace.isEmpty {
+                            if showAdvancedControls && !retryTrace.isEmpty {
                                 retriedContent += "\n\n\(retryTrace)"
                             }
                             let retryPolicyWarning = renderPolicyWarning(events: response.toolEvents, errorText: nil)
-                            if !retryPolicyWarning.isEmpty {
+                            if showAdvancedControls && !retryPolicyWarning.isEmpty {
                                 retriedContent += "\n\n\(retryPolicyWarning)"
                             }
                             await MainActor.run {
@@ -765,6 +786,32 @@ struct ChatView: View {
             }
         }
         return nil
+    }
+
+    private func providerSupportsTools(_ providerName: String?) -> Bool {
+        guard let providerName, !providerName.isEmpty else {
+            return true
+        }
+        guard let caps = appState.modelCatalog?.capabilities?[providerName] else {
+            return true
+        }
+        return caps.supportsTools ?? true
+    }
+
+    private func looksLikeToolCallJSON(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("{"), trimmed.hasSuffix("}") else {
+            return false
+        }
+        guard let data = trimmed.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let dict = object as? [String: Any] else {
+            return false
+        }
+        if dict["name"] is String, dict["arguments"] != nil {
+            return true
+        }
+        return false
     }
 }
 

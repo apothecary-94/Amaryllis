@@ -63,10 +63,14 @@ struct APIModelCatalog: Decodable {
     struct ProviderCapability: Decodable {
         let supportsDownload: Bool
         let supportsLoad: Bool
+        let supportsTools: Bool?
+        let supportsStream: Bool?
 
         private enum CodingKeys: String, CodingKey {
             case supportsDownload = "supports_download"
             case supportsLoad = "supports_load"
+            case supportsTools = "supports_tools"
+            case supportsStream = "supports_stream"
         }
     }
 
