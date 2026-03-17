@@ -5,6 +5,7 @@ import inspect
 import json
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
@@ -426,16 +427,16 @@ class MLXProvider:
             if self.active_model != model or self._model is None or self._tokenizer is None:
                 self.load_model(model)
 
-            prompt = self._messages_to_prompt(messages)
+            prompt = self._build_prompt(messages=messages, tokenizer=self._tokenizer)
             generate_fn = self._generate_fn
             if generate_fn is None or self._model is None or self._tokenizer is None:
                 raise RuntimeError("MLX model is not loaded")
 
-            attempts = [
-                {"max_tokens": max_tokens, "temp": temperature, "verbose": False},
-                {"max_tokens": max_tokens, "temperature": temperature, "verbose": False},
-                {"max_tokens": max_tokens, "verbose": False},
-            ]
+            attempts = self._build_generation_attempts(
+                generate_fn=generate_fn,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
 
             last_exc: Exception | None = None
             for kwargs in attempts:
@@ -443,9 +444,8 @@ class MLXProvider:
                     output = generate_fn(self._model, self._tokenizer, prompt=prompt, **kwargs)
                     if output is None:
                         return ""
-                    if isinstance(output, str):
-                        return output.strip()
-                    return str(output).strip()
+                    raw_text = output if isinstance(output, str) else str(output)
+                    return self._normalize_generation_output(raw_text, prompt=prompt)
                 except TypeError as exc:
                     last_exc = exc
                     continue
@@ -472,6 +472,147 @@ class MLXProvider:
         if chunks:
             chunks[-1] = chunks[-1].rstrip()
         return iter(chunks)
+
+    @staticmethod
+    def _build_generation_attempts(
+        *,
+        generate_fn: Callable[..., Any],
+        max_tokens: int,
+        temperature: float,
+    ) -> list[dict[str, Any]]:
+        # Backward/forward compatibility across mlx_lm generate signatures.
+        attempts: list[dict[str, Any]] = [
+            {"max_tokens": max_tokens, "temp": temperature, "verbose": False},
+            {"max_tokens": max_tokens, "temperature": temperature, "verbose": False},
+            {"max_tokens": max_tokens, "verbose": False},
+        ]
+        stop_sequences = [
+            "\nUSER:",
+            "\nUser:",
+            "\nuser:",
+            "\n### User",
+            "\nHuman:",
+            "<|user|>",
+            "<|im_start|>user",
+        ]
+
+        try:
+            signature = inspect.signature(generate_fn)
+            params = signature.parameters
+            has_var_kwargs = any(
+                parameter.kind == inspect.Parameter.VAR_KEYWORD
+                for parameter in params.values()
+            )
+        except Exception:
+            params = {}
+            has_var_kwargs = True
+
+        def supports(name: str) -> bool:
+            return has_var_kwargs or name in params
+
+        stop_key: str | None = None
+        for candidate in ("stop", "stop_sequences", "stop_words"):
+            if supports(candidate):
+                stop_key = candidate
+                break
+
+        normalized: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for attempt in attempts:
+            row = dict(attempt)
+            if not has_var_kwargs:
+                row = {key: value for key, value in row.items() if key in params}
+            if stop_key is not None:
+                row[stop_key] = stop_sequences
+            marker = json.dumps(row, sort_keys=True, default=str)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            normalized.append(row)
+        return normalized or [{"max_tokens": max_tokens}]
+
+    @staticmethod
+    def _normalize_chat_messages(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
+        normalized: list[dict[str, str]] = []
+        for item in messages:
+            if not isinstance(item, dict):
+                continue
+            role_raw = str(item.get("role", "user")).strip().lower()
+            role = role_raw if role_raw in {"system", "user", "assistant"} else "user"
+            content = MLXProvider._content_to_text(item.get("content"))
+            if not content:
+                continue
+            normalized.append({"role": role, "content": content})
+        return normalized
+
+    @staticmethod
+    def _content_to_text(value: Any) -> str:
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, list):
+            chunks: list[str] = []
+            for item in value:
+                if isinstance(item, dict):
+                    text = item.get("text")
+                    if isinstance(text, str) and text.strip():
+                        chunks.append(text.strip())
+            return "\n".join(chunks).strip()
+        if value is None:
+            return ""
+        return str(value).strip()
+
+    @staticmethod
+    def _build_prompt(messages: list[dict[str, Any]], tokenizer: Any) -> str:
+        normalized_messages = MLXProvider._normalize_chat_messages(messages)
+        apply_chat_template = getattr(tokenizer, "apply_chat_template", None)
+        if callable(apply_chat_template):
+            kwargs: dict[str, Any] = {"tokenize": False}
+            try:
+                signature = inspect.signature(apply_chat_template)
+                if "add_generation_prompt" in signature.parameters:
+                    kwargs["add_generation_prompt"] = True
+            except Exception:
+                kwargs["add_generation_prompt"] = True
+            try:
+                rendered = apply_chat_template(normalized_messages, **kwargs)
+                if isinstance(rendered, str) and rendered.strip():
+                    return rendered
+            except Exception:
+                pass
+        return MLXProvider._messages_to_prompt(normalized_messages)
+
+    @staticmethod
+    def _normalize_generation_output(raw_text: str, *, prompt: str) -> str:
+        text = str(raw_text or "").strip()
+        if not text:
+            return ""
+
+        prompt_trimmed = str(prompt or "").strip()
+        if prompt_trimmed and text.startswith(prompt_trimmed):
+            text = text[len(prompt_trimmed):].lstrip()
+
+        # Remove common assistant prefixes.
+        text = re.sub(r"^\s*(assistant|Assistant|ASSISTANT)\s*:\s*", "", text)
+        for prefix in ("<|assistant|>", "<|im_start|>assistant"):
+            if text.startswith(prefix):
+                text = text[len(prefix):].lstrip()
+
+        # Keep only the first assistant turn.
+        turn_markers = [
+            "\nUSER:",
+            "\nUser:",
+            "\nuser:",
+            "\n### User",
+            "\nHuman:",
+            "<|user|>",
+            "<|im_start|>user",
+        ]
+        cut_positions = [text.find(marker) for marker in turn_markers]
+        cut_positions = [position for position in cut_positions if position > 0]
+        if cut_positions:
+            text = text[: min(cut_positions)]
+
+        return text.strip()
 
     @staticmethod
     def _label_from_model_id(model_id: str) -> str:
