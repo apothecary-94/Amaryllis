@@ -236,26 +236,27 @@ class OllamaProvider:
         max_tokens: int = 512,
     ) -> str:
         with httpx.Client(base_url=self.base_url, timeout=120.0) as client:
-            response = client.post(
-                "/api/chat",
-                json={
-                    "model": model,
-                    "messages": messages,
-                    "stream": False,
-                    "options": {
-                        "temperature": temperature,
-                        "num_predict": max_tokens,
-                    },
-                },
-            )
-            response.raise_for_status()
-            payload = response.json()
-
-        message = payload.get("message", {})
-        content = message.get("content")
-        if content is None:
-            return ""
-        return str(content)
+            try:
+                return self._chat_via_chat_api(
+                    client=client,
+                    messages=messages,
+                    model=model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code != 404:
+                    raise
+                self.logger.warning(
+                    "ollama_chat_endpoint_404_fallback path=/api/chat fallback=/api/generate"
+                )
+                return self._chat_via_generate_api(
+                    client=client,
+                    messages=messages,
+                    model=model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
 
     def stream_chat(
         self,
@@ -265,30 +266,156 @@ class OllamaProvider:
         max_tokens: int = 512,
     ) -> Iterator[str]:
         with httpx.Client(base_url=self.base_url, timeout=120.0) as client:
-            with client.stream(
-                "POST",
-                "/api/chat",
-                json={
-                    "model": model,
-                    "messages": messages,
-                    "stream": True,
-                    "options": {
-                        "temperature": temperature,
-                        "num_predict": max_tokens,
-                    },
+            try:
+                yield from self._stream_chat_via_chat_api(
+                    client=client,
+                    messages=messages,
+                    model=model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+                return
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code != 404:
+                    raise
+                self.logger.warning(
+                    "ollama_stream_chat_endpoint_404_fallback path=/api/chat fallback=/api/generate"
+                )
+            yield from self._stream_chat_via_generate_api(
+                client=client,
+                messages=messages,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+
+    def _chat_via_chat_api(
+        self,
+        *,
+        client: httpx.Client,
+        messages: list[dict[str, Any]],
+        model: str,
+        temperature: float,
+        max_tokens: int,
+    ) -> str:
+        response = client.post(
+            "/api/chat",
+            json={
+                "model": model,
+                "messages": messages,
+                "stream": False,
+                "options": {
+                    "temperature": temperature,
+                    "num_predict": max_tokens,
                 },
-            ) as response:
-                response.raise_for_status()
-                for line in response.iter_lines():
-                    if not line:
-                        continue
-                    chunk = json.loads(line)
-                    message = chunk.get("message", {})
-                    content = message.get("content", "")
-                    if content:
-                        yield str(content)
-                    if chunk.get("done"):
-                        break
+            },
+        )
+        response.raise_for_status()
+        payload = response.json()
+        message = payload.get("message", {})
+        content = message.get("content")
+        if content is None:
+            return ""
+        return str(content)
+
+    def _chat_via_generate_api(
+        self,
+        *,
+        client: httpx.Client,
+        messages: list[dict[str, Any]],
+        model: str,
+        temperature: float,
+        max_tokens: int,
+    ) -> str:
+        response = client.post(
+            "/api/generate",
+            json={
+                "model": model,
+                "prompt": self._messages_to_prompt(messages),
+                "stream": False,
+                "options": {
+                    "temperature": temperature,
+                    "num_predict": max_tokens,
+                },
+            },
+        )
+        response.raise_for_status()
+        payload = response.json()
+        content = payload.get("response")
+        if content is None:
+            return ""
+        return str(content)
+
+    def _stream_chat_via_chat_api(
+        self,
+        *,
+        client: httpx.Client,
+        messages: list[dict[str, Any]],
+        model: str,
+        temperature: float,
+        max_tokens: int,
+    ) -> Iterator[str]:
+        with client.stream(
+            "POST",
+            "/api/chat",
+            json={
+                "model": model,
+                "messages": messages,
+                "stream": True,
+                "options": {
+                    "temperature": temperature,
+                    "num_predict": max_tokens,
+                },
+            },
+        ) as response:
+            response.raise_for_status()
+            for line in response.iter_lines():
+                if not line:
+                    continue
+                chunk = json.loads(line)
+                if chunk.get("error"):
+                    raise RuntimeError(str(chunk.get("error")))
+                message = chunk.get("message", {})
+                content = message.get("content", "")
+                if content:
+                    yield str(content)
+                if chunk.get("done"):
+                    break
+
+    def _stream_chat_via_generate_api(
+        self,
+        *,
+        client: httpx.Client,
+        messages: list[dict[str, Any]],
+        model: str,
+        temperature: float,
+        max_tokens: int,
+    ) -> Iterator[str]:
+        with client.stream(
+            "POST",
+            "/api/generate",
+            json={
+                "model": model,
+                "prompt": self._messages_to_prompt(messages),
+                "stream": True,
+                "options": {
+                    "temperature": temperature,
+                    "num_predict": max_tokens,
+                },
+            },
+        ) as response:
+            response.raise_for_status()
+            for line in response.iter_lines():
+                if not line:
+                    continue
+                chunk = json.loads(line)
+                if chunk.get("error"):
+                    raise RuntimeError(str(chunk.get("error")))
+                content = chunk.get("response", "")
+                if content:
+                    yield str(content)
+                if chunk.get("done"):
+                    break
 
     @staticmethod
     def _label_from_model_id(model_id: str) -> str:
@@ -317,6 +444,30 @@ class OllamaProvider:
             bytes_per_param = 0.53
         estimated = int(params_b * 1_000_000_000 * bytes_per_param)
         return estimated if estimated > 0 else None
+
+    @staticmethod
+    def _messages_to_prompt(messages: list[dict[str, Any]]) -> str:
+        parts: list[str] = []
+        for item in messages:
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role", "user")).strip().lower() or "user"
+            raw_content = item.get("content", "")
+            if isinstance(raw_content, str):
+                content = raw_content.strip()
+            else:
+                content = str(raw_content).strip()
+            if not content:
+                continue
+            if role == "system":
+                prefix = "System"
+            elif role == "assistant":
+                prefix = "Assistant"
+            else:
+                prefix = "User"
+            parts.append(f"{prefix}: {content}")
+        parts.append("Assistant:")
+        return "\n".join(parts)
 
 
 def _to_int(value: Any) -> int | None:
