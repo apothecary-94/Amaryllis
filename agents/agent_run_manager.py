@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import random
 from queue import Empty, Queue
 from threading import Event, Thread
 from datetime import datetime, timedelta, timezone
@@ -10,6 +9,13 @@ from typing import Any, Protocol
 from uuid import uuid4
 
 from agents.agent import Agent
+from agents.run_policy import (
+    KILL_SWITCH_STOP_REASON,
+    RUN_RETRYABLE_FAILURE_CLASSES,
+    classify_failure,
+    resolve_retry_decision,
+    retry_delay_seconds,
+)
 from models.provider_errors import ProviderOperationError, classify_provider_error
 from storage.database import Database
 from tasks.task_executor import (
@@ -34,16 +40,6 @@ class RunBudgetExceededError(TaskGuardrailError):
 class RunLeaseLostError(TaskGuardrailError):
     pass
 
-
-RUN_RETRYABLE_FAILURE_CLASSES: set[str] = {
-    "timeout",
-    "rate_limit",
-    "network",
-    "server",
-    "unavailable",
-    "circuit_open",
-}
-KILL_SWITCH_STOP_REASON = "kill_switch_triggered"
 
 CORE_ISSUE_DEFINITIONS: tuple[tuple[str, str, int, list[str]], ...] = (
     (STEP_PREPARE_CONTEXT, "Prepare context", 10, []),
@@ -1032,10 +1028,19 @@ class AgentRunManager:
             )
         except Exception as exc:
             error_message = str(exc)
-            failure = self._classify_failure(exc)
-            retryable = bool(failure.get("retryable", False))
-            failure_class = str(failure.get("failure_class", "unknown"))
-            stop_reason = str(failure.get("stop_reason", "unknown_error"))
+            failure = classify_failure(
+                exc,
+                run_budget_error_type=RunBudgetExceededError,
+                run_lease_lost_error_type=RunLeaseLostError,
+                task_timeout_error_type=TaskTimeoutError,
+                task_guardrail_error_type=TaskGuardrailError,
+                provider_operation_error_type=ProviderOperationError,
+                provider_error_classifier=classify_provider_error,
+                retryable_failure_classes=RUN_RETRYABLE_FAILURE_CLASSES,
+            )
+            retryable = bool(failure.retryable)
+            failure_class = str(failure.failure_class)
+            stop_reason = str(failure.stop_reason)
             attempt_duration_ms = round((time.monotonic() - attempt_started_monotonic) * 1000.0, 2)
             metrics_after_error = self._finalize_run_metrics(
                 metrics=live_usage,
@@ -1050,6 +1055,29 @@ class AgentRunManager:
             else:
                 canceled = int(run.get("cancel_requested", 0)) == 1
             cancel_stop_reason = self._resolve_cancel_stop_reason(latest_after_error or run)
+            retry_decision = resolve_retry_decision(
+                attempt=attempt,
+                max_attempts=max_attempts,
+                retryable=retryable,
+                canceled=canceled,
+                stop_reason=stop_reason,
+                failure_class=failure_class,
+                cancel_stop_reason=cancel_stop_reason,
+            )
+            schedule_retry = bool(retry_decision.schedule_retry)
+            backoff_sec = (
+                retry_delay_seconds(
+                    attempt=attempt,
+                    retry_backoff_sec=self.retry_backoff_sec,
+                    retry_max_backoff_sec=self.retry_max_backoff_sec,
+                    retry_jitter_sec=self.retry_jitter_sec,
+                )
+                if schedule_retry
+                else 0.0
+            )
+            final_status = retry_decision.final_status
+            final_failure_class = retry_decision.final_failure_class
+            final_stop_reason = retry_decision.final_stop_reason
             with self.database.write_transaction():
                 self.database.append_agent_run_checkpoint(
                     run_id=run_id,
@@ -1071,7 +1099,6 @@ class AgentRunManager:
                     error_message=error_message,
                 )
 
-                schedule_retry = attempt < max_attempts and not canceled and retryable
                 if schedule_retry:
                     self.database.update_agent_run_fields(
                         run_id,
@@ -1082,11 +1109,8 @@ class AgentRunManager:
                         metrics_json=metrics_after_error,
                     )
                 else:
-                    final_status = "canceled" if canceled else "failed"
-                    final_failure_class = "canceled" if canceled else failure_class
-                    final_stop_reason = cancel_stop_reason if canceled else stop_reason
-                    if not canceled and retryable and attempt >= max_attempts:
-                        final_stop_reason = "max_attempts_exhausted"
+                    if final_status is None or final_failure_class is None or final_stop_reason is None:
+                        raise AssertionError("Retry policy produced invalid terminal decision.")
                     self.database.update_agent_run_fields(
                         run_id,
                         status=final_status,
@@ -1105,7 +1129,6 @@ class AgentRunManager:
                         )
 
                 if schedule_retry:
-                    backoff_sec = self._retry_delay_seconds(attempt=attempt)
                     self.database.append_agent_run_checkpoint(
                         run_id=run_id,
                         checkpoint={
@@ -1119,6 +1142,8 @@ class AgentRunManager:
                         },
                     )
                 else:
+                    if final_status is None or final_failure_class is None or final_stop_reason is None:
+                        raise AssertionError("Retry policy produced invalid terminal checkpoint.")
                     self.database.append_agent_run_checkpoint(
                         run_id=run_id,
                         checkpoint={
@@ -1132,11 +1157,12 @@ class AgentRunManager:
                     )
 
             if schedule_retry:
-                backoff_sec = self._retry_delay_seconds(attempt=attempt)
                 if backoff_sec > 0:
                     time.sleep(backoff_sec)
                 self._queue.put(run_id)
             else:
+                if final_status is None or final_failure_class is None or final_stop_reason is None:
+                    raise AssertionError("Retry policy produced invalid terminal emit payload.")
                 self._emit(
                     "agent_run_canceled" if final_status == "canceled" else "agent_run_failed",
                     {
@@ -1905,71 +1931,6 @@ class AgentRunManager:
         if not refreshed:
             raise RunLeaseLostError("Run lease ownership lost during execution.")
 
-    def _classify_failure(self, exc: Exception) -> dict[str, Any]:
-        if isinstance(exc, RunBudgetExceededError):
-            return {
-                "failure_class": "budget_exceeded",
-                "stop_reason": "budget_exceeded",
-                "retryable": False,
-            }
-        if isinstance(exc, RunLeaseLostError):
-            return {
-                "failure_class": "lease_lost",
-                "stop_reason": "lease_lost",
-                "retryable": True,
-            }
-        if isinstance(exc, TaskTimeoutError):
-            return {
-                "failure_class": "timeout",
-                "stop_reason": "timeout",
-                "retryable": True,
-            }
-        if isinstance(exc, TaskGuardrailError):
-            message = str(exc).lower()
-            if "budget" in message:
-                return {
-                    "failure_class": "budget_exceeded",
-                    "stop_reason": "budget_exceeded",
-                    "retryable": False,
-                }
-            return {
-                "failure_class": "guardrail",
-                "stop_reason": "guardrail_rejected",
-                "retryable": False,
-            }
-        if isinstance(exc, ProviderOperationError):
-            error_class = str(exc.info.error_class)
-            return {
-                "failure_class": error_class,
-                "stop_reason": f"provider_{error_class}",
-                "retryable": error_class in RUN_RETRYABLE_FAILURE_CLASSES,
-            }
-        if isinstance(exc, (ValueError, TypeError, AssertionError)):
-            return {
-                "failure_class": "invalid_request",
-                "stop_reason": "invalid_request",
-                "retryable": False,
-            }
-
-        provider_info = classify_provider_error(
-            provider="unknown",
-            operation="agent_run",
-            error=exc,
-        )
-        provider_class = str(provider_info.error_class)
-        if provider_class != "unknown":
-            return {
-                "failure_class": provider_class,
-                "stop_reason": f"provider_{provider_class}",
-                "retryable": provider_class in RUN_RETRYABLE_FAILURE_CLASSES,
-            }
-
-        return {
-            "failure_class": "unknown",
-            "stop_reason": "unknown_error",
-            "retryable": False,
-        }
-
     @staticmethod
     def _resolve_cancel_stop_reason(run: dict[str, Any]) -> str:
         stop_reason = str(run.get("stop_reason") or "").strip().lower()
@@ -2123,14 +2084,6 @@ class AgentRunManager:
             return max_duration_sec
         elapsed = (datetime.now(timezone.utc) - start_dt).total_seconds()
         return max(0.0, max_duration_sec - max(0.0, elapsed))
-
-    def _retry_delay_seconds(self, *, attempt: int) -> float:
-        if self.retry_backoff_sec <= 0:
-            return 0.0
-        exponential = self.retry_backoff_sec * (2 ** max(0, attempt - 1))
-        bounded = min(exponential, self.retry_max_backoff_sec) if self.retry_max_backoff_sec > 0 else exponential
-        jitter = random.uniform(0.0, self.retry_jitter_sec) if self.retry_jitter_sec > 0 else 0.0
-        return round(max(0.0, bounded + jitter), 3)
 
     @classmethod
     def _distribution(cls, values: list[float]) -> dict[str, float]:
