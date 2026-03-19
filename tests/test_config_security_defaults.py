@@ -35,6 +35,7 @@ class ConfigSecurityDefaultsTests(unittest.TestCase):
         self.assertTrue(config.backup_enabled)
         self.assertTrue(config.backup_verify_on_create)
         self.assertTrue(config.backup_restore_drill_enabled)
+        self.assertEqual(config.autonomy_level, "l3")
 
     def test_invalid_modes_fallback_to_strict(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amaryllis-config-tests-") as tmp:
@@ -47,6 +48,7 @@ class ConfigSecurityDefaultsTests(unittest.TestCase):
                     "AMARYLLIS_TOOL_APPROVAL_ENFORCEMENT": "invalid",
                     "AMARYLLIS_PLUGIN_SIGNING_MODE": "invalid",
                     "AMARYLLIS_PLUGIN_RUNTIME_MODE": "invalid",
+                    "AMARYLLIS_AUTONOMY_LEVEL": "invalid",
                 },
                 clear=True,
             ):
@@ -55,6 +57,7 @@ class ConfigSecurityDefaultsTests(unittest.TestCase):
         self.assertEqual(config.tool_approval_enforcement, "strict")
         self.assertEqual(config.plugin_signing_mode, "strict")
         self.assertEqual(config.plugin_runtime_mode, "sandboxed")
+        self.assertEqual(config.autonomy_level, "l3")
 
     def test_production_profile_rejects_non_strict_security_modes(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amaryllis-config-tests-") as tmp:

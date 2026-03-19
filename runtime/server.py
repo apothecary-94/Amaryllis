@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 import logging
 import time
 from dataclasses import dataclass
@@ -45,6 +46,7 @@ from storage.database import Database
 from storage.vector_store import VectorStore
 from tasks.task_executor import TaskExecutor
 from tools.mcp_client_registry import MCPClientRegistry
+from tools.autonomy_policy import AutonomyPolicy
 from tools.permission_manager import ToolPermissionManager
 from tools.policy import ToolIsolationPolicy
 from tools.sandbox_runner import ToolSandboxConfig, ToolSandboxRunner
@@ -190,6 +192,7 @@ def create_services() -> ServiceContainer:
         permission_manager=tool_permission_manager,
         budget_guard=tool_budget_guard,
         approval_enforcement_mode=config.tool_approval_enforcement,
+        autonomy_policy=AutonomyPolicy(level=config.autonomy_level),
         sandbox_runner=(
             ToolSandboxRunner(
                 config=ToolSandboxConfig(
@@ -346,10 +349,39 @@ def create_services() -> ServiceContainer:
 def create_app() -> FastAPI:
     services = create_services()
 
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        try:
+            yield
+        finally:
+            logger.info("shutdown_start")
+            services.telemetry.emit(
+                "runtime_shutdown_start",
+                {
+                    "app": services.config.app_name,
+                },
+            )
+            services.automation_scheduler.stop()
+            if services.memory_consolidation_worker is not None:
+                services.memory_consolidation_worker.stop()
+            if services.backup_scheduler is not None:
+                services.backup_scheduler.stop()
+            services.agent_run_manager.stop()
+            services.database.close()
+            services.vector_store.persist()
+            services.telemetry.emit(
+                "runtime_shutdown_done",
+                {
+                    "app": services.config.app_name,
+                },
+            )
+            logger.info("shutdown_done")
+
     app = FastAPI(
         title="Amaryllis Runtime",
         version=services.config.app_version,
         description="Local AI brain node runtime for macOS.",
+        lifespan=lifespan,
     )
     app.state.services = services
     services.telemetry.emit(
@@ -638,6 +670,7 @@ def create_app() -> FastAPI:
             "request_id": request_id_from_request(request),
             "active_provider": services.model_manager.active_provider,
             "active_model": services.model_manager.active_model,
+            "autonomy_level": services.config.autonomy_level,
             "providers": checks,
         }
 
@@ -652,6 +685,7 @@ def create_app() -> FastAPI:
             "scopes": sorted(auth.scopes),
             "active_provider": services.model_manager.active_provider,
             "active_model": services.model_manager.active_model,
+            "autonomy_level": services.config.autonomy_level,
             "providers": checks,
         }
 
@@ -696,31 +730,6 @@ def create_app() -> FastAPI:
             "policy": services.api_lifecycle.describe(),
             "compat_contract_path": str(services.config.api_compat_contract_path),
         }
-
-    @app.on_event("shutdown")
-    def shutdown_event() -> None:
-        logger.info("shutdown_start")
-        services.telemetry.emit(
-            "runtime_shutdown_start",
-            {
-                "app": services.config.app_name,
-            },
-        )
-        services.automation_scheduler.stop()
-        if services.memory_consolidation_worker is not None:
-            services.memory_consolidation_worker.stop()
-        if services.backup_scheduler is not None:
-            services.backup_scheduler.stop()
-        services.agent_run_manager.stop()
-        services.database.close()
-        services.vector_store.persist()
-        services.telemetry.emit(
-            "runtime_shutdown_done",
-            {
-                "app": services.config.app_name,
-            },
-        )
-        logger.info("shutdown_done")
 
     return app
 

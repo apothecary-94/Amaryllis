@@ -20,18 +20,16 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.11.11"
 
       - name: Install runtime dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install \
-            fastapi \
-            "uvicorn[standard]" \
-            pydantic \
-            httpx \
-            numpy \
-            faiss-cpu
+          python -m pip install -r requirements.lock
+
+      - name: Check dependency drift
+        run: |
+          python scripts/release/check_dependency_drift.py
 
       - name: Run mandatory security HTTP/authz suite
         run: |
@@ -78,12 +76,16 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.11.11"
 
       - name: Install scanning dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install bandit pip-audit cyclonedx-bom
+
+      - name: Check dependency drift
+        run: |
+          python scripts/release/check_dependency_drift.py
 
       - name: SAST (Bandit, high severity/high confidence)
         run: |

@@ -130,6 +130,7 @@ class AppConfig:
     chat_max_messages: int
     chat_max_input_chars: int
     chat_max_tokens: int
+    autonomy_level: str
     tool_approval_enforcement: str
     tool_isolation_profile: str
     tool_budget_window_sec: float
@@ -251,6 +252,12 @@ class AppConfig:
         ).strip().lower()
         if tool_approval_enforcement not in {"strict", "prompt_and_allow"}:
             tool_approval_enforcement = "strict"
+        autonomy_level = os.getenv(
+            "AMARYLLIS_AUTONOMY_LEVEL",
+            "l3",
+        ).strip().lower()
+        if autonomy_level not in {"l0", "l1", "l2", "l3", "l4", "l5"}:
+            autonomy_level = "l3"
         api_release_channel = os.getenv(
             "AMARYLLIS_RELEASE_CHANNEL",
             "stable",
@@ -526,6 +533,7 @@ class AppConfig:
             chat_max_messages=max(1, int(os.getenv("AMARYLLIS_CHAT_MAX_MESSAGES", "80"))),
             chat_max_input_chars=max(2000, int(os.getenv("AMARYLLIS_CHAT_MAX_INPUT_CHARS", "50000"))),
             chat_max_tokens=max(64, int(os.getenv("AMARYLLIS_CHAT_MAX_TOKENS", "4096"))),
+            autonomy_level=autonomy_level,
             tool_approval_enforcement=tool_approval_enforcement,
             tool_isolation_profile=tool_isolation_profile,
             tool_budget_window_sec=max(1.0, float(os.getenv("AMARYLLIS_TOOL_BUDGET_WINDOW_SEC", "60"))),

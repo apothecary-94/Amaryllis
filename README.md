@@ -234,6 +234,23 @@ pip install -U pip
 pip install -r requirements.txt
 ```
 
+Reproducible bootstrap path (recommended for clean machine / CI parity):
+
+```bash
+./scripts/bootstrap/reproducible_local_bootstrap.sh
+```
+
+Deterministic dependency path (manual):
+
+```bash
+pip install -r requirements.lock
+python scripts/release/check_dependency_drift.py
+python scripts/eval/run_golden_tasks.py --validate-only
+```
+
+Reference:
+- `docs/reproducible-bootstrap.md`
+
 ## Run
 
 ```bash
@@ -1065,6 +1082,47 @@ Run unit tests (memory + work mode + tools/MCP + automation):
 python3 -m unittest discover -s tests -p "test_*.py" -v
 ```
 
+## Golden Task Eval (Phase 0 Foundation)
+
+Golden task suite (developer workflows):
+- `eval/golden_tasks/dev_v1.json`
+
+Validate suite schema:
+
+```bash
+python3 scripts/eval/run_golden_tasks.py --validate-only
+```
+
+Run first 5 tasks against local runtime:
+
+```bash
+python3 scripts/eval/run_golden_tasks.py --max-tasks 5 --strict
+```
+
+Blocking performance smoke gate (p95 latency + error-rate budget):
+
+```bash
+python3 scripts/release/perf_smoke_gate.py --iterations 3 --max-p95-latency-ms 350 --max-error-rate-pct 0
+```
+
+Nightly extended reliability run (success/latency/stability + trend deltas):
+
+```bash
+python3 scripts/release/nightly_reliability_run.py --iterations 12 --baseline eval/baselines/reliability/nightly_smoke_baseline.json --strict
+```
+
+Reference:
+- `docs/nightly-reliability.md`
+
+Autonomy level contract (L0-L5):
+
+```bash
+export AMARYLLIS_AUTONOMY_LEVEL=l3
+```
+
+Reference:
+- `docs/autonomy-levels.md`
+
 ## Security CI Gate
 
 GitHub Actions workflow:
@@ -1090,6 +1148,7 @@ Release/pull-request gate is blocking and includes:
   - `AMARYLLIS_AUTH_ENABLED=true|false`
   - `AMARYLLIS_AUTH_TOKENS=token-user:user-001:user,token-admin:admin:admin|user,token-service:svc:service`
   - `AMARYLLIS_SECURITY_PROFILE=production|development`
+  - `AMARYLLIS_AUTONOMY_LEVEL=l0|l1|l2|l3|l4|l5`
   - `AMARYLLIS_ALLOW_INSECURE_SECURITY_MODES=false|true`
   - `AMARYLLIS_OLLAMA_FALLBACK=true|false`
   - `AMARYLLIS_OLLAMA_URL=http://localhost:11434`
@@ -1334,6 +1393,11 @@ python scripts/release/compliance_ops_gate.py
 ```bash
 scripts/release/rollback_local.sh <tag-or-commit>
 ```
+
+## Jarvis Roadmap (Local Cognitive Platform)
+
+- Strategy and phased execution plan: `docs/jarvis-roadmap.md`
+- Phase 0 implementation backlog (with DoD and sprint status): `docs/jarvis-phase0-backlog.md`
 
 ## License
 

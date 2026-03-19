@@ -53,6 +53,7 @@ class MCPInvokeRequest(BaseModel):
 class ToolGuardrailsDebugResponse(BaseModel):
     request_id: str
     approval_enforcement_mode: str
+    autonomy_policy: dict[str, Any] = Field(default_factory=dict)
     isolation_policy: dict[str, Any]
     sandbox: dict[str, Any] = Field(default_factory=dict)
     budget: dict[str, Any]
@@ -288,6 +289,7 @@ def debug_tool_guardrails(
     return ToolGuardrailsDebugResponse(
         request_id=_request_id(request),
         approval_enforcement_mode=str(snapshot.get("approval_enforcement_mode", "prompt_and_allow")),
+        autonomy_policy=dict(snapshot.get("autonomy_policy", {})),
         isolation_policy=dict(snapshot.get("isolation_policy", {})),
         sandbox=dict(snapshot.get("sandbox", {})),
         budget=dict(snapshot.get("budget", {})),

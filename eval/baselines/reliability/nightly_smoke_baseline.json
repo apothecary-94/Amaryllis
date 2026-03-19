@@ -1,0 +1,10 @@
+{
+  "suite": "nightly_reliability_smoke_v1",
+  "version": "1",
+  "summary": {
+    "success_rate_pct": 100.0,
+    "p95_latency_ms": 120.0,
+    "latency_jitter_ms": 25.0,
+    "stability_score": 85.0
+  }
+}

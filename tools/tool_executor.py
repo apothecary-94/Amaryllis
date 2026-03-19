@@ -5,6 +5,7 @@ import logging
 import re
 from typing import Any, Callable
 
+from tools.autonomy_policy import AutonomyPolicy
 from tools.permission_manager import ToolPermissionManager
 from tools.policy import ToolIsolationPolicy
 from tools.sandbox_runner import ToolSandboxRunner
@@ -36,6 +37,7 @@ class ToolExecutor:
         permission_manager: ToolPermissionManager | None = None,
         budget_guard: ToolBudgetGuard | None = None,
         approval_enforcement_mode: str = "prompt_and_allow",
+        autonomy_policy: AutonomyPolicy | None = None,
         sandbox_runner: ToolSandboxRunner | None = None,
         telemetry_emitter: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> None:
@@ -44,6 +46,7 @@ class ToolExecutor:
         self.permission_manager = permission_manager or ToolPermissionManager()
         self.budget_guard = budget_guard or ToolBudgetGuard()
         self.approval_enforcement_mode = approval_enforcement_mode
+        self.autonomy_policy = autonomy_policy or AutonomyPolicy(level="l3")
         self.sandbox_runner = sandbox_runner
         self.telemetry_emitter = telemetry_emitter
         self.logger = logging.getLogger("amaryllis.tools.executor")
@@ -63,6 +66,25 @@ class ToolExecutor:
         if tool is None:
             raise ToolExecutionError(f"Unknown tool: {name}")
 
+        autonomy_decision = self.autonomy_policy.evaluate(
+            tool_name=name,
+            risk_level=str(getattr(tool, "risk_level", "medium")),
+        )
+        if not autonomy_decision.allow:
+            self._emit_telemetry(
+                "tool_autonomy_blocked",
+                {
+                    "tool": name,
+                    "request_id": request_id,
+                    "user_id": user_id,
+                    "session_id": session_id,
+                    "reason": autonomy_decision.reason,
+                    "autonomy_level": self.autonomy_policy.level,
+                    "risk_level": str(getattr(tool, "risk_level", "medium")),
+                },
+            )
+            raise ToolExecutionError(autonomy_decision.reason or f"Tool '{name}' blocked by autonomy policy")
+
         decision = self.policy.evaluate(tool=tool, arguments=arguments)
         if not decision.allow:
             self._emit_telemetry(
@@ -77,8 +99,19 @@ class ToolExecutor:
             )
             raise ToolExecutionError(decision.reason or f"Tool '{name}' is blocked by policy")
 
+        requires_approval = bool(decision.requires_approval or autonomy_decision.requires_approval)
+        approval_scope = self._merge_approval_scope(
+            decision.approval_scope,
+            autonomy_decision.approval_scope,
+        )
+        approval_ttl_sec = self._merge_approval_ttl(
+            decision.approval_ttl_sec,
+            autonomy_decision.approval_ttl_sec,
+        )
+        approval_reason = autonomy_decision.reason or f"Tool '{name}' requires manual approval."
+
         permission_prompt: dict[str, Any] | None = None
-        if decision.requires_approval:
+        if requires_approval:
             approved = False
             if permission_id:
                 approved = self.permission_manager.consume_if_approved(
@@ -107,9 +140,9 @@ class ToolExecutor:
                 permission_prompt = self.permission_manager.request(
                     tool_name=name,
                     arguments=arguments,
-                    reason=f"Tool '{name}' requires manual approval.",
-                    scope=str(decision.approval_scope or "request"),
-                    ttl_sec=int(decision.approval_ttl_sec or 300),
+                    reason=approval_reason,
+                    scope=str(approval_scope or "request"),
+                    ttl_sec=int(approval_ttl_sec or 300),
                     request_id=request_id,
                     user_id=user_id,
                     session_id=session_id,
@@ -127,6 +160,7 @@ class ToolExecutor:
                             "approval_mode": self.approval_enforcement_mode,
                             "risk_level": tool.risk_level,
                             "approval_mode_tool": tool.approval_mode,
+                            "autonomy_level": self.autonomy_policy.level,
                         },
                     )
                     raise PermissionRequiredError(
@@ -241,6 +275,7 @@ class ToolExecutor:
     ) -> dict[str, Any]:
         return {
             "approval_enforcement_mode": self.approval_enforcement_mode,
+            "autonomy_policy": self.autonomy_policy.describe(),
             "isolation_policy": self.policy.describe(),
             "sandbox": {
                 "enabled": self.sandbox_runner is not None,
@@ -269,6 +304,24 @@ class ToolExecutor:
             ),
             "plugin_signing": self.registry.plugin_discovery_report(limit=200),
         }
+
+    @staticmethod
+    def _merge_approval_scope(policy_scope: str | None, autonomy_scope: str | None) -> str | None:
+        order = {"request": 1, "session": 2}
+        current = str(policy_scope or "").strip().lower() or None
+        extra = str(autonomy_scope or "").strip().lower() or None
+        if current is None:
+            return extra
+        if extra is None:
+            return current
+        return extra if order.get(extra, 0) > order.get(current, 0) else current
+
+    @staticmethod
+    def _merge_approval_ttl(policy_ttl: int | None, autonomy_ttl: int | None) -> int | None:
+        first = int(policy_ttl) if isinstance(policy_ttl, int) and policy_ttl > 0 else 0
+        second = int(autonomy_ttl) if isinstance(autonomy_ttl, int) and autonomy_ttl > 0 else 0
+        merged = max(first, second)
+        return merged if merged > 0 else None
 
     @staticmethod
     def parse_tool_call(text: str) -> dict[str, Any] | None:

@@ -1,0 +1,267 @@
+{
+  "suite": "developer_local_jarvis_v1",
+  "version": "1.0.0",
+  "description": "Golden tasks for local-first developer assistant quality checks.",
+  "tasks": [
+    {
+      "id": "JDEV-001",
+      "title": "Traceback triage",
+      "category": "debugging",
+      "mode": "reasoning",
+      "prompt": "A Python service crashes with `KeyError: user_id` in production. Provide a root-cause analysis and a repair plan with testing steps.",
+      "expected": {
+        "min_response_chars": 280,
+        "requires_numbered_list": true,
+        "required_keywords": ["root cause", "repair", "test"],
+        "forbidden_keywords": ["as an ai", "cannot help"]
+      }
+    },
+    {
+      "id": "JDEV-002",
+      "title": "Refactor plan",
+      "category": "architecture",
+      "mode": "coding",
+      "prompt": "Create a practical refactor plan for splitting a 3000-line module into cohesive components without breaking behavior.",
+      "expected": {
+        "min_response_chars": 320,
+        "requires_numbered_list": true,
+        "required_keywords": ["boundary", "risk", "migration"],
+        "forbidden_keywords": []
+      }
+    },
+    {
+      "id": "JDEV-003",
+      "title": "Unit test strategy",
+      "category": "testing",
+      "mode": "coding",
+      "prompt": "Propose a unit test strategy for a task executor with retries, replans, and timeout handling.",
+      "expected": {
+        "min_response_chars": 260,
+        "requires_bullets": true,
+        "required_keywords": ["retry", "timeout", "edge case"],
+        "forbidden_keywords": []
+      }
+    },
+    {
+      "id": "JDEV-004",
+      "title": "API compatibility gate",
+      "category": "release",
+      "mode": "reasoning",
+      "prompt": "Design an API compatibility gate for CI that blocks breaking changes and reports contract drift.",
+      "expected": {
+        "min_response_chars": 240,
+        "requires_numbered_list": true,
+        "required_keywords": ["contract", "blocking", "ci"],
+        "forbidden_keywords": []
+      }
+    },
+    {
+      "id": "JDEV-005",
+      "title": "Performance triage",
+      "category": "performance",
+      "mode": "reasoning",
+      "prompt": "p95 latency increased from 700ms to 1500ms after a release. Give a triage plan and rollback criteria.",
+      "expected": {
+        "min_response_chars": 260,
+        "requires_numbered_list": true,
+        "required_keywords": ["p95", "rollback", "measure"],
+        "forbidden_keywords": []
+      }
+    },
+    {
+      "id": "JDEV-006",
+      "title": "Security hardening checklist",
+      "category": "security",
+      "mode": "reasoning",
+      "prompt": "Generate a security hardening checklist for a local AI runtime that executes tools and plugins.",
+      "expected": {
+        "min_response_chars": 260,
+        "requires_bullets": true,
+        "required_keywords": ["sandbox", "least privilege", "audit"],
+        "forbidden_keywords": []
+      }
+    },
+    {
+      "id": "JDEV-007",
+      "title": "Migration script review",
+      "category": "database",
+      "mode": "coding",
+      "prompt": "Review a SQLite migration strategy where foreign keys are added to existing large tables. List risks and mitigations.",
+      "expected": {
+        "min_response_chars": 250,
+        "requires_bullets": true,
+        "required_keywords": ["foreign key", "lock", "backup"],
+        "forbidden_keywords": []
+      }
+    },
+    {
+      "id": "JDEV-008",
+      "title": "Incident response draft",
+      "category": "operations",
+      "mode": "reasoning",
+      "prompt": "Draft a compact incident response workflow for auth token leakage in a self-hosted runtime.",
+      "expected": {
+        "min_response_chars": 230,
+        "requires_numbered_list": true,
+        "required_keywords": ["containment", "rotation", "postmortem"],
+        "forbidden_keywords": []
+      }
+    },
+    {
+      "id": "JDEV-009",
+      "title": "CLI command design",
+      "category": "developer_experience",
+      "mode": "coding",
+      "prompt": "Propose a CLI design for backup, verify, and restore-drill operations with clear flags and exit codes.",
+      "expected": {
+        "min_response_chars": 260,
+        "requires_code_block": true,
+        "required_keywords": ["exit code", "backup", "restore"],
+        "forbidden_keywords": []
+      }
+    },
+    {
+      "id": "JDEV-010",
+      "title": "Autonomy policy levels",
+      "category": "product_safety",
+      "mode": "reasoning",
+      "prompt": "Define autonomy levels L0-L5 for a local assistant and map each level to allowed action types.",
+      "expected": {
+        "min_response_chars": 280,
+        "requires_table_like_output": true,
+        "required_keywords": ["l0", "l5", "allowed"],
+        "forbidden_keywords": []
+      }
+    },
+    {
+      "id": "JDEV-011",
+      "title": "Memory conflict handling",
+      "category": "memory",
+      "mode": "reasoning",
+      "prompt": "Explain how to handle conflicting user preferences in memory and keep decisions auditable.",
+      "expected": {
+        "min_response_chars": 220,
+        "requires_bullets": true,
+        "required_keywords": ["confidence", "conflict", "audit"],
+        "forbidden_keywords": []
+      }
+    },
+    {
+      "id": "JDEV-012",
+      "title": "Plugin contract proposal",
+      "category": "extensibility",
+      "mode": "coding",
+      "prompt": "Design a stable plugin contract for safe tool execution, including schema validation and signature policy.",
+      "expected": {
+        "min_response_chars": 280,
+        "requires_bullets": true,
+        "required_keywords": ["schema", "signature", "compatibility"],
+        "forbidden_keywords": []
+      }
+    },
+    {
+      "id": "JDEV-013",
+      "title": "Replay diagnostics summary",
+      "category": "observability",
+      "mode": "reasoning",
+      "prompt": "Given a failed async run with multiple attempts, describe what replay diagnostics must include.",
+      "expected": {
+        "min_response_chars": 220,
+        "requires_bullets": true,
+        "required_keywords": ["timeline", "attempt", "artifact"],
+        "forbidden_keywords": []
+      }
+    },
+    {
+      "id": "JDEV-014",
+      "title": "Watcher automation guardrails",
+      "category": "automation",
+      "mode": "reasoning",
+      "prompt": "List guardrails for file-watcher automations so they avoid loops, spam, and unsafe operations.",
+      "expected": {
+        "min_response_chars": 220,
+        "requires_bullets": true,
+        "required_keywords": ["dedup", "cooldown", "budget"],
+        "forbidden_keywords": []
+      }
+    },
+    {
+      "id": "JDEV-015",
+      "title": "Release rollback policy",
+      "category": "release",
+      "mode": "reasoning",
+      "prompt": "Define objective rollback triggers for a canary release of an AI runtime.",
+      "expected": {
+        "min_response_chars": 220,
+        "requires_numbered_list": true,
+        "required_keywords": ["trigger", "rollback", "threshold"],
+        "forbidden_keywords": []
+      }
+    },
+    {
+      "id": "JDEV-016",
+      "title": "Code snippet generation",
+      "category": "coding",
+      "mode": "coding",
+      "prompt": "Write a Python helper function that validates required JSON keys and raises a descriptive ValueError.",
+      "expected": {
+        "min_response_chars": 160,
+        "requires_code_block": true,
+        "required_keywords": ["ValueError", "required", "json"],
+        "forbidden_keywords": []
+      }
+    },
+    {
+      "id": "JDEV-017",
+      "title": "Infra-free local setup",
+      "category": "developer_experience",
+      "mode": "reasoning",
+      "prompt": "Provide a deterministic local setup flow for contributors so two machines produce the same environment.",
+      "expected": {
+        "min_response_chars": 240,
+        "requires_numbered_list": true,
+        "required_keywords": ["lock", "version", "reproducible"],
+        "forbidden_keywords": []
+      }
+    },
+    {
+      "id": "JDEV-018",
+      "title": "Safe autonomous action UX",
+      "category": "product_safety",
+      "mode": "reasoning",
+      "prompt": "Describe UX rules for confirming high-risk autonomous actions while keeping workflow fast.",
+      "expected": {
+        "min_response_chars": 230,
+        "requires_bullets": true,
+        "required_keywords": ["confirmation", "risk", "undo"],
+        "forbidden_keywords": []
+      }
+    },
+    {
+      "id": "JDEV-019",
+      "title": "Bug report quality",
+      "category": "operations",
+      "mode": "reasoning",
+      "prompt": "Create a bug-report template for agent runs that makes root-cause analysis faster.",
+      "expected": {
+        "min_response_chars": 220,
+        "requires_bullets": true,
+        "required_keywords": ["steps", "expected", "actual"],
+        "forbidden_keywords": []
+      }
+    },
+    {
+      "id": "JDEV-020",
+      "title": "Roadmap compression",
+      "category": "planning",
+      "mode": "reasoning",
+      "prompt": "Compress a 6-month AI platform roadmap into the top 5 milestones with measurable outcomes.",
+      "expected": {
+        "min_response_chars": 220,
+        "requires_numbered_list": true,
+        "required_keywords": ["milestone", "metric", "outcome"],
+        "forbidden_keywords": []
+      }
+    }
+  ]
+}

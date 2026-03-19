@@ -1,0 +1,49 @@
+name: Nightly Reliability
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 2 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  nightly-reliability:
+    name: Extended Reliability Nightly
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.lock
+
+      - name: Check dependency drift
+        run: |
+          python scripts/release/check_dependency_drift.py
+
+      - name: Run nightly extended reliability suite (strict)
+        run: |
+          python scripts/release/nightly_reliability_run.py \
+            --iterations "${AMARYLLIS_NIGHTLY_ITERATIONS:-12}" \
+            --min-success-rate-pct "${AMARYLLIS_NIGHTLY_MIN_SUCCESS_RATE_PCT:-99}" \
+            --max-p95-latency-ms "${AMARYLLIS_NIGHTLY_MAX_P95_MS:-600}" \
+            --max-latency-jitter-ms "${AMARYLLIS_NIGHTLY_MAX_JITTER_MS:-120}" \
+            --baseline "eval/baselines/reliability/nightly_smoke_baseline.json" \
+            --output "artifacts/nightly-reliability-report.json" \
+            --strict
+
+      - name: Upload nightly reliability report
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-reliability-report
+          path: artifacts/nightly-reliability-report.json
+          if-no-files-found: error

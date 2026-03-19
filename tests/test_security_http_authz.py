@@ -100,6 +100,7 @@ class SecurityHTTPAuthzTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["actor"], "svc-runtime")
         self.assertIn("service", payload["scopes"])
+        self.assertEqual(str(payload.get("autonomy_level")), "l3")
 
         response = self.client.get("/models", headers=self._auth("service-token"))
         self.assertEqual(response.status_code, 403)
