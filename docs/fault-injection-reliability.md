@@ -6,7 +6,7 @@ Validate retry and recovery behavior under representative fault classes before r
 
 - provider transient fault (`rate_limit`),
 - network transient fault (`network`),
-- tool fault budget breach (`budget_exceeded` guardrail path).
+- tool fault budget breach (`budget_guardrail_paused` guardrail path).
 
 ## Gate Script
 
@@ -33,7 +33,8 @@ python scripts/release/fault_injection_reliability_gate.py \
 3. `tool_fault_budget_guardrail`
    - tool error event is injected,
    - run budget (`max_tool_errors=0`) is exceeded,
-   - run must fail deterministically with `failure_class=budget_exceeded` and no retry.
+   - run must fail deterministically with `failure_class=budget_exceeded`,
+   - run stop reason must be `budget_guardrail_paused` and no retry is scheduled.
 
 ## Output
 

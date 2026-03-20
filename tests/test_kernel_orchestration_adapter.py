@@ -11,6 +11,7 @@ from tasks.execution.orchestrator import execute_task_run as legacy_execute_task
 class _FakeExecutor:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
+        self.simulation_calls: list[dict[str, object]] = []
 
     def execute(
         self,
@@ -37,6 +38,53 @@ class _FakeExecutor:
         )
         return {"ok": True, "message": user_message}
 
+    def simulate_run(
+        self,
+        *,
+        agent: object,
+        user_id: str,
+        session_id: str | None,
+        user_message: str,
+        requested_budget: dict[str, object] | None = None,
+        max_attempts: int | None = None,
+    ) -> dict[str, object]:
+        self.simulation_calls.append(
+            {
+                "agent": agent,
+                "user_id": user_id,
+                "session_id": session_id,
+                "user_message": user_message,
+                "requested_budget": requested_budget,
+                "max_attempts": max_attempts,
+            }
+        )
+        return {"mode": "dry_run", "message": user_message}
+
+
+class _FakeExecutorWithoutSimulation:
+    def execute(
+        self,
+        agent: object,
+        user_id: str,
+        session_id: str | None,
+        user_message: str,
+        checkpoint=None,
+        run_deadline_monotonic: float | None = None,
+        resume_state: dict[str, object] | None = None,
+        run_budget: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        _ = (
+            agent,
+            user_id,
+            session_id,
+            user_message,
+            checkpoint,
+            run_deadline_monotonic,
+            resume_state,
+            run_budget,
+        )
+        return {"ok": True}
+
 
 class KernelOrchestrationAdapterTests(unittest.TestCase):
     def test_kernel_adapter_delegates_execute(self) -> None:
@@ -59,6 +107,34 @@ class KernelOrchestrationAdapterTests(unittest.TestCase):
     def test_kernel_adapter_satisfies_executor_contract(self) -> None:
         adapter = KernelExecutorAdapter(_FakeExecutor())
         self.assertIsInstance(adapter, ExecutorContract)
+
+    def test_kernel_adapter_delegates_simulate_run_when_supported(self) -> None:
+        delegate = _FakeExecutor()
+        adapter = KernelExecutorAdapter(delegate)
+
+        result = adapter.simulate_run(
+            agent={"id": "agent-1"},
+            user_id="user-1",
+            session_id="session-1",
+            user_message="simulate hello",
+            requested_budget={"max_tokens": 2048},
+            max_attempts=3,
+        )
+
+        self.assertEqual(result.get("mode"), "dry_run")
+        self.assertEqual(result.get("message"), "simulate hello")
+        self.assertEqual(len(delegate.simulation_calls), 1)
+        self.assertEqual(delegate.simulation_calls[0].get("max_attempts"), 3)
+
+    def test_kernel_adapter_simulate_run_rejects_unsupported_delegate(self) -> None:
+        adapter = KernelExecutorAdapter(_FakeExecutorWithoutSimulation())
+        with self.assertRaisesRegex(ValueError, "simulation mode"):
+            adapter.simulate_run(
+                agent={"id": "agent-1"},
+                user_id="user-1",
+                session_id=None,
+                user_message="simulate hello",
+            )
 
     def test_legacy_orchestrator_is_kernel_shim(self) -> None:
         self.assertIs(legacy_execute_task_run, kernel_execute_task_run)

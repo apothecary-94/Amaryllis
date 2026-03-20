@@ -754,7 +754,7 @@ class AgentRunManagerTests(unittest.TestCase):
         diagnostics = self.manager.diagnose_run(run["id"])
         self.assertEqual(str(diagnostics.get("status")), "failed")
         self.assertEqual(str(diagnostics.get("failure_class")), "budget_exceeded")
-        self.assertEqual(str(diagnostics.get("stop_reason")), "budget_exceeded")
+        self.assertEqual(str(diagnostics.get("stop_reason")), "budget_guardrail_paused")
 
         diag_payload = diagnostics.get("diagnostics", {})
         self.assertIsInstance(diag_payload, dict)
@@ -1079,7 +1079,68 @@ class AgentRunManagerTests(unittest.TestCase):
         assert final is not None
         self.assertEqual(final["status"], "failed")
         self.assertEqual(final.get("failure_class"), "budget_exceeded")
-        self.assertEqual(final.get("stop_reason"), "budget_exceeded")
+        self.assertEqual(final.get("stop_reason"), "budget_guardrail_paused")
+
+    def test_repeated_budget_breach_escalates_to_agent_scope_kill_switch(self) -> None:
+        self.executor = _FakeTaskExecutor(
+            emit_tool_finished_count=2,
+            emit_tool_error_count=0,
+        )
+        self.manager = AgentRunManager(
+            database=self.database,
+            task_executor=self.executor,  # type: ignore[arg-type]
+            worker_count=1,
+            default_max_attempts=1,
+            retry_backoff_sec=0.0,
+            retry_max_backoff_sec=0.0,
+            retry_jitter_sec=0.0,
+        )
+        self.manager.start()
+        run_budget = {
+            "max_tokens": 10_000,
+            "max_duration_sec": 60,
+            "max_tool_calls": 1,
+            "max_tool_errors": 2,
+        }
+        primary = self.manager.create_run(
+            agent=self.agent,
+            user_id="user-1",
+            session_id="session-budget-escalation-primary",
+            user_message="budget escalation primary",
+            max_attempts=1,
+            budget=run_budget,
+        )
+        first_terminal = self._wait_for_status(primary["id"], {"failed"})
+        self.assertIsNotNone(first_terminal)
+        assert first_terminal is not None
+        self.assertEqual(str(first_terminal.get("stop_reason")), "budget_guardrail_paused")
+
+        resumed = self.manager.resume_run(primary["id"])
+        self.assertEqual(str(resumed.get("status")), "queued")
+
+        sibling = self.manager.create_run(
+            agent=self.agent,
+            user_id="user-1",
+            session_id="session-budget-escalation-sibling",
+            user_message="budget escalation sibling",
+            max_attempts=1,
+            budget=run_budget,
+        )
+        final_primary = self._wait_for_status(primary["id"], {"canceled"}, timeout_sec=6.0)
+        self.assertIsNotNone(final_primary)
+        assert final_primary is not None
+        self.assertEqual(str(final_primary.get("stop_reason")), "budget_guardrail_kill_switch")
+        self.assertEqual(str(final_primary.get("failure_class")), "canceled")
+
+        final_sibling = self._wait_for_status(sibling["id"], {"canceled"}, timeout_sec=6.0)
+        self.assertIsNotNone(final_sibling)
+        assert final_sibling is not None
+        self.assertEqual(str(final_sibling.get("stop_reason")), "kill_switch_triggered")
+        self.assertEqual(str(final_sibling.get("failure_class")), "canceled")
+
+        stages = [str(item.get("stage")) for item in final_primary.get("checkpoints", [])]
+        self.assertIn("budget_guardrail_escalated", stages)
+        self.assertIn("budget_guardrail_kill_switch_scope", stages)
 
     def test_run_health_snapshot_contains_slo_metrics(self) -> None:
         self.manager.start()

@@ -73,6 +73,10 @@ REPLAY_PRESET_STAGE_FILTERS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+BUDGET_GUARDRAIL_PAUSE_STOP_REASON = "budget_guardrail_paused"
+BUDGET_GUARDRAIL_KILL_SWITCH_STOP_REASON = "budget_guardrail_kill_switch"
+BUDGET_GUARDRAIL_KILL_SWITCH_THRESHOLD = 2
+
 
 class AgentRunManager:
     def __init__(
@@ -372,6 +376,9 @@ class AgentRunManager:
         include_running: bool = True,
         include_queued: bool = True,
         limit: int = 5000,
+        user_id: str | None = None,
+        agent_id: str | None = None,
+        exclude_run_id: str | None = None,
     ) -> dict[str, Any]:
         if not include_running and not include_queued:
             raise ValueError("Kill switch requires include_running and/or include_queued.")
@@ -379,6 +386,9 @@ class AgentRunManager:
         normalized_actor = str(actor or "").strip() or None
         normalized_reason = str(reason or "").strip()
         normalized_limit = max(1, min(int(limit), 50_000))
+        scope_user_id = str(user_id or "").strip() or None
+        scope_agent_id = str(agent_id or "").strip() or None
+        excluded_run_id = str(exclude_run_id or "").strip() or None
         statuses: list[str] = []
         if include_running:
             statuses.append("running")
@@ -392,6 +402,14 @@ class AgentRunManager:
             for row in rows:
                 run_id = str(row.get("id") or "").strip()
                 if not run_id or run_id in seen_ids:
+                    continue
+                if excluded_run_id is not None and run_id == excluded_run_id:
+                    continue
+                row_user_id = str(row.get("user_id") or "").strip() or None
+                row_agent_id = str(row.get("agent_id") or "").strip() or None
+                if scope_user_id is not None and row_user_id != scope_user_id:
+                    continue
+                if scope_agent_id is not None and row_agent_id != scope_agent_id:
                     continue
                 seen_ids.add(run_id)
                 target_ids.append(run_id)
@@ -467,6 +485,9 @@ class AgentRunManager:
                 "reason": normalized_reason,
                 "include_running": bool(include_running),
                 "include_queued": bool(include_queued),
+                "scope_user_id": scope_user_id,
+                "scope_agent_id": scope_agent_id,
+                "exclude_run_id": excluded_run_id,
                 "targeted_count": len(target_ids),
                 "canceled_running": canceled_running,
                 "canceled_queued": canceled_queued,
@@ -478,6 +499,9 @@ class AgentRunManager:
             "reason": normalized_reason,
             "include_running": bool(include_running),
             "include_queued": bool(include_queued),
+            "scope_user_id": scope_user_id,
+            "scope_agent_id": scope_agent_id,
+            "exclude_run_id": excluded_run_id,
             "targeted_count": len(target_ids),
             "targeted_run_ids": preview_ids,
             "canceled_running": canceled_running,
@@ -819,6 +843,10 @@ class AgentRunManager:
             warnings.append("transient_infra_failures")
         if failure_class == "budget_exceeded":
             warnings.append("budget_exceeded")
+        if stop_reason == BUDGET_GUARDRAIL_PAUSE_STOP_REASON:
+            warnings.append("budget_guardrail_paused")
+        if stop_reason == BUDGET_GUARDRAIL_KILL_SWITCH_STOP_REASON:
+            warnings.append("budget_guardrail_kill_switch")
 
         recommendations: list[str] = []
         if stop_reason == "max_attempts_exhausted":
@@ -829,6 +857,10 @@ class AgentRunManager:
             recommendations.append("Validate run input, tool schemas, and prompt contract before execution.")
         if failure_class == "guardrail":
             recommendations.append("Review guardrail thresholds and adjust policy only with explicit risk sign-off.")
+        if stop_reason == BUDGET_GUARDRAIL_PAUSE_STOP_REASON:
+            recommendations.append("Tune mission budget or task scope, then resume the run.")
+        if stop_reason == BUDGET_GUARDRAIL_KILL_SWITCH_STOP_REASON:
+            recommendations.append("Review sibling runs canceled by budget escalation and relaunch with stricter budgets.")
         if stop_reason == KILL_SWITCH_STOP_REASON:
             recommendations.append("Inspect kill-switch trigger source and restart mission with updated constraints.")
         if tool_call_failures > 0:
@@ -1343,6 +1375,49 @@ class AgentRunManager:
             final_status = retry_decision.final_status
             final_failure_class = retry_decision.final_failure_class
             final_stop_reason = retry_decision.final_stop_reason
+            budget_guardrail_checkpoint: dict[str, Any] | None = None
+            trigger_scope_kill_switch = False
+            if not canceled and failure_class == "budget_exceeded":
+                prior_budget_breach_count = self._count_budget_guardrail_breaches(latest_after_error or run)
+                current_budget_breach_count = prior_budget_breach_count + 1
+                if current_budget_breach_count >= BUDGET_GUARDRAIL_KILL_SWITCH_THRESHOLD:
+                    schedule_retry = False
+                    backoff_sec = 0.0
+                    retryable = False
+                    final_status = "canceled"
+                    final_failure_class = "canceled"
+                    final_stop_reason = BUDGET_GUARDRAIL_KILL_SWITCH_STOP_REASON
+                    trigger_scope_kill_switch = True
+                    budget_guardrail_checkpoint = {
+                        "stage": "budget_guardrail_escalated",
+                        "attempt": attempt,
+                        "message": (
+                            "Budget guardrail breached repeatedly. "
+                            "Escalation moved mission to agent-scope kill switch."
+                        ),
+                        "failure_class": "budget_exceeded",
+                        "stop_reason": final_stop_reason,
+                        "breach_count": current_budget_breach_count,
+                        "escalation_action": "kill_switch",
+                        "escalation_scope": "agent",
+                    }
+                else:
+                    schedule_retry = False
+                    backoff_sec = 0.0
+                    retryable = False
+                    final_status = "failed"
+                    final_failure_class = "budget_exceeded"
+                    final_stop_reason = BUDGET_GUARDRAIL_PAUSE_STOP_REASON
+                    budget_guardrail_checkpoint = {
+                        "stage": "budget_guardrail_paused",
+                        "attempt": attempt,
+                        "message": "Budget guardrail breached. Mission paused for manual budget/scope adjustment.",
+                        "failure_class": "budget_exceeded",
+                        "stop_reason": final_stop_reason,
+                        "breach_count": current_budget_breach_count,
+                        "escalation_action": "pause",
+                        "resume_hint": "Adjust budget or scope and call resume run.",
+                    }
             with self.database.write_transaction():
                 self.database.append_agent_run_checkpoint(
                     run_id=run_id,
@@ -1363,6 +1438,11 @@ class AgentRunManager:
                     attempt=attempt,
                     error_message=error_message,
                 )
+                if budget_guardrail_checkpoint is not None:
+                    self.database.append_agent_run_checkpoint(
+                        run_id=run_id,
+                        checkpoint=budget_guardrail_checkpoint,
+                    )
 
                 if schedule_retry:
                     self.database.update_agent_run_fields(
@@ -1426,6 +1506,32 @@ class AgentRunManager:
                     time.sleep(backoff_sec)
                 self._queue.put(run_id)
             else:
+                if trigger_scope_kill_switch:
+                    kill_switch_summary = self.kill_switch_runs(
+                        actor="system:budget_guardrail",
+                        reason=(
+                            "Budget guardrail escalation triggered by repeated mission budget breaches."
+                        ),
+                        include_running=True,
+                        include_queued=True,
+                        limit=5000,
+                        user_id=str(run.get("user_id") or ""),
+                        agent_id=str(run.get("agent_id") or ""),
+                        exclude_run_id=run_id,
+                    )
+                    self.database.append_agent_run_checkpoint(
+                        run_id=run_id,
+                        checkpoint={
+                            "stage": "budget_guardrail_kill_switch_scope",
+                            "attempt": attempt,
+                            "message": "Agent-scope kill switch applied after repeated budget breaches.",
+                            "scope_user_id": str(run.get("user_id") or ""),
+                            "scope_agent_id": str(run.get("agent_id") or ""),
+                            "canceled_running": int(kill_switch_summary.get("canceled_running", 0)),
+                            "canceled_queued": int(kill_switch_summary.get("canceled_queued", 0)),
+                            "canceled_total": int(kill_switch_summary.get("canceled_total", 0)),
+                        },
+                    )
                 if final_status is None or final_failure_class is None or final_stop_reason is None:
                     raise AssertionError("Retry policy produced invalid terminal emit payload.")
                 self._emit(
@@ -2202,6 +2308,23 @@ class AgentRunManager:
         if stop_reason == KILL_SWITCH_STOP_REASON:
             return KILL_SWITCH_STOP_REASON
         return "canceled_by_user"
+
+    @staticmethod
+    def _count_budget_guardrail_breaches(run: dict[str, Any]) -> int:
+        checkpoints = run.get("checkpoints")
+        if not isinstance(checkpoints, list):
+            return 0
+        count = 0
+        for item in checkpoints:
+            if not isinstance(item, dict):
+                continue
+            stage = str(item.get("stage") or "").strip().lower()
+            if stage in {
+                "budget_guardrail_paused",
+                "budget_guardrail_escalated",
+            }:
+                count += 1
+        return count
 
     def _normalize_run_budget(self, budget: dict[str, Any] | None) -> dict[str, Any]:
         raw = budget if isinstance(budget, dict) else {}

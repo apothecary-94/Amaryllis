@@ -32,3 +32,25 @@ class KernelExecutorAdapter:
             resume_state=resume_state,
             run_budget=run_budget,
         )
+
+    def simulate_run(
+        self,
+        *,
+        agent: Any,
+        user_id: str,
+        session_id: str | None,
+        user_message: str,
+        requested_budget: dict[str, Any] | None = None,
+        max_attempts: int | None = None,
+    ) -> dict[str, Any]:
+        delegate_simulate = getattr(self._delegate, "simulate_run", None)
+        if delegate_simulate is None or not callable(delegate_simulate):
+            raise ValueError("Task executor does not support simulation mode")
+        return delegate_simulate(
+            agent=agent,
+            user_id=user_id,
+            session_id=session_id,
+            user_message=user_message,
+            requested_budget=requested_budget,
+            max_attempts=max_attempts,
+        )

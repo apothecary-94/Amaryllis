@@ -91,6 +91,60 @@ class AgentManager:
             budget=budget,
         )
 
+    def simulate_run(
+        self,
+        *,
+        agent_id: str,
+        user_message: str,
+        user_id: str,
+        session_id: str | None,
+        max_attempts: int | None = None,
+        budget: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        agent = self.get_agent(agent_id)
+        if agent is None:
+            raise ValueError(f"Agent not found: {agent_id}")
+        self._assert_agent_owner(agent=agent, user_id=user_id)
+
+        simulator = getattr(self.task_executor, "simulate_run", None)
+        if simulator is None or not callable(simulator):
+            raise ValueError("Task executor does not support simulation mode")
+
+        simulation = simulator(
+            agent=agent,
+            user_id=user_id,
+            session_id=session_id,
+            user_message=user_message,
+            requested_budget=budget,
+            max_attempts=max_attempts,
+        )
+        if not isinstance(simulation, dict):
+            raise ValueError("Simulation mode returned invalid payload")
+
+        attempts_limit = 1
+        effective_budget = budget if isinstance(budget, dict) else {}
+        if self.run_manager is not None:
+            attempts_limit = max(1, int(max_attempts or self.run_manager.default_max_attempts))
+            effective_budget = self.run_manager._normalize_run_budget(budget)
+        elif max_attempts is not None:
+            attempts_limit = max(1, int(max_attempts))
+
+        simulation["run_preview"] = {
+            "max_attempts": attempts_limit,
+            "budget": effective_budget,
+        }
+        simulation["apply_hint"] = {
+            "endpoint": f"/agents/{agent_id}/runs",
+            "payload": {
+                "user_id": user_id,
+                "session_id": session_id,
+                "message": user_message,
+                "max_attempts": attempts_limit,
+                "budget": effective_budget,
+            },
+        }
+        return simulation
+
     def get_run(self, run_id: str) -> dict[str, Any]:
         if self.run_manager is None:
             raise ValueError("Run manager is not configured")

@@ -80,6 +80,14 @@ class AgentRunCreateRequest(BaseModel):
     budget: RunBudgetRequest | None = None
 
 
+class AgentRunSimulationRequest(BaseModel):
+    user_id: str = Field(min_length=1)
+    message: str = Field(min_length=1)
+    session_id: str | None = None
+    max_attempts: int | None = Field(default=None, ge=1, le=10)
+    budget: RunBudgetRequest | None = None
+
+
 @router.post("/agents/create")
 def create_agent(payload: CreateAgentRequest, request: Request) -> dict[str, Any]:
     services = request.app.state.services
@@ -207,6 +215,75 @@ def create_agent_run(
             payload={**payload.model_dump(), "user_id": effective_user_id},
             actor=auth.user_id,
             target_type="agent_run",
+            details={"agent_id": agent_id, "error": str(exc)},
+            status="failed",
+        )
+        raise ProviderError(str(exc)) from exc
+
+
+@router.post("/agents/{agent_id}/runs/simulate")
+def simulate_agent_run(
+    payload: AgentRunSimulationRequest,
+    request: Request,
+    agent_id: str = Path(..., min_length=1),
+) -> dict[str, Any]:
+    services = request.app.state.services
+    auth = auth_context_from_request(request)
+    effective_user_id = resolve_user_id(request_user_id=payload.user_id, auth=auth)
+    try:
+        agent = services.agent_manager.get_agent(agent_id)
+        if agent is None:
+            raise NotFoundError(f"Agent not found: {agent_id}")
+        assert_owner(
+            owner_user_id=agent.user_id,
+            auth=auth,
+            resource_name="agent",
+            resource_id=agent_id,
+        )
+        simulation = services.agent_manager.simulate_run(
+            agent_id=agent_id,
+            user_message=payload.message,
+            user_id=effective_user_id,
+            session_id=payload.session_id,
+            max_attempts=payload.max_attempts,
+            budget=payload.budget.model_dump(exclude_none=True) if payload.budget is not None else None,
+        )
+        dry_run_receipt = _sign_action(
+            request,
+            action="agent_run_simulate",
+            payload={**payload.model_dump(), "user_id": effective_user_id},
+            actor=auth.user_id,
+            target_type="agent_run_simulation",
+            target_id=str(simulation.get("simulation_id") or ""),
+            details={"agent_id": agent_id, "mode": "dry_run"},
+        )
+        return {
+            "simulation": simulation,
+            "dry_run_receipt": dry_run_receipt,
+            "request_id": _request_id(request),
+        }
+    except ValueError as exc:
+        _sign_action(
+            request,
+            action="agent_run_simulate",
+            payload={**payload.model_dump(), "user_id": effective_user_id},
+            actor=auth.user_id,
+            target_type="agent_run_simulation",
+            details={"agent_id": agent_id, "error": str(exc)},
+            status="failed",
+        )
+        if "not found" in str(exc).lower():
+            raise NotFoundError(str(exc)) from exc
+        raise ValidationError(str(exc)) from exc
+    except AmaryllisError:
+        raise
+    except Exception as exc:
+        _sign_action(
+            request,
+            action="agent_run_simulate",
+            payload={**payload.model_dump(), "user_id": effective_user_id},
+            actor=auth.user_id,
+            target_type="agent_run_simulation",
             details={"agent_id": agent_id, "error": str(exc)},
             status="failed",
         )

@@ -32,6 +32,13 @@ ISSUE_BLOCKED = "blocked"
 ISSUE_DONE = "done"
 ISSUE_FAILED = "failed"
 ISSUE_STATUSES = {ISSUE_PLANNED, ISSUE_RUNNING, ISSUE_BLOCKED, ISSUE_DONE, ISSUE_FAILED}
+SIMULATION_RISK_ORDER: dict[str, int] = {
+    "low": 1,
+    "medium": 2,
+    "high": 3,
+    "critical": 4,
+    "unknown": 5,
+}
 
 
 class TaskGuardrailError(RuntimeError):
@@ -103,7 +110,7 @@ class TaskExecutor:
         run_deadline_monotonic: float | None = None,
         resume_state: dict[str, Any] | None = None,
         run_budget: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
+        ) -> dict[str, Any]:
         return execute_task_run(
             self,
             agent=agent,
@@ -121,6 +128,361 @@ class TaskExecutor:
             issue_done=ISSUE_DONE,
             issue_failed=ISSUE_FAILED,
         )
+
+    def simulate_run(
+        self,
+        *,
+        agent: Agent,
+        user_id: str,
+        session_id: str | None,
+        user_message: str,
+        requested_budget: dict[str, Any] | None = None,
+        max_attempts: int | None = None,
+    ) -> dict[str, Any]:
+        _ = user_id
+        normalized_message = str(user_message or "").strip()
+        if not normalized_message:
+            raise TaskGuardrailError("Input message must be non-empty for simulation.")
+        self._check_message_size(normalized_message)
+
+        tools_available = bool(agent.tools)
+        strategy = self.meta_controller.choose_strategy(
+            user_message=normalized_message,
+            tools_available=tools_available,
+        )
+        created_plan = self.planner.create_plan(task=normalized_message, strategy=strategy)
+        plan_raw = [dict(step.__dict__) for step in created_plan]
+
+        tool_preview = self._build_tool_simulation_preview(tool_names=agent.tools)
+        plan_preview = self._build_plan_simulation_preview(
+            plan=plan_raw,
+            tool_preview=tool_preview,
+        )
+
+        highest_plan_risk = self._max_risk_level(
+            [str(item.get("risk_level") or "low") for item in plan_preview]
+        )
+        highest_tool_risk = str(tool_preview.get("summary", {}).get("highest_risk_level") or "low")
+        overall_risk = self._max_risk_level([highest_plan_risk, highest_tool_risk])
+        risk_tags = sorted(
+            {
+                str(tag)
+                for item in plan_preview
+                for tag in list(item.get("risk_tags") or [])
+                if str(tag).strip()
+            }
+        )
+        if tools_available:
+            risk_tags.append("tools_available")
+        if any(bool(item.get("requires_tools")) for item in plan_preview):
+            risk_tags.append("plan_requires_tools")
+        risk_tags = sorted(set(risk_tags))
+
+        budget_preview = requested_budget if isinstance(requested_budget, dict) else {}
+        digest_payload = {
+            "agent_id": agent.id,
+            "session_id": session_id,
+            "message": normalized_message,
+            "strategy": strategy,
+            "plan": plan_preview,
+            "tools": tool_preview,
+            "requested_budget": budget_preview,
+            "max_attempts": max_attempts,
+        }
+        simulation_id = hashlib.sha256(
+            json.dumps(digest_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+
+        return {
+            "simulation_id": simulation_id,
+            "mode": "dry_run",
+            "agent_id": agent.id,
+            "session_id": session_id,
+            "message": normalized_message,
+            "strategy": strategy,
+            "plan": plan_preview,
+            "tools": tool_preview,
+            "risk_summary": {
+                "overall_risk_level": overall_risk,
+                "highest_plan_risk_level": highest_plan_risk,
+                "highest_tool_risk_level": highest_tool_risk,
+                "risk_tags": risk_tags,
+                "step_count": len(plan_preview),
+                "steps_requiring_tools": sum(1 for item in plan_preview if bool(item.get("requires_tools"))),
+                "high_risk_steps": sum(
+                    1
+                    for item in plan_preview
+                    if str(item.get("risk_level") or "").strip().lower() in {"high", "critical"}
+                ),
+                "high_risk_tools": int(tool_preview.get("summary", {}).get("high_risk_tools", 0) or 0),
+                "critical_risk_tools": int(tool_preview.get("summary", {}).get("critical_risk_tools", 0) or 0),
+            },
+            "requested_run": {
+                "max_attempts": max_attempts,
+                "budget": budget_preview,
+            },
+            "generated_at_epoch_sec": round(time.time(), 6),
+        }
+
+    def _build_tool_simulation_preview(self, *, tool_names: list[str]) -> dict[str, Any]:
+        available: list[dict[str, Any]] = []
+        unknown: list[dict[str, Any]] = []
+        for name in tool_names:
+            tool_name = str(name or "").strip()
+            if not tool_name:
+                continue
+            tool = self.tool_registry.get(tool_name)
+            if tool is None:
+                unknown.append(
+                    {
+                        "name": tool_name,
+                        "known": False,
+                        "risk_level": "unknown",
+                        "risk_tags": ["unknown_tool_contract", "risk:unknown"],
+                        "rollback_hint": "Disable unknown tool mapping and verify registry/plugin manifests.",
+                    }
+                )
+                continue
+
+            normalized_risk = self._normalized_risk_level(str(getattr(tool, "risk_level", "medium")))
+            autonomy_decision = self.tool_executor.autonomy_policy.evaluate(
+                tool_name=tool_name,
+                risk_level=normalized_risk,
+            )
+            policy_decision = self.tool_executor.policy.evaluate(tool=tool, arguments={})
+            requires_approval = bool(
+                autonomy_decision.requires_approval or policy_decision.requires_approval
+            )
+            blocked_reason = None
+            if not bool(autonomy_decision.allow):
+                blocked_reason = str(autonomy_decision.reason or "autonomy_policy_blocked")
+            elif not bool(policy_decision.allow):
+                blocked_reason = str(policy_decision.reason or "isolation_policy_blocked")
+
+            risk_tags = [f"risk:{normalized_risk}"]
+            if normalized_risk in {"high", "critical"}:
+                risk_tags.append("high_risk_tool")
+            if requires_approval:
+                risk_tags.append("approval_required")
+            if blocked_reason:
+                risk_tags.append("blocked_by_policy")
+
+            available.append(
+                {
+                    "name": tool_name,
+                    "known": True,
+                    "source": str(getattr(tool, "source", "local")),
+                    "risk_level": normalized_risk,
+                    "approval_mode": str(getattr(tool, "approval_mode", "none")),
+                    "isolation": str(getattr(tool, "isolation", "restricted")),
+                    "requires_approval": requires_approval,
+                    "approval_scope": self._merge_scope_for_simulation(
+                        policy_scope=policy_decision.approval_scope,
+                        autonomy_scope=autonomy_decision.approval_scope,
+                    ),
+                    "approval_ttl_sec": self._merge_ttl_for_simulation(
+                        policy_ttl=policy_decision.approval_ttl_sec,
+                        autonomy_ttl=autonomy_decision.approval_ttl_sec,
+                    ),
+                    "allow": bool(autonomy_decision.allow and policy_decision.allow),
+                    "blocked_reason": blocked_reason,
+                    "risk_tags": sorted(set(risk_tags)),
+                    "rollback_hint": self._rollback_hint_for_tool(
+                        tool_name=tool_name,
+                        risk_level=normalized_risk,
+                    ),
+                }
+            )
+
+        highest_risk = self._max_risk_level(
+            [str(item.get("risk_level") or "low") for item in available] or ["low"]
+        )
+        return {
+            "available": sorted(available, key=lambda item: str(item.get("name") or "")),
+            "unknown": sorted(unknown, key=lambda item: str(item.get("name") or "")),
+            "summary": {
+                "total_tools": len(available) + len(unknown),
+                "known_tools": len(available),
+                "unknown_tools": len(unknown),
+                "highest_risk_level": highest_risk,
+                "high_risk_tools": sum(
+                    1
+                    for item in available
+                    if str(item.get("risk_level") or "").strip().lower() in {"high", "critical"}
+                ),
+                "critical_risk_tools": sum(
+                    1
+                    for item in available
+                    if str(item.get("risk_level") or "").strip().lower() == "critical"
+                ),
+                "blocked_tools": sum(1 for item in available if not bool(item.get("allow"))),
+                "approval_required_tools": sum(1 for item in available if bool(item.get("requires_approval"))),
+            },
+        }
+
+    def _build_plan_simulation_preview(
+        self,
+        *,
+        plan: list[dict[str, Any]],
+        tool_preview: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        tool_items = list(tool_preview.get("available") or [])
+        highest_tool_risk = self._max_risk_level(
+            [str(item.get("risk_level") or "low") for item in tool_items] or ["low"]
+        )
+        rollback_hints_by_risk: list[tuple[int, str]] = []
+        for item in tool_items:
+            hint = str(item.get("rollback_hint") or "").strip()
+            if not hint:
+                continue
+            level = str(item.get("risk_level") or "low")
+            rollback_hints_by_risk.append((SIMULATION_RISK_ORDER.get(level, 0), hint))
+        rollback_hints_by_risk.sort(reverse=True)
+        top_tool_hints: list[str] = []
+        for _, hint in rollback_hints_by_risk:
+            if hint in top_tool_hints:
+                continue
+            top_tool_hints.append(hint)
+            if len(top_tool_hints) >= 3:
+                break
+
+        result: list[dict[str, Any]] = []
+        for index, step in enumerate(plan, start=1):
+            description = str(step.get("description") or f"Plan step {index}")
+            step_kind = self._infer_plan_step_kind(
+                description=description,
+                step_payload=step,
+            )
+            requires_tools = self._plan_step_requires_tools(
+                description=description,
+                step_payload=step,
+                step_kind=step_kind,
+            )
+            step_risk = self._estimate_simulation_step_risk(
+                description=description,
+                step_kind=step_kind,
+                requires_tools=requires_tools,
+                highest_tool_risk=highest_tool_risk,
+            )
+            step_tags = self._simulation_step_tags(
+                description=description,
+                step_kind=step_kind,
+                requires_tools=requires_tools,
+                step_risk=step_risk,
+                highest_tool_risk=highest_tool_risk,
+            )
+            rollback_hints: list[str] = []
+            if requires_tools:
+                rollback_hints.extend(top_tool_hints)
+            if not rollback_hints:
+                rollback_hints.append(
+                    "No direct side effects are expected for this step; rerun or adjust plan if output quality is insufficient."
+                )
+
+            row = dict(step)
+            row["id"] = int(step.get("id", index))
+            row["kind"] = step_kind
+            row["requires_tools"] = requires_tools
+            row["risk_level"] = step_risk
+            row["risk_tags"] = sorted(set(step_tags))
+            row["rollback_hints"] = rollback_hints
+            result.append(row)
+        return result
+
+    @staticmethod
+    def _normalized_risk_level(raw: str | None) -> str:
+        value = str(raw or "").strip().lower()
+        if value not in {"low", "medium", "high", "critical"}:
+            return "medium"
+        return value
+
+    @staticmethod
+    def _max_risk_level(levels: list[str]) -> str:
+        normalized = ["low"]
+        for item in levels:
+            text = str(item or "").strip().lower()
+            if text not in {"low", "medium", "high", "critical", "unknown"}:
+                continue
+            normalized.append(text)
+        return max(normalized, key=lambda level: SIMULATION_RISK_ORDER.get(level, 0))
+
+    @staticmethod
+    def _merge_scope_for_simulation(*, policy_scope: str | None, autonomy_scope: str | None) -> str | None:
+        order = {"request": 1, "session": 2, "user": 3, "global": 4}
+        left = str(policy_scope or "").strip().lower() or None
+        right = str(autonomy_scope or "").strip().lower() or None
+        if left is None:
+            return right
+        if right is None:
+            return left
+        return right if order.get(right, 0) > order.get(left, 0) else left
+
+    @staticmethod
+    def _merge_ttl_for_simulation(*, policy_ttl: int | None, autonomy_ttl: int | None) -> int | None:
+        candidates: list[int] = []
+        if isinstance(policy_ttl, int):
+            candidates.append(max(1, policy_ttl))
+        if isinstance(autonomy_ttl, int):
+            candidates.append(max(1, autonomy_ttl))
+        if not candidates:
+            return None
+        return max(candidates)
+
+    def _estimate_simulation_step_risk(
+        self,
+        *,
+        description: str,
+        step_kind: str,
+        requires_tools: bool,
+        highest_tool_risk: str,
+    ) -> str:
+        lowered = str(description or "").lower()
+        if any(token in lowered for token in ("delete", "drop", "wipe", "format", "shutdown", "kill-switch")):
+            return "critical"
+        if any(token in lowered for token in ("write", "modify", "execute", "deploy", "install", "migrate")):
+            return "high"
+        if requires_tools:
+            return self._max_risk_level(["medium", highest_tool_risk])
+        if step_kind in {"verify", "summarize", "synthesize", "merge_results"}:
+            return "low"
+        return "low"
+
+    def _simulation_step_tags(
+        self,
+        *,
+        description: str,
+        step_kind: str,
+        requires_tools: bool,
+        step_risk: str,
+        highest_tool_risk: str,
+    ) -> list[str]:
+        tags: list[str] = [f"risk:{step_risk}", f"kind:{step_kind}"]
+        if requires_tools:
+            tags.append("tool_execution")
+        if step_kind in {"fetch_source", "tool_query"}:
+            tags.append("external_io")
+        if step_kind in {"verify"}:
+            tags.append("verification_gate")
+        if step_kind in {"merge_results", "synthesize", "summarize"}:
+            tags.append("data_synthesis")
+        if highest_tool_risk in {"high", "critical"} and requires_tools:
+            tags.append("high_risk_tool_possible")
+        lowered = str(description or "").lower()
+        if any(token in lowered for token in ("rollback", "revert")):
+            tags.append("rollback_sensitive")
+        return tags
+
+    @staticmethod
+    def _rollback_hint_for_tool(*, tool_name: str, risk_level: str) -> str:
+        name = str(tool_name or "").strip().lower()
+        normalized_risk = str(risk_level or "").strip().lower()
+        if name == "python_exec":
+            return "Review stdout/stderr and revert any filesystem changes introduced by executed code."
+        if name == "filesystem":
+            return "Revert changed files from VCS or restore from backup snapshot."
+        if normalized_risk == "critical":
+            return "Trigger incident flow, disable related automation, and rollback affected resources."
+        return "Review action impact and rollback changed resources from audit trail metadata."
 
     def _build_messages(
         self,

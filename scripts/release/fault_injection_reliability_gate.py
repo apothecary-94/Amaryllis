@@ -328,7 +328,7 @@ def main() -> int:
             },
             "expected_status": "failed",
             "expected_failure_class": "budget_exceeded",
-            "expected_stop_reason": "budget_exceeded",
+            "expected_stop_reason": "budget_guardrail_paused",
             "forbid_retry_stage": True,
         },
     ]

@@ -54,6 +54,7 @@ Implemented in this version:
 - versioned API aliases for core routes under `/v1/*` with compatibility contract gate
 - release gate assets: compatibility script, canary smoke script, disaster-recovery gate, compliance gate, rollback playbook
 - lease/CAS ownership for agent runs (single-owner execution under concurrent workers)
+- mission simulation mode before apply with risk/rollback preview and signed dry-run receipt (`POST /agents/{agent_id}/runs/simulate`)
 - compact run diagnostics endpoint for mission postmortem (`GET /agents/runs/{run_id}/diagnostics`)
 - voice push-to-talk session contract with explicit state transitions (`created -> listening -> stopping -> stopped`)
 - pluggable local STT adapter layer (`whisper_python` backend + graceful unavailable mode)
@@ -268,6 +269,8 @@ Reference:
 - `docs/toolchain-manifest.md`
 - `docs/eval-replay-determinism.md`
 - `docs/release-provenance-sbom.md`
+- `docs/mission-simulation-mode.md`
+- `docs/dynamic-mission-budgets.md`
 
 ## Run
 
@@ -703,6 +706,36 @@ curl -X POST http://localhost:8000/agents/<agent_id>/runs \
     }
   }'
 ```
+
+Work Mode simulation (dry-run plan/risk preview before execution):
+
+```bash
+curl -X POST http://localhost:8000/agents/<agent_id>/runs/simulate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_id": "user-001",
+    "session_id": "session-001",
+    "message": "Investigate errors and summarize remediation plan",
+    "max_attempts": 3,
+    "budget": {
+      "max_tokens": 18000,
+      "max_duration_sec": 240,
+      "max_tool_calls": 8,
+      "max_tool_errors": 2
+    }
+  }'
+```
+
+Simulation response includes:
+- `simulation.plan`: step preview with `risk_tags` and `rollback_hints`
+- `simulation.tools`: tool risk/approval preview
+- `simulation.run_preview`: normalized attempts/budget used for apply
+- `simulation.apply_hint`: ready payload for `POST /agents/<agent_id>/runs`
+- `dry_run_receipt`: signed action receipt for audit trail
+
+Budget guardrail escalation (work mode):
+- first breach pauses mission (`stop_reason=budget_guardrail_paused`)
+- repeated breach escalates to agent-scope kill switch (`stop_reason=budget_guardrail_kill_switch`)
 
 ### Work Mode: list runs for agent
 
