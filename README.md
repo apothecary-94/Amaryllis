@@ -882,9 +882,10 @@ Implemented now:
 - desktop Agents tab run monitor:
   - queue run from message input
   - live SSE event stream until terminal state (polling fallback on stream interruption)
+  - watch mode indicator (`LIVE` / `FALLBACK` / `TERMINAL`) with last event timestamp
   - cancel/resume actions
   - checkpoint timeline and result preview
-  - mission diagnostics pane with warning chips, signal badges, and recommended actions
+  - mission diagnostics pane with warning chips, signal badges, recommended actions, and quick replay presets
   - replay loader with attempt summary and event timeline
   - replay timeline filters with presets (`errors`, `tools`, `verify`), pagination, side-by-side attempt diff, and diagnostic package export
 

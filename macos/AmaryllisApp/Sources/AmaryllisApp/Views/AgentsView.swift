@@ -29,6 +29,8 @@ struct AgentsView: View {
     @State private var selectedRunDiagnostics: APIAgentRunDiagnosticsPayload?
     @State private var diagnosticsStatusMessage: String = "Diagnostics not loaded."
     @State private var isLoadingDiagnostics: Bool = false
+    @State private var runWatchSource: String = "idle"
+    @State private var runWatchLastEventAt: Date?
     @State private var replaySearchQuery: String = ""
     @State private var replayStageFilter: String = "all"
     @State private var replayAttemptFilter: String = "all"
@@ -202,6 +204,8 @@ struct AgentsView: View {
                             replayStatusMessage = "Replay not loaded."
                             selectedRunDiagnostics = nil
                             diagnosticsStatusMessage = "Diagnostics not loaded."
+                            runWatchSource = "idle"
+                            runWatchLastEventAt = nil
                             replaySearchQuery = ""
                             replayStageFilter = "all"
                             replayAttemptFilter = "all"
@@ -351,6 +355,9 @@ struct AgentsView: View {
             } else {
                 Text(runStatusMessage)
                     .font(AmaryllisTheme.bodyFont(size: 11, weight: .medium))
+                    .foregroundStyle(AmaryllisTheme.textSecondary)
+                Text(runWatchMetaLine())
+                    .font(AmaryllisTheme.monoFont(size: 10, weight: .regular))
                     .foregroundStyle(AmaryllisTheme.textSecondary)
 
                 Text("Runs: \(runs.count)")
@@ -596,6 +603,33 @@ struct AgentsView: View {
                                 .padding(6)
                                 .background(AmaryllisTheme.surfaceAlt)
                                 .clipShape(RoundedRectangle(cornerRadius: 4))
+                            }
+
+                            HStack(spacing: 8) {
+                                Text("Quick Replay:")
+                                    .font(AmaryllisTheme.bodyFont(size: 10, weight: .semibold))
+                                    .foregroundStyle(AmaryllisTheme.textSecondary)
+                                Button("Errors") {
+                                    Task { await loadReplayPreset(runID: run.id, preset: "errors") }
+                                }
+                                .buttonStyle(AmaryllisSecondaryButtonStyle())
+                                .disabled(isLoadingReplay || isRunActionLoading)
+                                Button("Tools") {
+                                    Task { await loadReplayPreset(runID: run.id, preset: "tools") }
+                                }
+                                .buttonStyle(AmaryllisSecondaryButtonStyle())
+                                .disabled(isLoadingReplay || isRunActionLoading)
+                                Button("Verify") {
+                                    Task { await loadReplayPreset(runID: run.id, preset: "verify") }
+                                }
+                                .buttonStyle(AmaryllisSecondaryButtonStyle())
+                                .disabled(isLoadingReplay || isRunActionLoading)
+                                Button("Full") {
+                                    Task { await loadReplay(runID: run.id) }
+                                }
+                                .buttonStyle(AmaryllisSecondaryButtonStyle())
+                                .disabled(isLoadingReplay || isRunActionLoading)
+                                Spacer()
                             }
                         }
 
@@ -1248,6 +1282,8 @@ struct AgentsView: View {
             replayStatusMessage = "Replay not loaded."
             selectedRunDiagnostics = nil
             diagnosticsStatusMessage = "Diagnostics not loaded."
+            runWatchSource = "idle"
+            runWatchLastEventAt = nil
             replaySearchQuery = ""
             replayStageFilter = "all"
             replayAttemptFilter = "all"
@@ -1320,6 +1356,33 @@ struct AgentsView: View {
         }
     }
 
+    private func loadReplayPreset(runID: String, preset: String) async {
+        isLoadingReplay = true
+        defer { isLoadingReplay = false }
+
+        do {
+            let replay = try await appState.apiClient.getAgentRunReplayFiltered(
+                runId: runID,
+                preset: preset,
+                timelineLimit: 240
+            )
+            selectedRunReplay = replay
+            replaySearchQuery = ""
+            replayStageFilter = "all"
+            replayAttemptFilter = "all"
+            replayPreset = localReplayPreset(for: preset)
+            replayCompareLeftAttempt = "auto"
+            replayCompareRightAttempt = "auto"
+            replayTimelineLimit = replayTimelinePageSize
+            replayStatusMessage =
+                "Replay preset loaded (\(preset)): \(replay.timeline.count) events from server filter."
+            appState.clearError()
+        } catch {
+            replayStatusMessage = "Replay preset load failed."
+            appState.lastError = error.localizedDescription
+        }
+    }
+
     private func loadDiagnostics(runID: String, silent: Bool = false) async {
         isLoadingDiagnostics = true
         defer { isLoadingDiagnostics = false }
@@ -1340,10 +1403,14 @@ struct AgentsView: View {
     }
 
     private func watchRunUntilTerminal(runID: String, timeoutSec: Double) async {
+        runWatchSource = "live"
+        runWatchLastEventAt = Date()
         runStatusMessage = "Run \(runID) live stream started..."
         do {
             try await streamRunUntilTerminal(runID: runID, timeoutSec: timeoutSec)
         } catch {
+            runWatchSource = "fallback"
+            runWatchLastEventAt = Date()
             runStatusMessage = "Run stream interrupted, switching to polling fallback..."
             await pollRunUntilTerminal(runID: runID, timeoutSec: timeoutSec)
         }
@@ -1399,23 +1466,28 @@ struct AgentsView: View {
         switch eventType {
         case "snapshot":
             let checkpoints = event.checkpointCount ?? event.nextIndex ?? 0
+            markRunWatchEvent(source: "live")
             runStatusMessage = "Run \(runID) status: \(status) | checkpoints \(checkpoints)"
-            _ = await fetchRunForWatch(runID: runID, silent: true)
+            _ = await fetchRunForWatch(runID: runID, silent: true, source: "live")
             return false
         case "checkpoint":
             let index = event.index ?? event.nextIndex ?? event.checkpointCount ?? 0
+            markRunWatchEvent(source: "live")
             runStatusMessage = "Run \(runID) status: \(status) | event \(index)"
             if index > 0, index % 8 == 0 {
-                _ = await fetchRunForWatch(runID: runID, silent: true)
+                _ = await fetchRunForWatch(runID: runID, silent: true, source: "live")
             }
             return false
         case "heartbeat":
+            markRunWatchEvent(source: "live")
             runStatusMessage = "Run \(runID) status: \(status)"
             return false
         case "timeout":
+            markRunWatchEvent(source: "live")
             runStatusMessage = "Run stream window elapsed, reconnecting..."
             return false
         case "done":
+            markRunWatchEvent(source: "live")
             if let run = await fetchRunForWatch(runID: runID, silent: true) {
                 await handleTerminalRun(run)
             } else {
@@ -1437,11 +1509,14 @@ struct AgentsView: View {
         }
     }
 
-    private func fetchRunForWatch(runID: String, silent: Bool) async -> APIAgentRunRecord? {
+    private func fetchRunForWatch(runID: String, silent: Bool, source: String? = nil) async -> APIAgentRunRecord? {
         do {
             let run = try await appState.apiClient.getAgentRun(runId: runID)
             upsertRun(run)
             selectedRunID = run.id
+            if let source {
+                markRunWatchEvent(source: source)
+            }
             return run
         } catch {
             if !silent {
@@ -1456,11 +1531,12 @@ struct AgentsView: View {
         let maxTicks = max(1, Int(timeoutSec / 1.2))
 
         for _ in 0..<maxTicks {
-            guard let run = await fetchRunForWatch(runID: runID, silent: false) else {
+            guard let run = await fetchRunForWatch(runID: runID, silent: false, source: "fallback") else {
                 return
             }
 
             let status = run.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            runWatchSource = "fallback"
             runStatusMessage = "Run \(run.id) status: \(status)"
             if terminalStates.contains(status) {
                 await handleTerminalRun(run)
@@ -1491,6 +1567,8 @@ struct AgentsView: View {
             chatHistory.append("RUN CANCELED")
         }
 
+        runWatchSource = "terminal"
+        runWatchLastEventAt = Date()
         runStatusMessage = "Run \(run.id) status: \(status)"
         await loadReplay(runID: run.id, silent: true)
         await loadDiagnostics(runID: run.id, silent: true)
@@ -1586,6 +1664,48 @@ struct AgentsView: View {
         default:
             return AmaryllisTheme.textSecondary
         }
+    }
+
+    private func localReplayPreset(for serverPreset: String) -> String {
+        switch serverPreset {
+        case "errors":
+            return "errors_only"
+        case "tools":
+            return "tool_calls"
+        case "verify":
+            return "verification_only"
+        default:
+            return "all"
+        }
+    }
+
+    private func markRunWatchEvent(source: String) {
+        runWatchSource = source
+        runWatchLastEventAt = Date()
+    }
+
+    private func runWatchMetaLine() -> String {
+        let sourceLabel: String
+        switch runWatchSource {
+        case "live":
+            sourceLabel = "LIVE"
+        case "fallback":
+            sourceLabel = "FALLBACK"
+        case "terminal":
+            sourceLabel = "TERMINAL"
+        default:
+            sourceLabel = "IDLE"
+        }
+        let lastEvent = runWatchLastEventAt.map { runWatchTimeString($0) } ?? "-"
+        return "watch: \(sourceLabel) | last event: \(lastEvent)"
+    }
+
+    private func runWatchTimeString(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone.current
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter.string(from: date)
     }
 
     private func diagnosticsWarningLabel(_ warning: String) -> String {

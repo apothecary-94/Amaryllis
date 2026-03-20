@@ -319,6 +319,24 @@ final class AmaryllisAPIClient {
         return response.replay
     }
 
+    func getAgentRunReplayFiltered(
+        runId: String,
+        preset: String,
+        timelineLimit: Int = 240
+    ) async throws -> APIAgentRunReplayPayload {
+        let queryItems: [URLQueryItem] = [
+            URLQueryItem(name: "preset", value: preset),
+            URLQueryItem(name: "timeline_limit", value: String(max(1, min(timelineLimit, 5_000))))
+        ]
+        let path = buildPath(path: "/agents/runs/\(runId)/replay", queryItems: queryItems)
+        let response: APIAgentRunReplayResponse = try await request(
+            path: path,
+            method: "GET",
+            body: Optional<Data>.none
+        )
+        return response.replay
+    }
+
     func getAgentRunDiagnostics(runId: String) async throws -> APIAgentRunDiagnosticsPayload {
         let response: APIAgentRunDiagnosticsResponse = try await request(
             path: "/agents/runs/\(runId)/diagnostics",
