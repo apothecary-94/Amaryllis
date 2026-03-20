@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from agents.agent import Agent
-from agents.agent_run_manager import AgentRunManager
+from agents.agent_run_manager import AgentRunManager, REPLAY_PRESET_STAGE_FILTERS
 from models.provider_errors import ProviderErrorInfo, ProviderOperationError
 from storage.database import Database
 from storage.vector_store import VectorStore
@@ -618,6 +618,81 @@ class AgentRunManagerTests(unittest.TestCase):
             int(replay_attempt_one.get("timeline_total_count", 0)),
             int(replay_attempt_one.get("timeline_filtered_count", 0)),
         )
+
+    def test_replay_run_filtered_supports_preset_status_failure_and_retryable(self) -> None:
+        self.executor.fail_first = True
+        self.executor.emit_tool_finished_count = 3
+        self.executor.emit_tool_error_count = 1
+        self.manager.start()
+        run = self.manager.create_run(
+            agent=self.agent,
+            user_id="user-1",
+            session_id="session-replay-advanced-filters",
+            user_message="advanced replay filters",
+            max_attempts=2,
+        )
+        final = self._wait_for_status(run["id"], {"succeeded"})
+        self.assertIsNotNone(final)
+
+        replay_errors = self.manager.replay_run_filtered(
+            run["id"],
+            preset="errors",
+            timeline_limit=200,
+        )
+        timeline_errors = replay_errors.get("timeline", [])
+        self.assertIsInstance(timeline_errors, list)
+        self.assertGreaterEqual(len(timeline_errors), 1)
+        self.assertTrue(
+            all(
+                str(item.get("stage") or "").strip().lower()
+                in set(REPLAY_PRESET_STAGE_FILTERS["errors"])
+                for item in timeline_errors
+            )
+        )
+        self.assertEqual(replay_errors.get("timeline_filters", {}).get("preset"), "errors")
+
+        replay_failed_tools = self.manager.replay_run_filtered(
+            run["id"],
+            statuses=["failed"],
+            timeline_limit=200,
+        )
+        timeline_failed_tools = replay_failed_tools.get("timeline", [])
+        self.assertIsInstance(timeline_failed_tools, list)
+        self.assertGreaterEqual(len(timeline_failed_tools), 1)
+        self.assertTrue(
+            all(str(item.get("status") or "").strip().lower() == "failed" for item in timeline_failed_tools)
+        )
+        self.assertEqual(
+            replay_failed_tools.get("timeline_filters", {}).get("statuses"),
+            ["failed"],
+        )
+
+        replay_timeout = self.manager.replay_run_filtered(
+            run["id"],
+            failure_classes=["timeout"],
+            timeline_limit=200,
+        )
+        timeline_timeout = replay_timeout.get("timeline", [])
+        self.assertIsInstance(timeline_timeout, list)
+        self.assertGreaterEqual(len(timeline_timeout), 1)
+        self.assertTrue(
+            all(str(item.get("failure_class") or "").strip().lower() == "timeout" for item in timeline_timeout)
+        )
+        self.assertEqual(
+            replay_timeout.get("timeline_filters", {}).get("failure_classes"),
+            ["timeout"],
+        )
+
+        replay_retryable = self.manager.replay_run_filtered(
+            run["id"],
+            retryable=True,
+            timeline_limit=200,
+        )
+        timeline_retryable = replay_retryable.get("timeline", [])
+        self.assertIsInstance(timeline_retryable, list)
+        self.assertGreaterEqual(len(timeline_retryable), 1)
+        self.assertTrue(all(bool(item.get("retryable")) for item in timeline_retryable))
+        self.assertEqual(replay_retryable.get("timeline_filters", {}).get("retryable"), True)
 
     def test_diagnose_run_returns_compact_summary_for_success(self) -> None:
         self.manager.start()

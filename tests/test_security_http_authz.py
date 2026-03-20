@@ -315,7 +315,14 @@ class SecurityHTTPAuthzTests(unittest.TestCase):
         own_replay_filtered = self.client.get(
             f"/agents/runs/{run_id}/replay",
             headers=self._auth("user-token"),
-            params={"stage": "running", "timeline_limit": 10},
+            params={
+                "preset": "errors",
+                "stage": "running",
+                "status": "failed",
+                "failure_class": "timeout",
+                "retryable": "true",
+                "timeline_limit": 10,
+            },
         )
         self.assertEqual(own_replay_filtered.status_code, 200)
         replay_payload = own_replay_filtered.json().get("replay", {})
@@ -323,6 +330,100 @@ class SecurityHTTPAuthzTests(unittest.TestCase):
             replay_payload.get("timeline_filters", {}).get("stages"),
             ["running"],
         )
+        self.assertEqual(
+            replay_payload.get("timeline_filters", {}).get("preset"),
+            "errors",
+        )
+        self.assertEqual(
+            replay_payload.get("timeline_filters", {}).get("statuses"),
+            ["failed"],
+        )
+        self.assertEqual(
+            replay_payload.get("timeline_filters", {}).get("failure_classes"),
+            ["timeout"],
+        )
+        self.assertEqual(
+            replay_payload.get("timeline_filters", {}).get("retryable"),
+            True,
+        )
+
+        invalid_preset = self.client.get(
+            f"/agents/runs/{run_id}/replay",
+            headers=self._auth("user-token"),
+            params={"preset": "unknown"},
+        )
+        self.assertEqual(invalid_preset.status_code, 400)
+        self.assertEqual(invalid_preset.json()["error"]["type"], "validation_error")
+
+    def test_run_event_stream_enforces_owner_and_emits_sse_events(self) -> None:
+        create_agent = self.client.post(
+            "/agents/create",
+            headers=self._auth("user-token"),
+            json={
+                "name": "Stream Agent",
+                "system_prompt": "You stream run updates.",
+                "user_id": "user-1",
+            },
+        )
+        self.assertEqual(create_agent.status_code, 200)
+        agent_id = str(create_agent.json()["id"])
+
+        own_run = self.client.post(
+            f"/agents/{agent_id}/runs",
+            headers=self._auth("user-token"),
+            json={
+                "user_id": "user-1",
+                "message": "stream this run",
+            },
+        )
+        self.assertEqual(own_run.status_code, 200)
+        run_id = str(own_run.json()["run"]["id"])
+
+        foreign_stream = self.client.get(
+            f"/agents/runs/{run_id}/events",
+            headers=self._auth("user2-token"),
+        )
+        self.assertEqual(foreign_stream.status_code, 403)
+        self.assertEqual(foreign_stream.json()["error"]["type"], "permission_denied")
+
+        frames: list[str] = []
+        with self.client.stream(
+            "GET",
+            f"/agents/runs/{run_id}/events",
+            headers=self._auth("user-token"),
+            params={
+                "poll_interval_ms": 50,
+                "timeout_sec": 8,
+                "include_snapshot": "true",
+                "include_heartbeat": "false",
+            },
+        ) as stream:
+            self.assertEqual(stream.status_code, 200)
+            self.assertIn("text/event-stream", str(stream.headers.get("content-type", "")))
+            for line in stream.iter_lines():
+                if not line:
+                    continue
+                decoded = line.decode("utf-8") if isinstance(line, bytes) else str(line)
+                if not decoded.startswith("data: "):
+                    continue
+                data = decoded[6:]
+                frames.append(data)
+                if data == "[DONE]":
+                    break
+
+        self.assertIn("[DONE]", frames)
+        events = [json.loads(item) for item in frames if item != "[DONE]"]
+        event_types = {str(item.get("event")) for item in events if isinstance(item, dict)}
+        self.assertIn("snapshot", event_types)
+        self.assertIn("checkpoint", event_types)
+        self.assertIn("done", event_types)
+        done_event = next(
+            (item for item in events if isinstance(item, dict) and str(item.get("event")) == "done"),
+            None,
+        )
+        self.assertIsNotNone(done_event)
+        assert isinstance(done_event, dict)
+        self.assertEqual(str(done_event.get("run_id")), run_id)
 
     def test_high_risk_tool_receipts_include_policy_and_rollback_context(self) -> None:
         session_id = "security-http-authz-high-risk-session"
@@ -418,6 +519,232 @@ class SecurityHTTPAuthzTests(unittest.TestCase):
         self.assertIn("rollback", str(failed_details.get("rollback_hint", "")).lower())
         self.assertIn("rollback", str(succeeded_details.get("rollback_hint", "")).lower())
         self.assertTrue(str(failed_details.get("error", "")).strip())
+
+    def test_terminal_action_receipts_are_persisted_and_scoped(self) -> None:
+        session_id = "security-http-authz-terminal-receipt-session"
+        arguments = {"code": "print('terminal receipt')", "timeout": 2}
+
+        denied = self.client.post(
+            "/mcp/tools/python_exec/invoke",
+            headers=self._auth("user-token"),
+            json={
+                "arguments": arguments,
+                "user_id": "user-1",
+                "session_id": session_id,
+            },
+        )
+        self.assertEqual(denied.status_code, 403)
+        self.assertEqual(denied.json()["error"]["type"], "permission_denied")
+
+        prompts_response = self.client.get(
+            "/tools/permissions/prompts",
+            headers=self._auth("user-token"),
+            params={"status": "pending", "limit": 100},
+        )
+        self.assertEqual(prompts_response.status_code, 200)
+        prompt = next(
+            (
+                item
+                for item in prompts_response.json().get("items", [])
+                if str(item.get("tool_name")) == "python_exec"
+                and str(item.get("session_id") or "") == session_id
+            ),
+            None,
+        )
+        self.assertIsNotNone(prompt)
+        prompt_id = str(prompt.get("id"))
+        self.assertTrue(prompt_id)
+
+        approve = self.client.post(
+            f"/tools/permissions/prompts/{prompt_id}/approve",
+            headers=self._auth("user-token"),
+        )
+        self.assertEqual(approve.status_code, 200)
+
+        allowed = self.client.post(
+            "/mcp/tools/python_exec/invoke",
+            headers=self._auth("user-token"),
+            json={
+                "arguments": arguments,
+                "user_id": "user-1",
+                "session_id": session_id,
+                "permission_id": prompt_id,
+            },
+        )
+        self.assertEqual(allowed.status_code, 200)
+        allowed_payload = allowed.json()
+        self.assertTrue(bool(allowed_payload.get("action_receipt", {}).get("signature")))
+
+        owner_receipts = self.client.get(
+            "/tools/actions/terminal",
+            headers=self._auth("user-token"),
+            params={
+                "session_id": session_id,
+                "tool_name": "python_exec",
+                "limit": 200,
+            },
+        )
+        self.assertEqual(owner_receipts.status_code, 200)
+        owner_items = owner_receipts.json().get("items", [])
+        self.assertGreaterEqual(len(owner_items), 2)
+
+        failed_item = next((item for item in owner_items if str(item.get("status")) == "failed"), None)
+        self.assertIsNotNone(failed_item)
+        assert isinstance(failed_item, dict)
+        self.assertTrue(str(failed_item.get("error_message", "")).strip())
+
+        succeeded_item = next((item for item in owner_items if str(item.get("status")) == "succeeded"), None)
+        self.assertIsNotNone(succeeded_item)
+        assert isinstance(succeeded_item, dict)
+        self.assertEqual(str(succeeded_item.get("tool_name")), "python_exec")
+        self.assertEqual(str(succeeded_item.get("actor")), "user-1")
+        self.assertEqual(str(succeeded_item.get("user_id")), "user-1")
+        self.assertEqual(str(succeeded_item.get("policy_level")), "l3")
+        self.assertIn("revert", str(succeeded_item.get("rollback_hint", "")).lower())
+        self.assertTrue(bool(succeeded_item.get("action_receipt", {}).get("signature")))
+        terminal_details = succeeded_item.get("details", {}).get("terminal_action", {})
+        self.assertEqual(str(terminal_details.get("tool_name")), "python_exec")
+        self.assertEqual(str(terminal_details.get("policy_level")), "l3")
+
+        cross_user = self.client.get(
+            "/tools/actions/terminal",
+            headers=self._auth("user2-token"),
+            params={
+                "session_id": session_id,
+                "tool_name": "python_exec",
+                "limit": 200,
+            },
+        )
+        self.assertEqual(cross_user.status_code, 200)
+        self.assertEqual(int(cross_user.json().get("count", -1)), 0)
+
+        unauthorized_scope = self.client.get(
+            "/tools/actions/terminal",
+            headers=self._auth("user-token"),
+            params={"user_id": "user-2"},
+        )
+        self.assertEqual(unauthorized_scope.status_code, 403)
+        self.assertEqual(unauthorized_scope.json()["error"]["type"], "permission_denied")
+
+        admin_view = self.client.get(
+            "/tools/actions/terminal",
+            headers=self._auth("admin-token"),
+            params={
+                "user_id": "user-1",
+                "session_id": session_id,
+                "tool_name": "python_exec",
+                "limit": 200,
+            },
+        )
+        self.assertEqual(admin_view.status_code, 200)
+        self.assertGreaterEqual(int(admin_view.json().get("count", 0)), 2)
+
+    def test_filesystem_patch_preview_requires_owner_approval_and_permission(self) -> None:
+        session_id = "security-http-authz-fs-patch-session"
+        with tempfile.TemporaryDirectory(prefix="amaryllis-http-fs-patch-", dir=Path.cwd()) as tmp:
+            target = Path(tmp) / "notes.txt"
+            target.write_text("before\n", encoding="utf-8")
+
+            preview = self.client.post(
+                "/tools/actions/filesystem/patches/preview",
+                headers=self._auth("user-token"),
+                json={
+                    "path": str(target),
+                    "content": "after\n",
+                    "user_id": "user-1",
+                    "session_id": session_id,
+                },
+            )
+            self.assertEqual(preview.status_code, 200)
+            preview_payload = preview.json()
+            preview_item = preview_payload.get("preview", {})
+            preview_id = str(preview_item.get("id") or "")
+            self.assertTrue(preview_id)
+            self.assertEqual(str(preview_item.get("status")), "pending")
+            diff_summary = preview_item.get("diff", {}).get("summary", {})
+            self.assertTrue(bool(diff_summary.get("changed")))
+            self.assertEqual(str(diff_summary.get("path")), str(preview_item.get("path")))
+
+            foreign_get = self.client.get(
+                f"/tools/actions/filesystem/patches/{preview_id}",
+                headers=self._auth("user2-token"),
+            )
+            self.assertEqual(foreign_get.status_code, 403)
+            self.assertEqual(foreign_get.json()["error"]["type"], "permission_denied")
+
+            approve = self.client.post(
+                f"/tools/actions/filesystem/patches/{preview_id}/approve",
+                headers=self._auth("user-token"),
+            )
+            self.assertEqual(approve.status_code, 200)
+            self.assertEqual(str(approve.json().get("preview", {}).get("status")), "approved")
+
+            apply_denied = self.client.post(
+                f"/tools/actions/filesystem/patches/{preview_id}/apply",
+                headers=self._auth("user-token"),
+                json={},
+            )
+            self.assertEqual(apply_denied.status_code, 403)
+            self.assertEqual(apply_denied.json()["error"]["type"], "permission_denied")
+
+            prompts_response = self.client.get(
+                "/tools/permissions/prompts",
+                headers=self._auth("user-token"),
+                params={"status": "pending", "limit": 200},
+            )
+            self.assertEqual(prompts_response.status_code, 200)
+            prompt = next(
+                (
+                    item
+                    for item in prompts_response.json().get("items", [])
+                    if str(item.get("tool_name")) == "filesystem"
+                    and str(item.get("session_id") or "") == session_id
+                ),
+                None,
+            )
+            self.assertIsNotNone(prompt)
+            prompt_id = str(prompt.get("id"))
+            self.assertTrue(prompt_id)
+
+            prompt_approve = self.client.post(
+                f"/tools/permissions/prompts/{prompt_id}/approve",
+                headers=self._auth("user-token"),
+            )
+            self.assertEqual(prompt_approve.status_code, 200)
+
+            apply_ok = self.client.post(
+                f"/tools/actions/filesystem/patches/{preview_id}/apply",
+                headers=self._auth("user-token"),
+                json={"permission_id": prompt_id},
+            )
+            self.assertEqual(apply_ok.status_code, 200)
+            apply_payload = apply_ok.json()
+            self.assertEqual(str(apply_payload.get("preview", {}).get("status")), "applied")
+            self.assertTrue(bool(apply_payload.get("action_receipt", {}).get("signature")))
+            self.assertEqual(target.read_text(encoding="utf-8"), "after\n")
+
+            own_item = self.client.get(
+                f"/tools/actions/filesystem/patches/{preview_id}",
+                headers=self._auth("user-token"),
+            )
+            self.assertEqual(own_item.status_code, 200)
+            self.assertEqual(str(own_item.json().get("preview", {}).get("status")), "applied")
+
+            cross_list = self.client.get(
+                "/tools/actions/filesystem/patches",
+                headers=self._auth("user2-token"),
+                params={"session_id": session_id, "limit": 200},
+            )
+            self.assertEqual(cross_list.status_code, 200)
+            self.assertEqual(int(cross_list.json().get("count", -1)), 0)
+
+            unauthorized_scope = self.client.get(
+                "/tools/actions/filesystem/patches",
+                headers=self._auth("user-token"),
+                params={"user_id": "user-2"},
+            )
+            self.assertEqual(unauthorized_scope.status_code, 403)
+            self.assertEqual(unauthorized_scope.json()["error"]["type"], "permission_denied")
 
 
 if __name__ == "__main__":

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
+import time
 from typing import Any
 
 from fastapi import APIRouter, Path, Query, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from runtime.auth import assert_owner, auth_context_from_request, resolve_user_id
@@ -10,10 +13,15 @@ from runtime.errors import AmaryllisError, NotFoundError, ProviderError, Validat
 
 router = APIRouter(tags=["agents"])
 RUN_STATUSES: set[str] = {"queued", "running", "succeeded", "failed", "canceled"}
+REPLAY_TIMELINE_PRESETS: set[str] = {"errors", "tools", "verify"}
 
 
 def _request_id(request: Request) -> str:
     return str(getattr(request.state, "request_id", ""))
+
+
+def _sse_data(payload: dict[str, Any]) -> str:
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
 def _sign_action(
@@ -285,12 +293,20 @@ def get_agent_run(
 def replay_agent_run(
     request: Request,
     run_id: str = Path(..., min_length=1),
+    preset: str | None = Query(default=None),
     stage: list[str] | None = Query(default=None),
+    status: list[str] | None = Query(default=None),
+    failure_class: list[str] | None = Query(default=None),
+    retryable: bool | None = Query(default=None),
     attempt: int | None = Query(default=None, ge=1, le=100),
     timeline_limit: int = Query(default=0, ge=0, le=5000),
 ) -> dict[str, Any]:
     services = request.app.state.services
     auth = auth_context_from_request(request)
+    normalized_preset = str(preset or "").strip().lower() or None
+    if normalized_preset and normalized_preset not in REPLAY_TIMELINE_PRESETS:
+        allowed = ", ".join(sorted(REPLAY_TIMELINE_PRESETS))
+        raise ValidationError(f"Invalid replay preset '{preset}'. Allowed values: {allowed}.")
     try:
         run = services.agent_manager.get_run(run_id=run_id)
         assert_owner(
@@ -301,7 +317,11 @@ def replay_agent_run(
         )
         replay = services.agent_manager.replay_run_filtered(
             run_id=run_id,
+            preset=normalized_preset,
             stages=stage,
+            statuses=status,
+            failure_classes=failure_class,
+            retryable=retryable,
             attempt=attempt,
             timeline_limit=timeline_limit,
         )
@@ -315,6 +335,131 @@ def replay_agent_run(
         raise
     except Exception as exc:
         raise ProviderError(str(exc)) from exc
+
+
+@router.get("/agents/runs/{run_id}/events")
+def stream_agent_run_events(
+    request: Request,
+    run_id: str = Path(..., min_length=1),
+    from_index: int = Query(default=0, ge=0, le=200_000),
+    poll_interval_ms: int = Query(default=250, ge=50, le=2000),
+    timeout_sec: float = Query(default=30.0, ge=1.0, le=300.0),
+    include_snapshot: bool = Query(default=True),
+    include_heartbeat: bool = Query(default=False),
+) -> StreamingResponse:
+    services = request.app.state.services
+    auth = auth_context_from_request(request)
+    try:
+        run = services.agent_manager.get_run(run_id=run_id)
+        assert_owner(
+            owner_user_id=str(run.get("user_id") or ""),
+            auth=auth,
+            resource_name="agent_run",
+            resource_id=run_id,
+        )
+    except ValueError as exc:
+        raise NotFoundError(str(exc)) from exc
+    except AmaryllisError:
+        raise
+    except Exception as exc:
+        raise ProviderError(str(exc)) from exc
+
+    def event_stream() -> Any:
+        started_monotonic = time.monotonic()
+        next_index = max(0, int(from_index))
+        snapshot_emitted = False
+        sleep_sec = max(0.05, float(poll_interval_ms) / 1000.0)
+
+        while True:
+            try:
+                current_run = services.agent_manager.get_run(run_id=run_id)
+            except Exception as exc:
+                yield _sse_data(
+                    {
+                        "event": "error",
+                        "run_id": run_id,
+                        "message": str(exc),
+                    }
+                )
+                yield "data: [DONE]\n\n"
+                return
+
+            raw_checkpoints = current_run.get("checkpoints")
+            checkpoints = (
+                [item for item in raw_checkpoints if isinstance(item, dict)]
+                if isinstance(raw_checkpoints, list)
+                else []
+            )
+            checkpoint_count = len(checkpoints)
+            status = str(current_run.get("status") or "").strip().lower() or "unknown"
+
+            if include_snapshot and not snapshot_emitted:
+                snapshot_emitted = True
+                yield _sse_data(
+                    {
+                        "event": "snapshot",
+                        "run_id": run_id,
+                        "status": status,
+                        "attempts": int(current_run.get("attempts", 0)),
+                        "max_attempts": int(current_run.get("max_attempts", 0)),
+                        "checkpoint_count": checkpoint_count,
+                        "next_index": next_index,
+                    }
+                )
+
+            if next_index < checkpoint_count:
+                for idx in range(next_index, checkpoint_count):
+                    checkpoint = checkpoints[idx]
+                    yield _sse_data(
+                        {
+                            "event": "checkpoint",
+                            "run_id": run_id,
+                            "status": status,
+                            "index": idx + 1,
+                            "checkpoint": checkpoint,
+                        }
+                    )
+                next_index = checkpoint_count
+            elif include_heartbeat:
+                yield _sse_data(
+                    {
+                        "event": "heartbeat",
+                        "run_id": run_id,
+                        "status": status,
+                        "checkpoint_count": checkpoint_count,
+                        "next_index": next_index,
+                    }
+                )
+
+            if status in {"succeeded", "failed", "canceled"}:
+                yield _sse_data(
+                    {
+                        "event": "done",
+                        "run_id": run_id,
+                        "status": status,
+                        "checkpoint_count": checkpoint_count,
+                        "next_index": next_index,
+                    }
+                )
+                yield "data: [DONE]\n\n"
+                return
+
+            if (time.monotonic() - started_monotonic) >= float(timeout_sec):
+                yield _sse_data(
+                    {
+                        "event": "timeout",
+                        "run_id": run_id,
+                        "status": status,
+                        "checkpoint_count": checkpoint_count,
+                        "next_index": next_index,
+                    }
+                )
+                yield "data: [DONE]\n\n"
+                return
+
+            time.sleep(sleep_sec)
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @router.get("/agents/runs/{run_id}/diagnostics")

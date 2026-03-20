@@ -653,6 +653,19 @@ Filtered replay (server-side timeline filtering for HUD):
 curl "http://localhost:8000/agents/runs/<run_id>/replay?stage=error&attempt=1&timeline_limit=50"
 ```
 
+Replay presets (`errors`, `tools`, `verify`) and status/failure filters:
+
+```bash
+curl "http://localhost:8000/agents/runs/<run_id>/replay?preset=errors&failure_class=timeout&retryable=true&timeline_limit=100"
+curl "http://localhost:8000/agents/runs/<run_id>/replay?preset=tools&status=failed&timeline_limit=100"
+```
+
+### Work Mode: stream run events (SSE for HUD)
+
+```bash
+curl -N "http://localhost:8000/agents/runs/<run_id>/events?poll_interval_ms=250&timeout_sec=30"
+```
+
 ### Work Mode: run diagnostics summary (warnings + actions)
 
 ```bash
@@ -1015,6 +1028,37 @@ curl -X POST "http://localhost:8000/mcp/tools/<tool_name>/invoke" \
 ```
 
 Note: high/critical tool success responses include `high_risk_action` (`actor`, `policy_level`, `rollback_hint`) and are persisted into `/security/audit` as `high_risk_action_receipt`.
+
+List persisted terminal action receipts (for `python_exec`/terminal tools):
+
+```bash
+curl "http://localhost:8000/tools/actions/terminal?tool_name=python_exec&session_id=session-001&limit=50"
+```
+
+Filesystem patch planner (preview -> approve -> apply):
+
+```bash
+# 1) preview patch (no file mutation)
+curl -X POST "http://localhost:8000/tools/actions/filesystem/patches/preview" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "path": "/absolute/path/to/file.txt",
+    "content": "new content",
+    "user_id": "user-001",
+    "session_id": "session-001"
+  }'
+
+# 2) approve preview
+curl -X POST "http://localhost:8000/tools/actions/filesystem/patches/<preview_id>/approve"
+
+# 3) apply approved patch (optionally pass permission_id in strict mode)
+curl -X POST "http://localhost:8000/tools/actions/filesystem/patches/<preview_id>/apply" \
+  -H "Content-Type: application/json" \
+  -d '{"permission_id":"<prompt_id>"}'
+
+# inspect previews
+curl "http://localhost:8000/tools/actions/filesystem/patches?status=approved&session_id=session-001&limit=50"
+```
 
 Debug tool guardrails snapshot:
 

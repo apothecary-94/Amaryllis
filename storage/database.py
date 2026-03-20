@@ -819,6 +819,378 @@ class Database:
         result.reverse()
         return result
 
+    def add_terminal_action_receipt(
+        self,
+        *,
+        action: str,
+        tool_name: str,
+        actor: str | None = None,
+        user_id: str | None = None,
+        session_id: str | None = None,
+        request_id: str | None = None,
+        permission_id: str | None = None,
+        status: str = "succeeded",
+        risk_level: str = "medium",
+        policy_level: str | None = None,
+        rollback_hint: str | None = None,
+        arguments: dict[str, Any] | None = None,
+        result: Any = None,
+        error_message: str | None = None,
+        details: dict[str, Any] | None = None,
+        action_receipt: dict[str, Any] | None = None,
+    ) -> int:
+        normalized_status = str(status or "succeeded").strip().lower() or "succeeded"
+        if normalized_status not in {"succeeded", "failed", "blocked", "canceled"}:
+            normalized_status = "succeeded"
+        normalized_risk = str(risk_level or "medium").strip().lower() or "medium"
+        if normalized_risk not in {"low", "medium", "high", "critical"}:
+            normalized_risk = "medium"
+        normalized_action = str(action or "tool_invoke").strip().lower() or "tool_invoke"
+        normalized_tool_name = str(tool_name or "").strip()
+        if not normalized_tool_name:
+            raise ValueError("tool_name is required")
+
+        arguments_json = json.dumps(arguments or {}, ensure_ascii=False)
+        result_json = json.dumps(result, ensure_ascii=False) if result is not None else None
+        details_json = json.dumps(details or {}, ensure_ascii=False)
+        action_receipt_json = json.dumps(action_receipt or {}, ensure_ascii=False)
+
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                INSERT INTO terminal_action_receipts(
+                    action,
+                    tool_name,
+                    actor,
+                    user_id,
+                    session_id,
+                    request_id,
+                    permission_id,
+                    status,
+                    risk_level,
+                    policy_level,
+                    rollback_hint,
+                    arguments_json,
+                    result_json,
+                    error_message,
+                    details_json,
+                    action_receipt_json,
+                    created_at
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    normalized_action,
+                    normalized_tool_name,
+                    actor,
+                    user_id,
+                    session_id,
+                    request_id,
+                    permission_id,
+                    normalized_status,
+                    normalized_risk,
+                    str(policy_level).strip() if policy_level not in (None, "") else None,
+                    str(rollback_hint).strip() if rollback_hint not in (None, "") else None,
+                    arguments_json,
+                    result_json,
+                    str(error_message) if error_message not in (None, "") else None,
+                    details_json,
+                    action_receipt_json,
+                    self._utc_now(),
+                ),
+            )
+            self._commit_locked()
+            return int(cursor.lastrowid)
+
+    def list_terminal_action_receipts(
+        self,
+        *,
+        limit: int = 200,
+        tool_name: str | None = None,
+        status: str | None = None,
+        actor: str | None = None,
+        user_id: str | None = None,
+        session_id: str | None = None,
+        request_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if limit <= 0:
+            return []
+
+        query = "SELECT * FROM terminal_action_receipts WHERE 1 = 1"
+        params: list[Any] = []
+        if tool_name:
+            query += " AND tool_name = ?"
+            params.append(str(tool_name).strip())
+        if status:
+            query += " AND status = ?"
+            params.append(str(status).strip().lower())
+        if actor:
+            query += " AND actor = ?"
+            params.append(actor)
+        if user_id:
+            query += " AND user_id = ?"
+            params.append(user_id)
+        if session_id:
+            query += " AND session_id = ?"
+            params.append(session_id)
+        if request_id:
+            query += " AND request_id = ?"
+            params.append(request_id)
+        query += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+
+        with self._lock:
+            rows = self._conn.execute(query, tuple(params)).fetchall()
+        items = [self._decode_terminal_action_receipt_row(dict(row)) for row in rows]
+        items.reverse()
+        return items
+
+    def create_filesystem_patch_preview(
+        self,
+        *,
+        user_id: str,
+        actor: str | None,
+        session_id: str | None,
+        request_id: str | None,
+        path: str,
+        target_path: str,
+        after_content: str,
+        before_exists: bool,
+        before_sha256: str | None,
+        before_size: int | None,
+        after_sha256: str,
+        after_size: int,
+        diff: dict[str, Any],
+        expires_at: str,
+    ) -> dict[str, Any]:
+        preview_id = str(uuid4())
+        now = self._utc_now()
+        with self._lock:
+            self._expire_filesystem_patch_previews_locked(now_iso=now)
+            self._conn.execute(
+                """
+                INSERT INTO filesystem_patch_previews(
+                    id,
+                    user_id,
+                    actor,
+                    session_id,
+                    request_id,
+                    path,
+                    target_path,
+                    after_content,
+                    before_exists,
+                    before_sha256,
+                    before_size,
+                    after_sha256,
+                    after_size,
+                    diff_json,
+                    status,
+                    expires_at,
+                    approved_at,
+                    applied_at,
+                    approval_actor,
+                    consumed_request_id,
+                    created_at,
+                    updated_at
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)
+                """,
+                (
+                    preview_id,
+                    str(user_id or "").strip(),
+                    str(actor).strip() if actor not in (None, "") else None,
+                    str(session_id).strip() if session_id not in (None, "") else None,
+                    str(request_id).strip() if request_id not in (None, "") else None,
+                    str(path or "").strip(),
+                    str(target_path or "").strip(),
+                    str(after_content or ""),
+                    1 if bool(before_exists) else 0,
+                    str(before_sha256).strip() if before_sha256 not in (None, "") else None,
+                    int(before_size) if before_size not in (None, "") else None,
+                    str(after_sha256 or "").strip(),
+                    max(0, int(after_size)),
+                    json.dumps(diff or {}, ensure_ascii=False),
+                    "pending",
+                    str(expires_at or "").strip() or now,
+                    now,
+                    now,
+                ),
+            )
+            self._commit_locked()
+            row = self._conn.execute(
+                "SELECT * FROM filesystem_patch_previews WHERE id = ?",
+                (preview_id,),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("Failed to persist filesystem patch preview.")
+        return self._decode_filesystem_patch_preview_row(dict(row), include_after_content=False)
+
+    def get_filesystem_patch_preview(
+        self,
+        preview_id: str,
+        *,
+        include_after_content: bool = False,
+    ) -> dict[str, Any] | None:
+        normalized_id = str(preview_id or "").strip()
+        if not normalized_id:
+            return None
+        with self._lock:
+            self._expire_filesystem_patch_previews_locked(now_iso=self._utc_now())
+            row = self._conn.execute(
+                "SELECT * FROM filesystem_patch_previews WHERE id = ?",
+                (normalized_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._decode_filesystem_patch_preview_row(dict(row), include_after_content=include_after_content)
+
+    def list_filesystem_patch_previews(
+        self,
+        *,
+        user_id: str | None = None,
+        session_id: str | None = None,
+        status: str | None = None,
+        limit: int = 200,
+        include_after_content: bool = False,
+    ) -> list[dict[str, Any]]:
+        if limit <= 0:
+            return []
+        query = "SELECT * FROM filesystem_patch_previews WHERE 1 = 1"
+        params: list[Any] = []
+        if user_id:
+            query += " AND user_id = ?"
+            params.append(str(user_id).strip())
+        if session_id:
+            query += " AND session_id = ?"
+            params.append(str(session_id).strip())
+        if status:
+            query += " AND status = ?"
+            params.append(str(status).strip().lower())
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+
+        with self._lock:
+            self._expire_filesystem_patch_previews_locked(now_iso=self._utc_now())
+            rows = self._conn.execute(query, tuple(params)).fetchall()
+        result = [
+            self._decode_filesystem_patch_preview_row(dict(row), include_after_content=include_after_content)
+            for row in rows
+        ]
+        result.reverse()
+        return result
+
+    def approve_filesystem_patch_preview(
+        self,
+        *,
+        preview_id: str,
+        actor: str | None,
+    ) -> dict[str, Any]:
+        normalized_id = str(preview_id or "").strip()
+        if not normalized_id:
+            raise ValueError("preview_id is required")
+        now = self._utc_now()
+        with self._lock:
+            self._expire_filesystem_patch_previews_locked(now_iso=now)
+            row = self._conn.execute(
+                "SELECT * FROM filesystem_patch_previews WHERE id = ?",
+                (normalized_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"Filesystem patch preview not found: {normalized_id}")
+            status = str(row["status"] or "").strip().lower()
+            if status == "applied":
+                raise ValueError(f"Filesystem patch preview already applied: {normalized_id}")
+            if status == "expired":
+                raise ValueError(f"Filesystem patch preview expired: {normalized_id}")
+            if status != "approved":
+                self._conn.execute(
+                    """
+                    UPDATE filesystem_patch_previews
+                    SET status = 'approved',
+                        approved_at = ?,
+                        approval_actor = ?,
+                        updated_at = ?
+                    WHERE id = ? AND status = 'pending'
+                    """,
+                    (
+                        now,
+                        str(actor).strip() if actor not in (None, "") else None,
+                        now,
+                        normalized_id,
+                    ),
+                )
+                self._commit_locked()
+            row_after = self._conn.execute(
+                "SELECT * FROM filesystem_patch_previews WHERE id = ?",
+                (normalized_id,),
+            ).fetchone()
+        if row_after is None:
+            raise ValueError(f"Filesystem patch preview not found: {normalized_id}")
+        return self._decode_filesystem_patch_preview_row(dict(row_after), include_after_content=False)
+
+    def mark_filesystem_patch_preview_applied(
+        self,
+        *,
+        preview_id: str,
+        consumed_request_id: str | None,
+    ) -> dict[str, Any]:
+        normalized_id = str(preview_id or "").strip()
+        if not normalized_id:
+            raise ValueError("preview_id is required")
+        now = self._utc_now()
+        with self._lock:
+            self._expire_filesystem_patch_previews_locked(now_iso=now)
+            row = self._conn.execute(
+                "SELECT status FROM filesystem_patch_previews WHERE id = ?",
+                (normalized_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"Filesystem patch preview not found: {normalized_id}")
+            status = str(row["status"] or "").strip().lower()
+            if status == "expired":
+                raise ValueError(f"Filesystem patch preview expired: {normalized_id}")
+            if status not in {"approved", "applied"}:
+                raise ValueError(
+                    f"Filesystem patch preview must be approved before apply: {normalized_id}"
+                )
+            if status == "approved":
+                self._conn.execute(
+                    """
+                    UPDATE filesystem_patch_previews
+                    SET status = 'applied',
+                        applied_at = ?,
+                        consumed_request_id = ?,
+                        updated_at = ?
+                    WHERE id = ? AND status = 'approved'
+                    """,
+                    (
+                        now,
+                        str(consumed_request_id).strip() if consumed_request_id not in (None, "") else None,
+                        now,
+                        normalized_id,
+                    ),
+                )
+                self._commit_locked()
+            row_after = self._conn.execute(
+                "SELECT * FROM filesystem_patch_previews WHERE id = ?",
+                (normalized_id,),
+            ).fetchone()
+        if row_after is None:
+            raise ValueError(f"Filesystem patch preview not found: {normalized_id}")
+        return self._decode_filesystem_patch_preview_row(dict(row_after), include_after_content=False)
+
+    def _expire_filesystem_patch_previews_locked(self, *, now_iso: str) -> None:
+        self._conn.execute(
+            """
+            UPDATE filesystem_patch_previews
+            SET status = 'expired',
+                updated_at = ?
+            WHERE status IN ('pending', 'approved')
+              AND expires_at <= ?
+            """,
+            (now_iso, now_iso),
+        )
+
     def record_auth_token_activity(
         self,
         *,
@@ -2766,6 +3138,58 @@ class Database:
         row["signature"] = signature if isinstance(signature, dict) else {}
         row["status"] = str(row.get("status") or "succeeded").strip().lower() or "succeeded"
         row["event_type"] = str(row.get("event_type") or "signed_action").strip() or "signed_action"
+        return row
+
+    @staticmethod
+    def _decode_terminal_action_receipt_row(row: dict[str, Any]) -> dict[str, Any]:
+        arguments_json = row.pop("arguments_json", "{}")
+        result_json = row.pop("result_json", None)
+        details_json = row.pop("details_json", "{}")
+        action_receipt_json = row.pop("action_receipt_json", "{}")
+        try:
+            arguments = json.loads(arguments_json or "{}")
+        except Exception:
+            arguments = {}
+        try:
+            result = json.loads(result_json) if result_json not in (None, "") else None
+        except Exception:
+            result = None
+        try:
+            details = json.loads(details_json or "{}")
+        except Exception:
+            details = {}
+        try:
+            action_receipt = json.loads(action_receipt_json or "{}")
+        except Exception:
+            action_receipt = {}
+
+        row["arguments"] = arguments if isinstance(arguments, dict) else {}
+        row["result"] = result
+        row["details"] = details if isinstance(details, dict) else {}
+        row["action_receipt"] = action_receipt if isinstance(action_receipt, dict) else {}
+        row["action"] = str(row.get("action") or "tool_invoke").strip().lower() or "tool_invoke"
+        row["tool_name"] = str(row.get("tool_name") or "").strip()
+        row["status"] = str(row.get("status") or "succeeded").strip().lower() or "succeeded"
+        row["risk_level"] = str(row.get("risk_level") or "medium").strip().lower() or "medium"
+        return row
+
+    @staticmethod
+    def _decode_filesystem_patch_preview_row(
+        row: dict[str, Any],
+        *,
+        include_after_content: bool = False,
+    ) -> dict[str, Any]:
+        diff_json = row.pop("diff_json", "{}")
+        after_content = row.pop("after_content", "")
+        try:
+            diff = json.loads(diff_json or "{}")
+        except Exception:
+            diff = {}
+        row["diff"] = diff if isinstance(diff, dict) else {}
+        row["status"] = str(row.get("status") or "pending").strip().lower() or "pending"
+        row["before_exists"] = bool(int(row.get("before_exists", 0)))
+        if include_after_content:
+            row["after_content"] = str(after_content or "")
         return row
 
     @staticmethod

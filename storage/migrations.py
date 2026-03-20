@@ -727,6 +727,80 @@ MIGRATIONS: list[Migration] = [
             ON security_incident_events(incident_id, created_at);
         """,
     ),
+    Migration(
+        version=16,
+        name="terminal_action_receipts_v1",
+        sql="""
+        CREATE TABLE IF NOT EXISTS terminal_action_receipts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            action TEXT NOT NULL DEFAULT 'tool_invoke',
+            tool_name TEXT NOT NULL,
+            actor TEXT,
+            user_id TEXT,
+            session_id TEXT,
+            request_id TEXT,
+            permission_id TEXT,
+            status TEXT NOT NULL DEFAULT 'succeeded',
+            risk_level TEXT NOT NULL DEFAULT 'medium',
+            policy_level TEXT,
+            rollback_hint TEXT,
+            arguments_json TEXT NOT NULL DEFAULT '{}',
+            result_json TEXT,
+            error_message TEXT,
+            details_json TEXT NOT NULL DEFAULT '{}',
+            action_receipt_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_terminal_action_receipts_time
+            ON terminal_action_receipts(created_at);
+        CREATE INDEX IF NOT EXISTS idx_terminal_action_receipts_tool_status
+            ON terminal_action_receipts(tool_name, status, created_at);
+        CREATE INDEX IF NOT EXISTS idx_terminal_action_receipts_actor
+            ON terminal_action_receipts(actor, created_at);
+        CREATE INDEX IF NOT EXISTS idx_terminal_action_receipts_user
+            ON terminal_action_receipts(user_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_terminal_action_receipts_request
+            ON terminal_action_receipts(request_id, created_at);
+        """,
+    ),
+    Migration(
+        version=17,
+        name="filesystem_patch_previews_v1",
+        sql="""
+        CREATE TABLE IF NOT EXISTS filesystem_patch_previews (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            actor TEXT,
+            session_id TEXT,
+            request_id TEXT,
+            path TEXT NOT NULL,
+            target_path TEXT NOT NULL,
+            after_content TEXT NOT NULL,
+            before_exists INTEGER NOT NULL DEFAULT 0,
+            before_sha256 TEXT,
+            before_size INTEGER,
+            after_sha256 TEXT NOT NULL,
+            after_size INTEGER NOT NULL,
+            diff_json TEXT NOT NULL DEFAULT '{}',
+            status TEXT NOT NULL DEFAULT 'pending',
+            expires_at TEXT NOT NULL,
+            approved_at TEXT,
+            applied_at TEXT,
+            approval_actor TEXT,
+            consumed_request_id TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_fs_patch_previews_user_status_created
+            ON filesystem_patch_previews(user_id, status, created_at);
+        CREATE INDEX IF NOT EXISTS idx_fs_patch_previews_session_created
+            ON filesystem_patch_previews(session_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_fs_patch_previews_expiry
+            ON filesystem_patch_previews(status, expires_at);
+        """,
+    ),
 ]
 
 

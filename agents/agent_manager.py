@@ -153,7 +153,11 @@ class AgentManager:
         self,
         run_id: str,
         *,
+        preset: str | None = None,
         stages: list[str] | None = None,
+        statuses: list[str] | None = None,
+        failure_classes: list[str] | None = None,
+        retryable: bool | None = None,
         attempt: int | None = None,
         timeline_limit: int | None = None,
     ) -> dict[str, Any]:
@@ -161,7 +165,11 @@ class AgentManager:
             raise ValueError("Run manager is not configured")
         return self.run_manager.replay_run_filtered(
             run_id,
+            preset=preset,
             stages=stages,
+            statuses=statuses,
+            failure_classes=failure_classes,
+            retryable=retryable,
             attempt=attempt,
             timeline_limit=timeline_limit,
         )

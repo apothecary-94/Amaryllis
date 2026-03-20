@@ -235,6 +235,78 @@ class DatabasePersistenceHardeningTests(unittest.TestCase):
         assert lease_2 is not None
         self.assertEqual(str(lease_2.get("lease_owner")), "worker-b")
 
+    def test_filesystem_patch_preview_lifecycle_and_expiry(self) -> None:
+        now = datetime.now(timezone.utc)
+        preview = self.database.create_filesystem_patch_preview(
+            user_id="user-1",
+            actor="user-1",
+            session_id="session-1",
+            request_id="req-1",
+            path="tmp/demo.txt",
+            target_path=str(self.base / "demo.txt"),
+            after_content="hello",
+            before_exists=False,
+            before_sha256=None,
+            before_size=None,
+            after_sha256="sha-after",
+            after_size=5,
+            diff={
+                "format": "unified",
+                "text": "@@ -0,0 +1 @@\n+hello\n",
+                "summary": {"changed": True},
+            },
+            expires_at=(now + timedelta(minutes=10)).isoformat(),
+        )
+        preview_id = str(preview.get("id") or "")
+        self.assertTrue(preview_id)
+        self.assertEqual(str(preview.get("status")), "pending")
+
+        approved = self.database.approve_filesystem_patch_preview(
+            preview_id=preview_id,
+            actor="user-1",
+        )
+        self.assertEqual(str(approved.get("status")), "approved")
+
+        applied = self.database.mark_filesystem_patch_preview_applied(
+            preview_id=preview_id,
+            consumed_request_id="req-2",
+        )
+        self.assertEqual(str(applied.get("status")), "applied")
+        self.assertTrue(str(applied.get("applied_at") or "").strip())
+
+        loaded = self.database.get_filesystem_patch_preview(
+            preview_id,
+            include_after_content=True,
+        )
+        self.assertIsNotNone(loaded)
+        assert loaded is not None
+        self.assertEqual(str(loaded.get("after_content")), "hello")
+        self.assertEqual(str(loaded.get("status")), "applied")
+
+        expired = self.database.create_filesystem_patch_preview(
+            user_id="user-1",
+            actor="user-1",
+            session_id="session-1",
+            request_id="req-3",
+            path="tmp/expired.txt",
+            target_path=str(self.base / "expired.txt"),
+            after_content="x",
+            before_exists=False,
+            before_sha256=None,
+            before_size=None,
+            after_sha256="sha-x",
+            after_size=1,
+            diff={"format": "unified", "text": "", "summary": {"changed": True}},
+            expires_at=(now - timedelta(minutes=1)).isoformat(),
+        )
+        expired_id = str(expired.get("id") or "")
+        self.assertTrue(expired_id)
+
+        refreshed = self.database.get_filesystem_patch_preview(expired_id)
+        self.assertIsNotNone(refreshed)
+        assert refreshed is not None
+        self.assertEqual(str(refreshed.get("status")), "expired")
+
 
 if __name__ == "__main__":
     unittest.main()

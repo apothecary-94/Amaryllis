@@ -47,6 +47,32 @@ CORE_ISSUE_DEFINITIONS: tuple[tuple[str, str, int, list[str]], ...] = (
     (STEP_PERSIST, "Persist memory", 30, [STEP_REASONING]),
 )
 
+REPLAY_PRESET_STAGE_FILTERS: dict[str, tuple[str, ...]] = {
+    "errors": (
+        "error",
+        "failed",
+        "canceled",
+        "attempt_timeout_guardrail",
+        "artifact_quality_failed",
+    ),
+    "tools": (
+        "tool_call_recorded",
+        "tool_call_started",
+        "tool_call_finished",
+        "tool_call_error",
+        "tool_call_reused",
+    ),
+    "verify": (
+        "verification_repair_attempt",
+        "verification_repair_success",
+        "verification_repair_failed",
+        "artifact_quality_evaluated",
+        "artifact_repair_attempt",
+        "artifact_quality_passed",
+        "artifact_quality_failed",
+    ),
+}
+
 
 class AgentRunManager:
     def __init__(
@@ -535,6 +561,10 @@ class AgentRunManager:
                 "attempt": attempt,
                 "message": message,
             }
+            if "status" in item:
+                event_status = str(item.get("status") or "").strip().lower()
+                if event_status:
+                    event["status"] = event_status
             if "retryable" in item:
                 event["retryable"] = bool(item.get("retryable"))
             if "failure_class" in item:
@@ -644,7 +674,11 @@ class AgentRunManager:
         self,
         run_id: str,
         *,
+        preset: str | None = None,
         stages: list[str] | None = None,
+        statuses: list[str] | None = None,
+        failure_classes: list[str] | None = None,
+        retryable: bool | None = None,
         attempt: int | None = None,
         timeline_limit: int | None = None,
     ) -> dict[str, Any]:
@@ -653,14 +687,58 @@ class AgentRunManager:
         timeline = [item for item in raw_timeline if isinstance(item, dict)] if isinstance(raw_timeline, list) else []
         total_count = len(timeline)
 
+        def _normalize_tokens(values: list[str] | None) -> set[str]:
+            return {
+                str(item).strip().lower()
+                for item in (values or [])
+                if str(item).strip()
+            }
+
+        preset_name = str(preset or "").strip().lower() or None
+        preset_stage_filter = (
+            _normalize_tokens(list(REPLAY_PRESET_STAGE_FILTERS.get(preset_name or "", ())))
+            if preset_name
+            else set()
+        )
         stage_filter = {
             str(item).strip().lower()
             for item in (stages or [])
             if str(item).strip()
         }
+        status_filter = _normalize_tokens(statuses)
+        failure_class_filter = _normalize_tokens(failure_classes)
+
         filtered = timeline
+        if preset_stage_filter:
+            filtered = [
+                item
+                for item in filtered
+                if str(item.get("stage") or "").strip().lower() in preset_stage_filter
+            ]
         if stage_filter:
             filtered = [item for item in filtered if str(item.get("stage") or "").strip().lower() in stage_filter]
+
+        if status_filter:
+            filtered = [
+                item
+                for item in filtered
+                if str(item.get("status") or "").strip().lower() in status_filter
+            ]
+
+        if failure_class_filter:
+            filtered = [
+                item
+                for item in filtered
+                if str(item.get("failure_class") or "").strip().lower() in failure_class_filter
+            ]
+
+        retryable_filter = retryable if isinstance(retryable, bool) else None
+        if retryable_filter is not None:
+            filtered = [
+                item
+                for item in filtered
+                if "retryable" in item and bool(item.get("retryable")) is retryable_filter
+            ]
 
         attempt_filter = int(attempt) if attempt is not None else None
         if attempt_filter is not None and attempt_filter > 0:
@@ -675,7 +753,12 @@ class AgentRunManager:
         replay_filtered["timeline_total_count"] = total_count
         replay_filtered["timeline_filtered_count"] = len(filtered)
         replay_filtered["timeline_filters"] = {
+            "preset": preset_name,
+            "preset_stages": sorted(preset_stage_filter),
             "stages": sorted(stage_filter),
+            "statuses": sorted(status_filter),
+            "failure_classes": sorted(failure_class_filter),
+            "retryable": retryable_filter,
             "attempt": attempt_filter,
             "timeline_limit": limit,
         }
