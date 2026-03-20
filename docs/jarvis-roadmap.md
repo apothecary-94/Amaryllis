@@ -36,8 +36,11 @@ Build a local-first, voice-native, autonomous assistant for developer workflows 
   - reliable async mission mode with replay and diagnostics.
 
 ### Phase 2 - Autonomous Operator Beta
-- Goal: move from assistant to proactive operator.
+- Goal: move from assistant to proactive operator with Tier-1 engineering guarantees.
 - Outcomes:
+  - modular cognitive kernel and backend-swappable cognition adapters.
+  - deterministic reproducibility chain (toolchain/profile/provenance).
+  - non-functional quality gates (performance, SLO burn-rate, reliability under faults/load).
   - wake-word and low-latency dialog loop.
   - richer OS integrations (calendar/mail/notifications/window-control).
   - L2-L3 autonomy with user-facing trust controls.

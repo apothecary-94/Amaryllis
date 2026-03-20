@@ -1574,6 +1574,7 @@ scripts/release/rollback_local.sh <tag-or-commit>
 - Strategy and phased execution plan: `docs/jarvis-roadmap.md`
 - Phase 0 implementation backlog (with DoD and sprint status): `docs/jarvis-phase0-backlog.md`
 - Phase 1 implementation backlog (Developer Jarvis Alpha): `docs/jarvis-phase1-backlog.md`
+- Phase 2 implementation backlog (Tier-1 Operator Beta): `docs/jarvis-phase2-backlog.md`
 
 ## License
 
