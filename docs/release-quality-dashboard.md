@@ -5,12 +5,15 @@
 
 Script:
 - `scripts/release/build_quality_dashboard_snapshot.py`
+- `scripts/release/publish_release_quality_snapshot.py`
 
 Primary artifacts:
 - `artifacts/release-quality-dashboard.json`
 - `artifacts/release-quality-dashboard-trend.json`
 - `artifacts/release-quality-dashboard-final.json` (post-Linux distribution path)
 - `artifacts/release-quality-dashboard-trend-final.json` (post-Linux distribution trend)
+- `artifacts/release-quality-dashboard-runtime-export.json` (stable runtime import path payload)
+- `artifacts/release-quality-dashboard-trend-runtime-export.json`
 
 Baseline:
 - `eval/baselines/quality/release_quality_dashboard_baseline.json`
@@ -56,6 +59,19 @@ Optional:
 - builds dashboard snapshot after canary benchmark gates (`release-quality-dashboard`),
 - optionally enriches both canary/final dashboard snapshots with macOS desktop parity staging report when present,
 - rebuilds final dashboard in `Release KPI Pack` with `distribution-resilience-report` included (`release-quality-dashboard-final`),
-- uploads both snapshot + trend artifacts.
+- publishes runtime-export snapshot/trend copies via `publish_release_quality_snapshot.py`,
+- uploads snapshot + trend artifacts (including runtime export copies).
 
 This gives a stable, machine-readable quality surface for release-over-release comparability.
+
+## Runtime Export (Optional)
+
+To surface latest release quality in runtime Prometheus metrics and Grafana:
+
+- run publisher:
+  - `python scripts/release/publish_release_quality_snapshot.py --snapshot-report artifacts/release-quality-dashboard-final.json --trend-report artifacts/release-quality-dashboard-trend-final.json --install-root ~/.local/share/amaryllis`,
+- runtime then reads default path
+  - `~/.local/share/amaryllis/observability/release-quality-dashboard-latest.json`
+  via `AMARYLLIS_RELEASE_QUALITY_DASHBOARD_PATH` (overridable),
+- runtime metrics endpoint then publishes release/desktop-staging gauges consumed by
+  `observability/grafana/dashboard-amaryllis.json`.

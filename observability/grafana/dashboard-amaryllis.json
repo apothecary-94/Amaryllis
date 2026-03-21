@@ -52,6 +52,51 @@
           "expr": "amaryllis_open_incidents_total"
         }
       ]
+    },
+    {
+      "type": "stat",
+      "title": "Release Snapshot Loaded",
+      "targets": [
+        {
+          "expr": "amaryllis_release_quality_snapshot_loaded"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Release Quality Score (%)",
+      "targets": [
+        {
+          "expr": "amaryllis_release_quality_score_pct"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Release Quality Status",
+      "targets": [
+        {
+          "expr": "amaryllis_release_quality_status"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Desktop Staging Status",
+      "targets": [
+        {
+          "expr": "amaryllis_release_desktop_staging_status"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Desktop Staging Error Rate (%)",
+      "targets": [
+        {
+          "expr": "amaryllis_release_desktop_staging_error_rate_pct"
+        }
+      ]
     }
   ]
 }

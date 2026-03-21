@@ -104,6 +104,7 @@ class APILifecycleTests(unittest.TestCase):
         metrics = self.client.get("/service/observability/metrics", headers=self._auth("service-token"))
         self.assertEqual(metrics.status_code, 200)
         self.assertIn("amaryllis_request_availability_ratio", metrics.text)
+        self.assertIn("amaryllis_release_quality_snapshot_loaded", metrics.text)
 
 
 if __name__ == "__main__":

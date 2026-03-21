@@ -95,11 +95,15 @@ def _parse_environment_items(items: Iterable[str]) -> dict[str, str]:
 
 
 def _base_env(*, install_root: str, channel: str, host: str, port: int) -> dict[str, str]:
+    root = str(install_root)
     return {
-        "AMARYLLIS_LINUX_INSTALL_ROOT": str(install_root),
+        "AMARYLLIS_LINUX_INSTALL_ROOT": root,
         "AMARYLLIS_LINUX_RELEASE_CHANNEL": str(channel),
         "AMARYLLIS_HOST": str(host),
         "AMARYLLIS_PORT": str(int(port)),
+        "AMARYLLIS_RELEASE_QUALITY_DASHBOARD_PATH": str(
+            Path(root) / "observability" / "release-quality-dashboard-latest.json"
+        ),
     }
 
 

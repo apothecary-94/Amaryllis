@@ -35,7 +35,10 @@ This performs:
 2. deterministic bootstrap via `scripts/bootstrap/reproducible_local_bootstrap.sh`,
 3. launcher generation at `${AMARYLLIS_LINUX_BIN_DIR:-$HOME/.local/bin}/amaryllis-runtime`,
 4. atomic channel pointer switch for selected channel,
-5. `current` pointer update when `stable` is installed.
+5. `current` pointer update when `stable` is installed,
+6. optional publish of `artifacts/release-quality-dashboard-final.json` into:
+   - `${AMARYLLIS_LINUX_INSTALL_ROOT}/observability/release-quality-dashboard-latest.json`
+   when snapshot artifact exists in repo workspace.
 
 ## Upgrade
 
@@ -114,6 +117,7 @@ Environment overrides:
 - `AMARYLLIS_LINUX_RELEASE_CHANNEL` (`stable|canary`, runtime launcher channel selector)
 - `AMARYLLIS_HOST` (default `127.0.0.1`)
 - `AMARYLLIS_PORT` (default `8000`)
+- `AMARYLLIS_RELEASE_QUALITY_DASHBOARD_PATH` (optional override for runtime release-quality snapshot path)
 
 ## Installer Options
 

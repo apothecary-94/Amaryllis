@@ -20,6 +20,7 @@ Environment:
   AMARYLLIS_BOOTSTRAP_PYTHON        Python executable for bootstrap (default: python3.11)
   AMARYLLIS_KEEP_RELEASES           Number of releases to keep (default: 3)
   AMARYLLIS_LINUX_RELEASE_CHANNEL   Default channel when --channel is omitted (stable|canary)
+  AMARYLLIS_RELEASE_QUALITY_DASHBOARD_PATH  Runtime export path for release quality snapshot
 USAGE
 }
 
@@ -143,6 +144,10 @@ SRC_DIR="${RELEASE_DIR}/src"
 VENV_DIR="${RELEASE_DIR}/venv"
 CURRENT_LINK="${INSTALL_ROOT}/current"
 LAUNCHER="${BIN_DIR}/amaryllis-runtime"
+RELEASE_QUALITY_SNAPSHOT_SOURCE="${ROOT_DIR}/artifacts/release-quality-dashboard-final.json"
+RELEASE_QUALITY_TREND_SOURCE="${ROOT_DIR}/artifacts/release-quality-dashboard-trend-final.json"
+RELEASE_QUALITY_RUNTIME_PATH="${INSTALL_ROOT}/observability/release-quality-dashboard-latest.json"
+RELEASE_QUALITY_PUBLISHER="${ROOT_DIR}/scripts/release/publish_release_quality_snapshot.py"
 
 run_cmd() {
   echo "+ $*"
@@ -216,6 +221,8 @@ fi
 
 HOST="${AMARYLLIS_HOST:-127.0.0.1}"
 PORT="${AMARYLLIS_PORT:-8000}"
+RELEASE_QUALITY_DASHBOARD_PATH="${AMARYLLIS_RELEASE_QUALITY_DASHBOARD_PATH:-${INSTALL_ROOT}/observability/release-quality-dashboard-latest.json}"
+export AMARYLLIS_RELEASE_QUALITY_DASHBOARD_PATH="${RELEASE_QUALITY_DASHBOARD_PATH}"
 
 exec "${VENV_DIR}/bin/uvicorn" runtime.server:app \
   --app-dir "${SRC_DIR}" \
@@ -278,6 +285,23 @@ if [[ "${DRY_RUN}" != "1" ]]; then
   fi
 fi
 
+if [[ -f "${RELEASE_QUALITY_SNAPSHOT_SOURCE}" ]]; then
+  publish_cmd=(
+    "${PYTHON_BIN}"
+    "${RELEASE_QUALITY_PUBLISHER}"
+    "--snapshot-report"
+    "${RELEASE_QUALITY_SNAPSHOT_SOURCE}"
+    "--install-root"
+    "${INSTALL_ROOT}"
+  )
+  if [[ -f "${RELEASE_QUALITY_TREND_SOURCE}" ]]; then
+    publish_cmd+=("--trend-report" "${RELEASE_QUALITY_TREND_SOURCE}")
+  fi
+  run_cmd "${publish_cmd[@]}"
+else
+  echo "[linux-installer] release quality snapshot not found: ${RELEASE_QUALITY_SNAPSHOT_SOURCE} (skip publish)"
+fi
+
 echo "[linux-installer] install complete"
 echo "[linux-installer] launcher: ${LAUNCHER}"
 if [[ -L "${CHANNEL_LINK}" ]]; then
@@ -288,4 +312,5 @@ if [[ -L "${CURRENT_LINK}" ]]; then
 else
   echo "[linux-installer] current release link not set"
 fi
+echo "[linux-installer] release quality runtime path: ${RELEASE_QUALITY_RUNTIME_PATH}"
 echo "[linux-installer] start runtime: ${LAUNCHER}"

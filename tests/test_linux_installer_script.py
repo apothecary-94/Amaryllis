@@ -36,6 +36,7 @@ class LinuxInstallerScriptTests(unittest.TestCase):
         self.assertIn("--dry-run", text)
         self.assertIn("AMARYLLIS_LINUX_INSTALL_ROOT", text)
         self.assertIn("AMARYLLIS_LINUX_RELEASE_CHANNEL", text)
+        self.assertIn("AMARYLLIS_RELEASE_QUALITY_DASHBOARD_PATH", text)
 
     @unittest.skipUnless(platform.system() == "Linux", "dry-run install check is Linux-only")
     def test_dry_run_install_path(self) -> None:

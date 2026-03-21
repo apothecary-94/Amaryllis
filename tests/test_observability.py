@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import json
 import logging
+import os
+from pathlib import Path
+import tempfile
 import unittest
+from unittest.mock import patch
 
 from runtime.observability import ObservabilityManager, SLOTargets
 
@@ -46,6 +51,42 @@ class ObservabilityTests(unittest.TestCase):
         metrics = manager.sre.render_prometheus_metrics()
         self.assertIn("amaryllis_request_availability_ratio", metrics)
         self.assertIn("amaryllis_run_success_ratio", metrics)
+        self.assertIn("amaryllis_release_quality_snapshot_loaded 0", metrics)
+
+    def test_release_quality_snapshot_metrics_are_exported_when_configured(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amaryllis-observability-") as tmp:
+            snapshot_path = Path(tmp) / "release-quality-dashboard.json"
+            payload = {
+                "suite": "release_quality_dashboard_v1",
+                "summary": {
+                    "signals_total": 21,
+                    "signals_passed": 21,
+                    "signals_failed": 0,
+                    "quality_score_pct": 100.0,
+                    "status": "pass",
+                },
+                "signals": [
+                    {"metric_id": "macos_desktop_parity.status", "value": 1.0},
+                    {"metric_id": "macos_desktop_parity.error_rate_pct", "value": 0.0},
+                    {"metric_id": "macos_desktop_parity.checks_failed", "value": 0.0},
+                ],
+            }
+            snapshot_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+            with patch.dict(
+                os.environ,
+                {"AMARYLLIS_RELEASE_QUALITY_DASHBOARD_PATH": str(snapshot_path)},
+                clear=False,
+            ):
+                manager = self._build_manager()
+
+            metrics = manager.sre.render_prometheus_metrics()
+            self.assertIn("amaryllis_release_quality_snapshot_loaded 1", metrics)
+            self.assertIn("amaryllis_release_quality_score_pct 100.000000", metrics)
+            self.assertIn("amaryllis_release_quality_status 1.000000", metrics)
+            self.assertIn("amaryllis_release_desktop_staging_signal_present 1", metrics)
+            self.assertIn("amaryllis_release_desktop_staging_status 1.000000", metrics)
+            self.assertIn("amaryllis_release_desktop_staging_error_rate_pct 0.000000", metrics)
 
     def test_incident_is_detected_when_slo_is_breached(self) -> None:
         manager = self._build_manager()
@@ -79,4 +120,3 @@ class ObservabilityTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

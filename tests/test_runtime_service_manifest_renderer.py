@@ -53,6 +53,10 @@ class RuntimeServiceManifestRendererTests(unittest.TestCase):
         self.assertIn("Description=Amaryllis Runtime Service (canary)", text)
         self.assertIn("ExecStart=/tmp/bin/amaryllis-runtime", text)
         self.assertIn('Environment="AMARYLLIS_LINUX_RELEASE_CHANNEL=canary"', text)
+        self.assertIn(
+            'Environment="AMARYLLIS_RELEASE_QUALITY_DASHBOARD_PATH=/tmp/amaryllis/observability/release-quality-dashboard-latest.json"',
+            text,
+        )
         self.assertIn('Environment="EXTRA_FLAG=1"', text)
         self.assertIn("WantedBy=default.target", text)
 
@@ -86,6 +90,10 @@ class RuntimeServiceManifestRendererTests(unittest.TestCase):
             self.assertIsInstance(env, dict)
             assert isinstance(env, dict)
             self.assertEqual(env.get("AMARYLLIS_LINUX_RELEASE_CHANNEL"), "stable")
+            self.assertEqual(
+                env.get("AMARYLLIS_RELEASE_QUALITY_DASHBOARD_PATH"),
+                "/tmp/amaryllis/observability/release-quality-dashboard-latest.json",
+            )
             self.assertEqual(env.get("EXTRA_FLAG"), "1")
 
     def test_invalid_environment_entry_returns_error(self) -> None:

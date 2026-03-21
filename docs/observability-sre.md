@@ -10,6 +10,21 @@ Amaryllis exposes:
 - SLO snapshot: `/service/observability/slo`
 - Incident feed: `/service/observability/incidents`
 
+Optional release-quality metric export:
+
+- set `AMARYLLIS_RELEASE_QUALITY_DASHBOARD_PATH=/abs/path/release-quality-dashboard-latest.json`,
+- Linux installer/service manifest default path is
+  `~/.local/share/amaryllis/observability/release-quality-dashboard-latest.json`,
+- `/service/observability/metrics` additionally exports latest release gauges:
+  - `amaryllis_release_quality_snapshot_loaded` (`0|1`)
+  - `amaryllis_release_quality_score_pct`
+  - `amaryllis_release_quality_signals_failed`
+  - `amaryllis_release_quality_status` (`1=pass`, `0=fail`)
+  - `amaryllis_release_desktop_staging_signal_present` (`0|1`)
+  - `amaryllis_release_desktop_staging_status` (`1=pass`, `0=fail`)
+  - `amaryllis_release_desktop_staging_error_rate_pct`
+  - `amaryllis_release_desktop_staging_checks_failed`
+
 ## SLO / SLI
 
 Current targets are versioned by SLO profile manifests (`slo_profiles/*.json`) and can still be overridden via env.

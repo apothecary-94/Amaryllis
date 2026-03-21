@@ -114,6 +114,7 @@ jobs:
             tests.test_supervisor_task_graph_manager \
             tests.test_supervisor_api \
             tests.test_release_quality_dashboard_snapshot \
+            tests.test_publish_release_quality_snapshot \
             tests.test_mission_success_recovery_report_pack \
             tests.test_distribution_resilience_report \
             tests.test_user_journey_benchmark \
@@ -437,6 +438,14 @@ jobs:
             --release-channel "${RELEASE_CHANNEL}" \
             --commit-sha "${GITHUB_SHA}"
 
+      - name: Publish release quality snapshot for runtime export
+        run: |
+          python scripts/release/publish_release_quality_snapshot.py \
+            --snapshot-report "artifacts/release-quality-dashboard-final.json" \
+            --trend-report "artifacts/release-quality-dashboard-trend-final.json" \
+            --output-snapshot "artifacts/release-quality-dashboard-runtime-export.json" \
+            --output-trend "artifacts/release-quality-dashboard-trend-runtime-export.json"
+
       - name: Upload release quality dashboard artifacts (final)
         uses: actions/upload-artifact@v4
         with:
@@ -444,6 +453,8 @@ jobs:
           path: |
             artifacts/release-quality-dashboard-final.json
             artifacts/release-quality-dashboard-trend-final.json
+            artifacts/release-quality-dashboard-runtime-export.json
+            artifacts/release-quality-dashboard-trend-runtime-export.json
           if-no-files-found: error
 
       - name: Build mission success/recovery report pack (release)

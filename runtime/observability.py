@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
 import logging
 import math
+import os
 import time
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from threading import Lock
 from typing import Any, Protocol
 from uuid import uuid4
@@ -66,6 +69,9 @@ class SREMonitor:
     def __init__(self, *, targets: SLOTargets, logger: logging.Logger) -> None:
         self.targets = targets
         self.logger = logger
+        self._release_quality_dashboard_path = (
+            str(os.getenv("AMARYLLIS_RELEASE_QUALITY_DASHBOARD_PATH") or "").strip() or None
+        )
         self._lock = Lock()
         self._http_events: deque[dict[str, Any]] = deque(maxlen=20000)
         self._run_events: deque[dict[str, Any]] = deque(maxlen=20000)
@@ -177,6 +183,7 @@ class SREMonitor:
         request_sli = snapshot["sli"]["requests"]
         run_sli = snapshot["sli"]["runs"]
         budgets = snapshot["error_budget"]
+        release_quality = self._release_quality_snapshot_metrics()
         lines = [
             "# HELP amaryllis_requests_total HTTP requests observed in SLO window.",
             "# TYPE amaryllis_requests_total gauge",
@@ -206,8 +213,97 @@ class SREMonitor:
             "# HELP amaryllis_open_incidents_total Open incidents count.",
             "# TYPE amaryllis_open_incidents_total gauge",
             f"amaryllis_open_incidents_total {float(snapshot['incidents']['open_count']):.0f}",
+            "# HELP amaryllis_release_quality_snapshot_loaded Release quality dashboard snapshot availability (0/1).",
+            "# TYPE amaryllis_release_quality_snapshot_loaded gauge",
+            f"amaryllis_release_quality_snapshot_loaded {float(release_quality['snapshot_loaded']):.0f}",
+            "# HELP amaryllis_release_quality_score_pct Release quality score percent from latest snapshot.",
+            "# TYPE amaryllis_release_quality_score_pct gauge",
+            f"amaryllis_release_quality_score_pct {float(release_quality['quality_score_pct']):.6f}",
+            "# HELP amaryllis_release_quality_signals_failed Failed release quality signals count.",
+            "# TYPE amaryllis_release_quality_signals_failed gauge",
+            f"amaryllis_release_quality_signals_failed {float(release_quality['signals_failed']):.6f}",
+            "# HELP amaryllis_release_quality_status Release quality status (1=pass, 0=fail).",
+            "# TYPE amaryllis_release_quality_status gauge",
+            f"amaryllis_release_quality_status {float(release_quality['status']):.6f}",
+            "# HELP amaryllis_release_desktop_staging_signal_present Desktop staging parity signal presence (0/1).",
+            "# TYPE amaryllis_release_desktop_staging_signal_present gauge",
+            f"amaryllis_release_desktop_staging_signal_present {float(release_quality['desktop_staging_signal_present']):.0f}",
+            "# HELP amaryllis_release_desktop_staging_status Desktop staging parity status (1=pass, 0=fail).",
+            "# TYPE amaryllis_release_desktop_staging_status gauge",
+            f"amaryllis_release_desktop_staging_status {float(release_quality['desktop_staging_status']):.6f}",
+            "# HELP amaryllis_release_desktop_staging_error_rate_pct Desktop staging parity error-rate percent.",
+            "# TYPE amaryllis_release_desktop_staging_error_rate_pct gauge",
+            f"amaryllis_release_desktop_staging_error_rate_pct {float(release_quality['desktop_staging_error_rate_pct']):.6f}",
+            "# HELP amaryllis_release_desktop_staging_checks_failed Desktop staging parity failed checks count.",
+            "# TYPE amaryllis_release_desktop_staging_checks_failed gauge",
+            f"amaryllis_release_desktop_staging_checks_failed {float(release_quality['desktop_staging_checks_failed']):.6f}",
         ]
         return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _safe_float(value: Any, *, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except Exception:
+            return float(default)
+
+    @staticmethod
+    def _signal_value(payload: dict[str, Any], metric_id: str) -> float | None:
+        signals = payload.get("signals")
+        if not isinstance(signals, list):
+            return None
+        for item in signals:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("metric_id") or "").strip() != metric_id:
+                continue
+            try:
+                return float(item.get("value"))
+            except Exception:
+                return None
+        return None
+
+    def _release_quality_snapshot_metrics(self) -> dict[str, float]:
+        metrics = {
+            "snapshot_loaded": 0.0,
+            "quality_score_pct": 0.0,
+            "signals_failed": 0.0,
+            "status": 0.0,
+            "desktop_staging_signal_present": 0.0,
+            "desktop_staging_status": 0.0,
+            "desktop_staging_error_rate_pct": 0.0,
+            "desktop_staging_checks_failed": 0.0,
+        }
+        path_raw = str(self._release_quality_dashboard_path or "").strip()
+        if not path_raw:
+            return metrics
+
+        path = Path(path_raw)
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return metrics
+        if not isinstance(payload, dict):
+            return metrics
+
+        metrics["snapshot_loaded"] = 1.0
+        summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+        metrics["quality_score_pct"] = self._safe_float(summary.get("quality_score_pct"), default=0.0)
+        metrics["signals_failed"] = max(0.0, self._safe_float(summary.get("signals_failed"), default=0.0))
+        metrics["status"] = 1.0 if str(summary.get("status") or "").strip().lower() == "pass" else 0.0
+
+        desktop_status = self._signal_value(payload, "macos_desktop_parity.status")
+        desktop_error_rate = self._signal_value(payload, "macos_desktop_parity.error_rate_pct")
+        desktop_checks_failed = self._signal_value(payload, "macos_desktop_parity.checks_failed")
+        if desktop_status is not None or desktop_error_rate is not None or desktop_checks_failed is not None:
+            metrics["desktop_staging_signal_present"] = 1.0
+        if desktop_status is not None:
+            metrics["desktop_staging_status"] = float(desktop_status)
+        if desktop_error_rate is not None:
+            metrics["desktop_staging_error_rate_pct"] = max(0.0, float(desktop_error_rate))
+        if desktop_checks_failed is not None:
+            metrics["desktop_staging_checks_failed"] = max(0.0, float(desktop_checks_failed))
+        return metrics
 
     def _prune_unlocked(self) -> None:
         now = self._now_epoch()
@@ -506,4 +602,3 @@ class ObservabilityManager:
         span.end()
         if context.token is not None and otel_context is not None:
             otel_context.detach(context.token)
-

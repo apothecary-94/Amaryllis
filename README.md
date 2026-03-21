@@ -1624,6 +1624,12 @@ Release quality dashboard snapshot (final, includes post-Linux distribution sign
 python3 scripts/release/build_quality_dashboard_snapshot.py --perf-report artifacts/perf-smoke-report.json --fault-injection-report artifacts/fault-injection-reliability-report.json --mission-queue-report artifacts/mission-queue-load-report.json --runtime-lifecycle-report artifacts/runtime-lifecycle-smoke-report.json --user-journey-report artifacts/user-journey-benchmark-report.json --distribution-resilience-report artifacts/distribution-resilience-report.json --macos-desktop-parity-report artifacts/macos-desktop-parity-smoke-report.json --baseline eval/baselines/quality/release_quality_dashboard_baseline.json --output artifacts/release-quality-dashboard-final.json --trend-output artifacts/release-quality-dashboard-trend-final.json
 ```
 
+Publish release quality snapshot to stable runtime observability path:
+
+```bash
+python3 scripts/release/publish_release_quality_snapshot.py --snapshot-report artifacts/release-quality-dashboard-final.json --trend-report artifacts/release-quality-dashboard-trend-final.json --install-root ~/.local/share/amaryllis
+```
+
 Mission success/recovery report pack (public KPI snapshot for release/nightly):
 
 ```bash
@@ -1851,6 +1857,7 @@ export AMARYLLIS_SLO_WINDOW_SEC=3600
 export AMARYLLIS_SLO_REQUEST_AVAILABILITY_TARGET=0.995
 export AMARYLLIS_SLO_REQUEST_LATENCY_P95_MS_TARGET=1200
 export AMARYLLIS_SLO_RUN_SUCCESS_TARGET=0.98
+export AMARYLLIS_RELEASE_QUALITY_DASHBOARD_PATH=
 export AMARYLLIS_BACKUP_ENABLED=true
 export AMARYLLIS_BACKUP_DIR=~/Library/Application\ Support/amaryllis/backups
 export AMARYLLIS_BACKUP_INTERVAL_SEC=3600
@@ -1869,6 +1876,7 @@ export AMARYLLIS_API_COMPAT_CONTRACT_PATH=contracts/api_compat_v1.json
 
 - Dashboard template: `observability/grafana/dashboard-amaryllis.json`
 - Alert rules: `observability/alerts/prometheus-rules.yml`
+- Optional release-quality export: `AMARYLLIS_RELEASE_QUALITY_DASHBOARD_PATH=/abs/path/release-quality-dashboard-latest.json` (Linux installer default: `~/.local/share/amaryllis/observability/release-quality-dashboard-latest.json`)
 - Service endpoints:
   - `GET /service/observability/slo`
   - `GET /service/observability/incidents`

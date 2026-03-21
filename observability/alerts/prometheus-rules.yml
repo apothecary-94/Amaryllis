@@ -37,3 +37,20 @@ groups:
           summary: "Amaryllis request error budget burning too fast"
           description: "Request error budget burn rate is above 2x."
 
+      - alert: AmaryllisReleaseQualityFailed
+        expr: (amaryllis_release_quality_snapshot_loaded == 1) and (amaryllis_release_quality_status < 1)
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Amaryllis release quality snapshot reports fail"
+          description: "Latest release quality status is fail while snapshot export is enabled."
+
+      - alert: AmaryllisDesktopStagingParityFailed
+        expr: (amaryllis_release_desktop_staging_signal_present == 1) and (amaryllis_release_desktop_staging_status < 1)
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Amaryllis desktop staging parity failed"
+          description: "macOS desktop parity staging signal is failing in latest release quality snapshot."
