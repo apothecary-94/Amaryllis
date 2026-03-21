@@ -20,6 +20,7 @@ The snapshot builder consumes these gate reports:
 - `artifacts/fault-injection-reliability-report.json`
 - `artifacts/mission-queue-load-report.json`
 - `artifacts/runtime-lifecycle-smoke-report.json`
+- `artifacts/user-journey-benchmark-report.json`
 
 ## Output Contract
 
@@ -32,6 +33,7 @@ The snapshot builder consumes these gate reports:
   - `value`
   - `threshold`
   - `comparator` (`lte` or `gte`)
+  - `category` (performance/reliability/resilience/queue/runtime/user_flow)
   - `passed`
 - `summary`: total/passed/failed signals + `quality_score_pct` + `status`
 

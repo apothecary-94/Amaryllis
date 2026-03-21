@@ -242,6 +242,7 @@ jobs:
             --fault-injection-report "artifacts/fault-injection-reliability-report.json" \
             --mission-queue-report "artifacts/mission-queue-load-report.json" \
             --runtime-lifecycle-report "artifacts/runtime-lifecycle-smoke-report.json" \
+            --user-journey-report "artifacts/user-journey-benchmark-report.json" \
             --baseline "eval/baselines/quality/release_quality_dashboard_baseline.json" \
             --output "artifacts/release-quality-dashboard.json" \
             --trend-output "artifacts/release-quality-dashboard-trend.json" \

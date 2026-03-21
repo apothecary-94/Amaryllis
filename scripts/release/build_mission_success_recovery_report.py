@@ -117,6 +117,112 @@ def _scope_from_sources(*, requested: str, nightly_present: bool) -> str:
     return "nightly" if nightly_present else "release"
 
 
+def _source_class(source: str) -> str:
+    normalized = str(source or "").strip().lower()
+    mapping = {
+        "mission_queue": "mission_execution",
+        "fault_injection": "recovery",
+        "quality_dashboard": "quality",
+        "user_journey": "user_flow",
+        "nightly_reliability": "nightly_reliability",
+        "nightly_burn_rate": "nightly_reliability",
+    }
+    return mapping.get(normalized, "other")
+
+
+def _kpi_class(kpi_key: str) -> str:
+    normalized = str(kpi_key or "").strip().lower()
+    if normalized.startswith("mission_"):
+        return "mission_execution"
+    if normalized.startswith("recovery_"):
+        return "recovery"
+    if normalized.startswith("release_quality_"):
+        return "quality"
+    if normalized.startswith("journey_"):
+        return "user_flow"
+    if normalized.startswith("nightly_"):
+        return "nightly_reliability"
+    return "other"
+
+
+def _class_order() -> list[str]:
+    return [
+        "mission_execution",
+        "recovery",
+        "quality",
+        "user_flow",
+        "nightly_reliability",
+        "other",
+    ]
+
+
+def _build_class_breakdown(
+    *,
+    checks: list[dict[str, Any]],
+    kpis: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    breakdown: dict[str, dict[str, Any]] = {}
+    for class_name in _class_order():
+        breakdown[class_name] = {
+            "checks_total": 0,
+            "checks_passed": 0,
+            "checks_failed": 0,
+            "score_pct": 0.0,
+            "status": "pass",
+            "kpis": {},
+        }
+
+    for check in checks:
+        if not isinstance(check, dict):
+            continue
+        class_name = _source_class(str(check.get("source") or ""))
+        row = breakdown.setdefault(
+            class_name,
+            {
+                "checks_total": 0,
+                "checks_passed": 0,
+                "checks_failed": 0,
+                "score_pct": 0.0,
+                "status": "pass",
+                "kpis": {},
+            },
+        )
+        row["checks_total"] = int(row.get("checks_total", 0)) + 1
+        if bool(check.get("passed")):
+            row["checks_passed"] = int(row.get("checks_passed", 0)) + 1
+        else:
+            row["checks_failed"] = int(row.get("checks_failed", 0)) + 1
+
+    for key, value in kpis.items():
+        class_name = _kpi_class(str(key))
+        row = breakdown.setdefault(
+            class_name,
+            {
+                "checks_total": 0,
+                "checks_passed": 0,
+                "checks_failed": 0,
+                "score_pct": 0.0,
+                "status": "pass",
+                "kpis": {},
+            },
+        )
+        row_kpis = row.get("kpis")
+        if not isinstance(row_kpis, dict):
+            row_kpis = {}
+            row["kpis"] = row_kpis
+        row_kpis[str(key)] = value
+
+    for row in breakdown.values():
+        total = int(row.get("checks_total", 0))
+        passed = int(row.get("checks_passed", 0))
+        failed = int(row.get("checks_failed", 0))
+        score = (float(passed) / float(total) * 100.0) if total > 0 else 0.0
+        row["score_pct"] = round(score, 4)
+        row["status"] = "pass" if failed == 0 else "fail"
+
+    return breakdown
+
+
 def main() -> int:
     args = _parse_args()
     project_root = Path(__file__).resolve().parents[2]
@@ -388,14 +494,18 @@ def main() -> int:
         requested=str(args.scope),
         nightly_present=("nightly_reliability" in reports or "nightly_burn_rate" in reports),
     )
+    class_breakdown = _build_class_breakdown(checks=checks, kpis=kpis)
 
     payload = {
         "generated_at": _utc_now_iso(),
-        "suite": "mission_success_recovery_report_pack_v1",
+        "suite": "mission_success_recovery_report_pack_v2",
+        "schema_version": 2,
         "scope": scope,
         "sources": sources_meta,
         "kpis": kpis,
         "checks": checks,
+        "class_order": _class_order(),
+        "class_breakdown": class_breakdown,
         "summary": {
             "checks_total": len(checks),
             "checks_passed": passed_checks,

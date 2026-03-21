@@ -16,7 +16,7 @@ Nightly output:
 - `artifacts/nightly-mission-success-recovery-report.json`
 
 Suite id:
-- `mission_success_recovery_report_pack_v1`
+- `mission_success_recovery_report_pack_v2`
 
 ## Supported Sources
 
@@ -36,6 +36,7 @@ The script accepts any subset and produces a normalized report with:
 - extracted KPI values
 - normalized pass/fail checks (`gte` / `lte`)
 - summary status (`pass` / `fail`)
+- class-level KPI/check breakdown (`mission_execution`, `recovery`, `quality`, `user_flow`, `nightly_reliability`)
 
 Optional user-flow source flag:
 - `--user-journey-report <path>`

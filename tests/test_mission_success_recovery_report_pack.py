@@ -114,11 +114,16 @@ class MissionSuccessRecoveryReportPackTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, msg=f"stdout={proc.stdout}\nstderr={proc.stderr}")
             self.assertIn("[mission-report-pack] OK", proc.stdout)
             payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(str(payload.get("suite")), "mission_success_recovery_report_pack_v2")
+            self.assertEqual(int(payload.get("schema_version", 0)), 2)
             self.assertEqual(payload.get("scope"), "release")
             self.assertEqual(payload.get("summary", {}).get("status"), "pass")
             self.assertGreaterEqual(int(payload.get("summary", {}).get("checks_total", 0)), 1)
             self.assertIn("journey_success_rate_pct", payload.get("kpis", {}))
             self.assertIn("journey.plan_to_execute_conversion_rate_pct", [c.get("id") for c in payload.get("checks", [])])
+            class_breakdown = payload.get("class_breakdown", {})
+            self.assertEqual(str(class_breakdown.get("mission_execution", {}).get("status")), "pass")
+            self.assertIn("journey_success_rate_pct", class_breakdown.get("user_flow", {}).get("kpis", {}))
 
     def test_nightly_report_pack_marks_failed_summary_when_burn_gate_failed(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amaryllis-mission-report-pack-") as tmp:
@@ -167,8 +172,11 @@ class MissionSuccessRecoveryReportPackTests(unittest.TestCase):
             )
             self.assertEqual(proc.returncode, 0, msg=f"stdout={proc.stdout}\nstderr={proc.stderr}")
             payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(str(payload.get("suite")), "mission_success_recovery_report_pack_v2")
             self.assertEqual(payload.get("scope"), "nightly")
             self.assertEqual(payload.get("summary", {}).get("status"), "fail")
+            class_breakdown = payload.get("class_breakdown", {})
+            self.assertEqual(str(class_breakdown.get("nightly_reliability", {}).get("status")), "fail")
 
     def test_missing_source_report_returns_error(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amaryllis-mission-report-pack-") as tmp:

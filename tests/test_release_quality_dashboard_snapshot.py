@@ -32,6 +32,7 @@ class ReleaseQualityDashboardSnapshotTests(unittest.TestCase):
         fault = base / "fault.json"
         mission = base / "mission.json"
         runtime = base / "runtime.json"
+        journey = base / "journey.json"
 
         self._write_json(
             perf,
@@ -90,12 +91,36 @@ class ReleaseQualityDashboardSnapshotTests(unittest.TestCase):
                 },
             },
         )
+        self._write_json(
+            journey,
+            {
+                "suite": "user_journey_benchmark_v1",
+                "generated_at": "2026-03-21T00:00:00+00:00",
+                "config": {
+                    "thresholds": {
+                        "min_success_rate_pct": 100.0,
+                        "max_p95_journey_latency_ms": 3000.0,
+                        "max_p95_plan_dispatch_latency_ms": 1200.0,
+                        "max_p95_execute_dispatch_latency_ms": 1200.0,
+                        "min_plan_to_execute_conversion_rate_pct": 100.0,
+                    }
+                },
+                "summary": {
+                    "journey_success_rate_pct": 100.0,
+                    "p95_journey_latency_ms": 900.0,
+                    "p95_plan_dispatch_latency_ms": 250.0,
+                    "p95_execute_dispatch_latency_ms": 300.0,
+                    "plan_to_execute_conversion_rate_pct": 100.0,
+                },
+            },
+        )
 
         return {
             "perf": perf,
             "fault": fault,
             "mission": mission,
             "runtime": runtime,
+            "journey": journey,
         }
 
     @staticmethod
@@ -113,6 +138,11 @@ class ReleaseQualityDashboardSnapshotTests(unittest.TestCase):
                 {"metric_id": "runtime_lifecycle.targets_ok", "value": 1.0},
                 {"metric_id": "runtime_lifecycle.startup_ok", "value": 1.0},
                 {"metric_id": "runtime_lifecycle.checks_failed", "value": 0.0},
+                {"metric_id": "user_journey.success_rate_pct", "value": 100.0},
+                {"metric_id": "user_journey.p95_journey_latency_ms", "value": 3000.0},
+                {"metric_id": "user_journey.p95_plan_dispatch_latency_ms", "value": 1200.0},
+                {"metric_id": "user_journey.p95_execute_dispatch_latency_ms", "value": 1200.0},
+                {"metric_id": "user_journey.plan_to_execute_conversion_rate_pct", "value": 100.0},
             ],
         }
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -135,6 +165,8 @@ class ReleaseQualityDashboardSnapshotTests(unittest.TestCase):
                 str(reports["mission"]),
                 "--runtime-lifecycle-report",
                 str(reports["runtime"]),
+                "--user-journey-report",
+                str(reports["journey"]),
                 "--baseline",
                 str(baseline),
                 "--output",
@@ -156,11 +188,11 @@ class ReleaseQualityDashboardSnapshotTests(unittest.TestCase):
             payload = json.loads(snapshot.read_text(encoding="utf-8"))
             self.assertEqual(payload.get("suite"), "release_quality_dashboard_v1")
             self.assertEqual(payload.get("summary", {}).get("status"), "pass")
-            self.assertEqual(int(payload.get("summary", {}).get("signals_total", 0)), 10)
+            self.assertEqual(int(payload.get("summary", {}).get("signals_total", 0)), 15)
 
             trend_payload = json.loads(trend.read_text(encoding="utf-8"))
             self.assertEqual(trend_payload.get("suite"), "release_quality_dashboard_trend_v1")
-            self.assertEqual(int(trend_payload.get("summary", {}).get("compared_metrics", 0)), 10)
+            self.assertEqual(int(trend_payload.get("summary", {}).get("compared_metrics", 0)), 15)
 
     def test_snapshot_fails_when_quality_signal_breaches_threshold(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amaryllis-quality-dashboard-") as tmp:
@@ -180,6 +212,8 @@ class ReleaseQualityDashboardSnapshotTests(unittest.TestCase):
                 str(reports["mission"]),
                 "--runtime-lifecycle-report",
                 str(reports["runtime"]),
+                "--user-journey-report",
+                str(reports["journey"]),
                 "--baseline",
                 str(baseline),
                 "--output",
@@ -206,6 +240,8 @@ class ReleaseQualityDashboardSnapshotTests(unittest.TestCase):
                 str(base / "missing-mission.json"),
                 "--runtime-lifecycle-report",
                 str(reports["runtime"]),
+                "--user-journey-report",
+                str(reports["journey"]),
                 "--output",
                 str(snapshot),
                 "--trend-output",

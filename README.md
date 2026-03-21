@@ -1597,7 +1597,7 @@ python3 scripts/release/user_journey_benchmark.py --iterations 5 --min-success-r
 Release quality dashboard snapshot (normalized benchmark artifact + trend delta):
 
 ```bash
-python3 scripts/release/build_quality_dashboard_snapshot.py --perf-report artifacts/perf-smoke-report.json --fault-injection-report artifacts/fault-injection-reliability-report.json --mission-queue-report artifacts/mission-queue-load-report.json --runtime-lifecycle-report artifacts/runtime-lifecycle-smoke-report.json --baseline eval/baselines/quality/release_quality_dashboard_baseline.json --output artifacts/release-quality-dashboard.json --trend-output artifacts/release-quality-dashboard-trend.json
+python3 scripts/release/build_quality_dashboard_snapshot.py --perf-report artifacts/perf-smoke-report.json --fault-injection-report artifacts/fault-injection-reliability-report.json --mission-queue-report artifacts/mission-queue-load-report.json --runtime-lifecycle-report artifacts/runtime-lifecycle-smoke-report.json --user-journey-report artifacts/user-journey-benchmark-report.json --baseline eval/baselines/quality/release_quality_dashboard_baseline.json --output artifacts/release-quality-dashboard.json --trend-output artifacts/release-quality-dashboard-trend.json
 ```
 
 Mission success/recovery report pack (public KPI snapshot for release/nightly):
