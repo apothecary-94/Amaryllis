@@ -295,6 +295,7 @@ Reference:
 - `docs/mission-planner.md`
 - `docs/flow-session-contract.md`
 - `docs/automation-mission-policy.md`
+- `docs/linux-desktop-action-adapters.md`
 - `docs/plugin-compat-contract.md`
 - `docs/plugin-capability-policy.md`
 - `docs/dynamic-mission-budgets.md`
@@ -1316,6 +1317,19 @@ curl -X POST "http://localhost:8000/mcp/tools/browser_action/invoke" \
       "action":"extract",
       "selector":"main",
       "timeout_ms":5000
+    }
+  }'
+```
+
+Linux desktop action adapter tool (Linux provider, non-Linux falls back to stub):
+
+```bash
+curl -X POST "http://localhost:8000/mcp/tools/desktop_action/invoke" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "session_id":"session-001",
+    "arguments":{
+      "action":"clipboard_read"
     }
   }'
 ```

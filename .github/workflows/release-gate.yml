@@ -101,6 +101,8 @@ jobs:
             tests.test_automation_mission_plan_api \
             tests.test_automation_scheduler \
             tests.test_agent_run_dispatch_mode_api \
+            tests.test_desktop_action_adapter \
+            tests.test_desktop_action_runtime_api \
             tests.test_plugin_compat \
             tests.test_plugin_capabilities \
             tests.test_tool_plugin_signing \

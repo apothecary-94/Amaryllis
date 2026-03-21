@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 import logging
 import os
+import sys
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -60,6 +61,12 @@ from flow.session_manager import UnifiedSessionManager
 from tools.mcp_client_registry import MCPClientRegistry
 from tools.autonomy_policy import AutonomyPolicy
 from tools.browser_action_adapter import BrowserActionAdapter, StubBrowserActionAdapter, register_browser_action_tool
+from tools.desktop_action_adapter import (
+    DesktopActionAdapter,
+    LinuxDesktopActionAdapter,
+    StubDesktopActionAdapter,
+    register_desktop_action_tool,
+)
 from tools.permission_manager import ToolPermissionManager
 from tools.policy import ToolIsolationPolicy
 from tools.sandbox_runner import ToolSandboxConfig, ToolSandboxRunner
@@ -79,6 +86,7 @@ class ServiceContainer:
     memory_manager: MemoryManager
     tool_registry: ToolRegistry
     browser_adapter: BrowserActionAdapter
+    desktop_adapter: DesktopActionAdapter
     voice_session_manager: VoiceSessionManager
     flow_session_manager: UnifiedSessionManager
     stt_adapter: STTAdapter
@@ -187,6 +195,11 @@ def create_services() -> ServiceContainer:
     tool_registry.load_builtin_tools()
     browser_adapter: BrowserActionAdapter = StubBrowserActionAdapter()
     register_browser_action_tool(tool_registry, browser_adapter)
+    if sys.platform.startswith("linux"):
+        desktop_adapter: DesktopActionAdapter = LinuxDesktopActionAdapter()
+    else:
+        desktop_adapter = StubDesktopActionAdapter(provider_name=f"stub-desktop-{sys.platform}")
+    register_desktop_action_tool(tool_registry, desktop_adapter)
     tool_registry.discover_plugins(config.plugins_dir)
     mcp_registry: MCPClientRegistry | None = None
     if config.mcp_endpoints:
@@ -367,6 +380,7 @@ def create_services() -> ServiceContainer:
         memory_manager=memory_manager,
         tool_registry=tool_registry,
         browser_adapter=browser_adapter,
+        desktop_adapter=desktop_adapter,
         voice_session_manager=voice_session_manager,
         flow_session_manager=flow_session_manager,
         stt_adapter=stt_adapter,
