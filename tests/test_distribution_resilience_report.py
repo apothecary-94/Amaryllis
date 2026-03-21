@@ -74,17 +74,24 @@ class DistributionResilienceReportTests(unittest.TestCase):
             },
         )
 
-    def _write_runtime_lifecycle(self, path: Path) -> None:
+    def _write_runtime_lifecycle(
+        self,
+        path: Path,
+        *,
+        targets_ok: bool = True,
+        startup_ok: bool = True,
+        checks_failed: int = 0,
+    ) -> None:
         self._write_json(
             path,
             {
                 "suite": "runtime_lifecycle_smoke_v1",
                 "generated_at": "2026-03-21T00:00:00+00:00",
                 "summary": {
-                    "targets_ok": True,
-                    "startup_ok": True,
+                    "targets_ok": targets_ok,
+                    "startup_ok": startup_ok,
                     "checks_total": 12,
-                    "checks_failed": 0,
+                    "checks_failed": checks_failed,
                 },
             },
         )
@@ -133,6 +140,33 @@ class DistributionResilienceReportTests(unittest.TestCase):
                 str(parity),
                 "--linux-installer-report",
                 str(installer),
+                "--output",
+                str(output),
+            )
+            self.assertEqual(proc.returncode, 1, msg=f"stdout={proc.stdout}\nstderr={proc.stderr}")
+            self.assertIn("[distribution-resilience] FAILED", proc.stdout)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(str(payload.get("summary", {}).get("status")), "fail")
+
+    def test_report_fails_when_runtime_lifecycle_source_has_failures(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amaryllis-distribution-resilience-") as tmp:
+            base = Path(tmp)
+            parity = base / "linux-parity.json"
+            installer = base / "linux-installer.json"
+            runtime = base / "runtime-lifecycle.json"
+            output = base / "distribution-report.json"
+
+            self._write_linux_parity(parity)
+            self._write_linux_installer(installer)
+            self._write_runtime_lifecycle(runtime, startup_ok=False, checks_failed=1)
+
+            proc = self._run(
+                "--linux-parity-report",
+                str(parity),
+                "--linux-installer-report",
+                str(installer),
+                "--runtime-lifecycle-report",
+                str(runtime),
                 "--output",
                 str(output),
             )

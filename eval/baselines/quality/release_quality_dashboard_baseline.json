@@ -66,6 +66,18 @@
     {
       "metric_id": "user_journey.plan_to_execute_conversion_rate_pct",
       "value": 100.0
+    },
+    {
+      "metric_id": "distribution_resilience.status",
+      "value": 1.0
+    },
+    {
+      "metric_id": "distribution_resilience.checks_failed",
+      "value": 0.0
+    },
+    {
+      "metric_id": "distribution_resilience.score_pct",
+      "value": 100.0
     }
   ]
 }

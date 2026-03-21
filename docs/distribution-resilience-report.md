@@ -15,6 +15,7 @@ Example:
 python scripts/release/build_distribution_resilience_report.py \
   --linux-parity-report artifacts/linux-parity-smoke-report.json \
   --linux-installer-report artifacts/linux-installer-smoke-report.json \
+  --runtime-lifecycle-report artifacts/runtime-lifecycle-smoke-report.json \
   --output artifacts/distribution-resilience-report.json
 ```
 
@@ -26,6 +27,9 @@ Required:
 
 Optional:
 - `artifacts/runtime-lifecycle-smoke-report.json`
+
+CI note:
+- `release-gate.yml` provides the runtime lifecycle source in blocking release runs.
 
 ## Output
 
@@ -47,7 +51,7 @@ Failure conditions include:
 - non-zero parity error rate or failed parity checks,
 - failed installer/rollback required checks,
 - failed command return codes in installer smoke,
-- optional runtime lifecycle failures when source is provided.
+- runtime lifecycle target/startup/check failures when source is provided.
 
 Exit codes:
 - `0`: all checks passed
@@ -58,4 +62,5 @@ Exit codes:
 
 `release-gate.yml` (Linux parity stage):
 - runs builder as blocking gate,
+- injects runtime lifecycle smoke report as an additional source,
 - uploads `artifacts/distribution-resilience-report.json` artifact.

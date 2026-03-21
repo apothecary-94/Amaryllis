@@ -278,6 +278,12 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.lock
 
+      - name: Download runtime lifecycle smoke report
+        uses: actions/download-artifact@v4
+        with:
+          name: runtime-lifecycle-smoke-report
+          path: artifacts/runtime-lifecycle
+
       - name: Run Linux installer/channel contract tests
         run: |
           python -m unittest \
@@ -318,6 +324,7 @@ jobs:
           python scripts/release/build_distribution_resilience_report.py \
             --linux-parity-report "artifacts/linux-parity-smoke-report.json" \
             --linux-installer-report "artifacts/linux-installer-smoke-report.json" \
+            --runtime-lifecycle-report "artifacts/runtime-lifecycle/runtime-lifecycle-smoke-report.json" \
             --output "artifacts/distribution-resilience-report.json"
 
       - name: Upload distribution resilience report
@@ -346,17 +353,23 @@ jobs:
           name: mission-queue-load-report
           path: artifacts/mission-queue
 
+      - name: Download perf smoke report
+        uses: actions/download-artifact@v4
+        with:
+          name: perf-smoke-report
+          path: artifacts/perf
+
       - name: Download fault-injection reliability report
         uses: actions/download-artifact@v4
         with:
           name: fault-injection-reliability-report
           path: artifacts/fault-injection
 
-      - name: Download release quality dashboard report
+      - name: Download runtime lifecycle smoke report
         uses: actions/download-artifact@v4
         with:
-          name: release-quality-dashboard
-          path: artifacts/release-quality
+          name: runtime-lifecycle-smoke-report
+          path: artifacts/runtime-lifecycle
 
       - name: Download user journey benchmark report
         uses: actions/download-artifact@v4
@@ -370,12 +383,42 @@ jobs:
           name: distribution-resilience-report
           path: artifacts/distribution
 
+      - name: Build release quality dashboard snapshot (final, with distribution)
+        run: |
+          RELEASE_CHANNEL="branch"
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            RELEASE_CHANNEL="stable"
+          fi
+
+          python scripts/release/build_quality_dashboard_snapshot.py \
+            --perf-report "artifacts/perf/perf-smoke-report.json" \
+            --fault-injection-report "artifacts/fault-injection/fault-injection-reliability-report.json" \
+            --mission-queue-report "artifacts/mission-queue/mission-queue-load-report.json" \
+            --runtime-lifecycle-report "artifacts/runtime-lifecycle/runtime-lifecycle-smoke-report.json" \
+            --user-journey-report "artifacts/user-journey/user-journey-benchmark-report.json" \
+            --distribution-resilience-report "artifacts/distribution/distribution-resilience-report.json" \
+            --baseline "eval/baselines/quality/release_quality_dashboard_baseline.json" \
+            --output "artifacts/release-quality-dashboard-final.json" \
+            --trend-output "artifacts/release-quality-dashboard-trend-final.json" \
+            --release-id "${GITHUB_REF_NAME:-${GITHUB_SHA}}" \
+            --release-channel "${RELEASE_CHANNEL}" \
+            --commit-sha "${GITHUB_SHA}"
+
+      - name: Upload release quality dashboard artifacts (final)
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-quality-dashboard-final
+          path: |
+            artifacts/release-quality-dashboard-final.json
+            artifacts/release-quality-dashboard-trend-final.json
+          if-no-files-found: error
+
       - name: Build mission success/recovery report pack (release)
         run: |
           python scripts/release/build_mission_success_recovery_report.py \
             --mission-queue-report "artifacts/mission-queue/mission-queue-load-report.json" \
             --fault-injection-report "artifacts/fault-injection/fault-injection-reliability-report.json" \
-            --quality-dashboard-report "artifacts/release-quality/release-quality-dashboard.json" \
+            --quality-dashboard-report "artifacts/release-quality-dashboard-final.json" \
             --distribution-resilience-report "artifacts/distribution/distribution-resilience-report.json" \
             --user-journey-report "artifacts/user-journey/user-journey-benchmark-report.json" \
             --scope "release" \
@@ -391,7 +434,7 @@ jobs:
   disaster-recovery-gate:
     name: Disaster Recovery Gate
     runs-on: ubuntu-latest
-    needs: linux-parity-gate
+    needs: release-kpi-pack
     steps:
       - name: Checkout
         uses: actions/checkout@v4

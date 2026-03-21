@@ -13,7 +13,7 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Build consolidated release quality dashboard snapshot from gate reports "
-            "(perf/fault/mission-queue/runtime-lifecycle/user-journey)."
+            "(perf/fault/mission-queue/runtime-lifecycle/user-journey with optional distribution resilience)."
         )
     )
     parser.add_argument(
@@ -40,6 +40,11 @@ def _parse_args() -> argparse.Namespace:
         "--user-journey-report",
         default="artifacts/user-journey-benchmark-report.json",
         help="Path to user journey benchmark report JSON.",
+    )
+    parser.add_argument(
+        "--distribution-resilience-report",
+        default="",
+        help="Optional path to distribution resilience report JSON.",
     )
     parser.add_argument(
         "--output",
@@ -178,6 +183,12 @@ def _build_snapshot(
         user_journey.get("config", {}).get("thresholds")
         if isinstance(user_journey.get("config"), dict)
         and isinstance(user_journey.get("config", {}).get("thresholds"), dict)
+        else {}
+    )
+    distribution = reports.get("distribution_resilience")
+    distribution_summary = (
+        distribution.get("summary")
+        if isinstance(distribution, dict) and isinstance(distribution.get("summary"), dict)
         else {}
     )
 
@@ -333,6 +344,39 @@ def _build_snapshot(
             unit="pct",
         ),
     ]
+    if distribution_summary:
+        distribution_status = str(distribution_summary.get("status") or "").strip().lower()
+        signals.extend(
+            [
+                _metric_signal(
+                    metric_id="distribution_resilience.status",
+                    source="distribution_resilience",
+                    category="distribution",
+                    value=1.0 if distribution_status == "pass" else 0.0,
+                    threshold=1.0,
+                    comparator="gte",
+                    unit="bool",
+                ),
+                _metric_signal(
+                    metric_id="distribution_resilience.checks_failed",
+                    source="distribution_resilience",
+                    category="distribution",
+                    value=_safe_float(distribution_summary.get("checks_failed")),
+                    threshold=0.0,
+                    comparator="lte",
+                    unit="count",
+                ),
+                _metric_signal(
+                    metric_id="distribution_resilience.score_pct",
+                    source="distribution_resilience",
+                    category="distribution",
+                    value=_safe_float(distribution_summary.get("score_pct")),
+                    threshold=100.0,
+                    comparator="gte",
+                    unit="pct",
+                ),
+            ]
+        )
 
     total = len(signals)
     passed = sum(1 for item in signals if bool(item.get("passed")))
@@ -448,6 +492,8 @@ def main() -> int:
         "runtime_lifecycle": _resolve_path(project_root, str(args.runtime_lifecycle_report)),
         "user_journey": _resolve_path(project_root, str(args.user_journey_report)),
     }
+    distribution_raw = str(args.distribution_resilience_report or "").strip()
+    distribution_path = _resolve_path(project_root, distribution_raw) if distribution_raw else None
 
     reports: dict[str, dict[str, Any]] = {}
     for key, path in report_paths.items():
@@ -458,6 +504,18 @@ def main() -> int:
             reports[key] = _load_json_object(path)
         except Exception as exc:
             print(f"[quality-dashboard] invalid report for {key}: {path} error={exc}", file=sys.stderr)
+            return 2
+    if distribution_path is not None:
+        if not distribution_path.exists():
+            print(f"[quality-dashboard] missing report for distribution_resilience: {distribution_path}", file=sys.stderr)
+            return 2
+        try:
+            reports["distribution_resilience"] = _load_json_object(distribution_path)
+        except Exception as exc:
+            print(
+                f"[quality-dashboard] invalid report for distribution_resilience: {distribution_path} error={exc}",
+                file=sys.stderr,
+            )
             return 2
 
     snapshot = _build_snapshot(args=args, reports=reports)

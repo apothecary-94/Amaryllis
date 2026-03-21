@@ -9,6 +9,8 @@ Script:
 Primary artifacts:
 - `artifacts/release-quality-dashboard.json`
 - `artifacts/release-quality-dashboard-trend.json`
+- `artifacts/release-quality-dashboard-final.json` (post-Linux distribution path)
+- `artifacts/release-quality-dashboard-trend-final.json` (post-Linux distribution trend)
 
 Baseline:
 - `eval/baselines/quality/release_quality_dashboard_baseline.json`
@@ -22,6 +24,9 @@ The snapshot builder consumes these gate reports:
 - `artifacts/runtime-lifecycle-smoke-report.json`
 - `artifacts/user-journey-benchmark-report.json`
 
+Optional:
+- `artifacts/distribution-resilience-report.json`
+
 ## Output Contract
 
 `release-quality-dashboard.json`:
@@ -33,7 +38,7 @@ The snapshot builder consumes these gate reports:
   - `value`
   - `threshold`
   - `comparator` (`lte` or `gte`)
-  - `category` (performance/reliability/resilience/queue/runtime/user_flow)
+  - `category` (performance/reliability/resilience/queue/runtime/user_flow/distribution)
   - `passed`
 - `summary`: total/passed/failed signals + `quality_score_pct` + `status`
 
@@ -47,7 +52,8 @@ The snapshot builder consumes these gate reports:
 
 `release-gate.yml` now:
 - persists perf smoke report as artifact,
-- builds dashboard snapshot after canary benchmark gates,
-- uploads dashboard snapshot + trend artifacts.
+- builds dashboard snapshot after canary benchmark gates (`release-quality-dashboard`),
+- rebuilds final dashboard in `Release KPI Pack` with `distribution-resilience-report` included (`release-quality-dashboard-final`),
+- uploads both snapshot + trend artifacts.
 
 This gives a stable, machine-readable quality surface for release-over-release comparability.

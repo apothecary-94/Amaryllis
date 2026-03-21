@@ -27,12 +27,19 @@ class ReleaseQualityDashboardSnapshotTests(unittest.TestCase):
     def _write_json(path: Path, payload: dict) -> None:
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
-    def _write_reports(self, *, base: Path, perf_p95: float = 210.0) -> dict[str, Path]:
+    def _write_reports(
+        self,
+        *,
+        base: Path,
+        perf_p95: float = 210.0,
+        distribution_status: str = "pass",
+    ) -> dict[str, Path]:
         perf = base / "perf.json"
         fault = base / "fault.json"
         mission = base / "mission.json"
         runtime = base / "runtime.json"
         journey = base / "journey.json"
+        distribution = base / "distribution.json"
 
         self._write_json(
             perf,
@@ -114,6 +121,20 @@ class ReleaseQualityDashboardSnapshotTests(unittest.TestCase):
                 },
             },
         )
+        self._write_json(
+            distribution,
+            {
+                "suite": "distribution_resilience_report_v1",
+                "generated_at": "2026-03-21T00:00:00+00:00",
+                "summary": {
+                    "checks_total": 14,
+                    "checks_passed": 14 if distribution_status == "pass" else 12,
+                    "checks_failed": 0 if distribution_status == "pass" else 2,
+                    "score_pct": 100.0 if distribution_status == "pass" else 85.7143,
+                    "status": distribution_status,
+                },
+            },
+        )
 
         return {
             "perf": perf,
@@ -121,6 +142,7 @@ class ReleaseQualityDashboardSnapshotTests(unittest.TestCase):
             "mission": mission,
             "runtime": runtime,
             "journey": journey,
+            "distribution": distribution,
         }
 
     @staticmethod
@@ -143,6 +165,9 @@ class ReleaseQualityDashboardSnapshotTests(unittest.TestCase):
                 {"metric_id": "user_journey.p95_plan_dispatch_latency_ms", "value": 1200.0},
                 {"metric_id": "user_journey.p95_execute_dispatch_latency_ms", "value": 1200.0},
                 {"metric_id": "user_journey.plan_to_execute_conversion_rate_pct", "value": 100.0},
+                {"metric_id": "distribution_resilience.status", "value": 1.0},
+                {"metric_id": "distribution_resilience.checks_failed", "value": 0.0},
+                {"metric_id": "distribution_resilience.score_pct", "value": 100.0},
             ],
         }
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -194,6 +219,42 @@ class ReleaseQualityDashboardSnapshotTests(unittest.TestCase):
             self.assertEqual(trend_payload.get("suite"), "release_quality_dashboard_trend_v1")
             self.assertEqual(int(trend_payload.get("summary", {}).get("compared_metrics", 0)), 15)
 
+    def test_snapshot_and_trend_include_distribution_when_report_provided(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amaryllis-quality-dashboard-") as tmp:
+            base = Path(tmp)
+            reports = self._write_reports(base=base)
+            baseline = base / "baseline.json"
+            snapshot = base / "dashboard.json"
+            trend = base / "trend.json"
+            self._write_baseline(baseline)
+
+            proc = self._run(
+                "--perf-report",
+                str(reports["perf"]),
+                "--fault-injection-report",
+                str(reports["fault"]),
+                "--mission-queue-report",
+                str(reports["mission"]),
+                "--runtime-lifecycle-report",
+                str(reports["runtime"]),
+                "--user-journey-report",
+                str(reports["journey"]),
+                "--distribution-resilience-report",
+                str(reports["distribution"]),
+                "--baseline",
+                str(baseline),
+                "--output",
+                str(snapshot),
+                "--trend-output",
+                str(trend),
+            )
+            self.assertEqual(proc.returncode, 0, msg=f"stdout={proc.stdout}\nstderr={proc.stderr}")
+            payload = json.loads(snapshot.read_text(encoding="utf-8"))
+            self.assertEqual(payload.get("summary", {}).get("status"), "pass")
+            self.assertEqual(int(payload.get("summary", {}).get("signals_total", 0)), 18)
+            trend_payload = json.loads(trend.read_text(encoding="utf-8"))
+            self.assertEqual(int(trend_payload.get("summary", {}).get("compared_metrics", 0)), 18)
+
     def test_snapshot_fails_when_quality_signal_breaches_threshold(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amaryllis-quality-dashboard-") as tmp:
             base = Path(tmp)
@@ -223,6 +284,39 @@ class ReleaseQualityDashboardSnapshotTests(unittest.TestCase):
             )
             self.assertEqual(proc.returncode, 1, msg=f"stdout={proc.stdout}\nstderr={proc.stderr}")
             self.assertIn("[quality-dashboard] FAILED", proc.stdout)
+            payload = json.loads(snapshot.read_text(encoding="utf-8"))
+            self.assertEqual(payload.get("summary", {}).get("status"), "fail")
+
+    def test_snapshot_fails_when_distribution_signal_breaches_threshold(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amaryllis-quality-dashboard-") as tmp:
+            base = Path(tmp)
+            reports = self._write_reports(base=base, distribution_status="fail")
+            baseline = base / "baseline.json"
+            snapshot = base / "dashboard.json"
+            trend = base / "trend.json"
+            self._write_baseline(baseline)
+
+            proc = self._run(
+                "--perf-report",
+                str(reports["perf"]),
+                "--fault-injection-report",
+                str(reports["fault"]),
+                "--mission-queue-report",
+                str(reports["mission"]),
+                "--runtime-lifecycle-report",
+                str(reports["runtime"]),
+                "--user-journey-report",
+                str(reports["journey"]),
+                "--distribution-resilience-report",
+                str(reports["distribution"]),
+                "--baseline",
+                str(baseline),
+                "--output",
+                str(snapshot),
+                "--trend-output",
+                str(trend),
+            )
+            self.assertEqual(proc.returncode, 1, msg=f"stdout={proc.stdout}\nstderr={proc.stderr}")
             payload = json.loads(snapshot.read_text(encoding="utf-8"))
             self.assertEqual(payload.get("summary", {}).get("status"), "fail")
 

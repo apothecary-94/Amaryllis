@@ -62,7 +62,7 @@ Move from OSS platform readiness to daily-driver "Jarvis on PC": unified multimo
 | P4-C03 | in_progress | objective verification gates in supervisor (`objective_verification` policy + `/supervisor/graphs/{id}/verify` endpoint + tests) |
 | P4-D01 | in_progress | end-to-end user journey benchmark baseline (`scripts/release/user_journey_benchmark.py` + baseline + release/nightly artifact wiring) |
 | P4-D02 | in_progress | mission KPI pack schema v2 (`mission_success_recovery_report_pack_v2` + class breakdown by mission/recovery/quality/user_flow/nightly) |
-| P4-D03 | in_progress | distribution resilience report (`scripts/release/build_distribution_resilience_report.py`) + release-gate blocking artifact wiring (`distribution-resilience-report.json`) |
+| P4-D03 | done | distribution resilience report (`scripts/release/build_distribution_resilience_report.py`) + release-gate blocking artifact wiring (`distribution-resilience-report.json`) |
 
 ## Next Checkpoint
 - Deliver first executable "Jarvis on PC" flow:
