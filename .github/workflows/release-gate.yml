@@ -99,6 +99,8 @@ jobs:
             tests.test_mission_planner \
             tests.test_automation_mission_plan_api \
             tests.test_runtime_service_manifest_renderer \
+            tests.test_runtime_service_lifecycle \
+            tests.test_runtime_lifecycle_smoke_gate \
             -v
 
       - name: Run compatibility gate script (blocking)
@@ -133,6 +135,19 @@ jobs:
             --iterations "${AMARYLLIS_PERF_SMOKE_ITERATIONS:-3}" \
             --max-p95-latency-ms "${AMARYLLIS_PERF_SMOKE_MAX_P95_MS:-350}" \
             --max-error-rate-pct "${AMARYLLIS_PERF_SMOKE_MAX_ERROR_RATE_PCT:-0}"
+
+      - name: Run runtime lifecycle smoke + startup SLO gate (blocking)
+        run: |
+          python scripts/release/runtime_lifecycle_smoke_gate.py \
+            --max-startup-slo-latency-ms "${AMARYLLIS_RUNTIME_LIFECYCLE_MAX_STARTUP_SLO_MS:-3000}" \
+            --output "artifacts/runtime-lifecycle-smoke-report.json"
+
+      - name: Upload runtime lifecycle smoke report
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-lifecycle-smoke-report
+          path: artifacts/runtime-lifecycle-smoke-report.json
+          if-no-files-found: error
 
       - name: Run fault-injection reliability gate (blocking)
         run: |

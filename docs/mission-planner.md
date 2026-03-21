@@ -10,6 +10,8 @@ It combines:
 - cadence normalization (`workday/daily/hourly/weekly/watch_fs`),
 - recommendation gate for immediate start based on mission risk.
 
+`GET /automations/mission/templates` returns preset mission templates (`code_health`, `security_audit`, `release_guard`, `runtime_watchdog`) for low-friction planning.
+
 ## Endpoint
 
 ```bash
@@ -29,11 +31,12 @@ curl -X POST http://localhost:8000/automations/mission/plan \
 
 - `agent_id` (required): target agent.
 - `user_id` (required): owner user id.
-- `message` (required): mission instruction.
+- `message` (optional if `template_id` is provided): mission instruction.
 - `session_id` (optional): session context.
 - `timezone` (default `UTC`): planner timezone.
-- `cadence_profile` (default `workday`): one of `hourly`, `daily`, `workday`, `weekly`, `watch_fs`.
-- `start_immediately` (default `false`): requested immediate scheduling.
+- `cadence_profile` (optional): one of `hourly`, `daily`, `workday`, `weekly`, `watch_fs`.
+- `start_immediately` (optional): requested immediate scheduling.
+- `template_id` (optional): one of `code_health`, `security_audit`, `release_guard`, `runtime_watchdog`.
 - `schedule_type`, `schedule`, `interval_sec` (optional): explicit schedule override.
 - `max_attempts`, `budget` (optional): passed to dry-run simulation only.
 
@@ -45,6 +48,7 @@ curl -X POST http://localhost:8000/automations/mission/plan \
   - recommendation (`requested_start_immediately`, `effective_start_immediately`, checklist),
   - `apply_payload` compatible with `POST /automations/create`.
 - `simulation`: full dry-run simulation payload.
+- `template`: selected template metadata (`id`, `name`, `description`, `risk_tags`) if template was used.
 - `apply_hint`: `{ endpoint: "/automations/create", payload: ... }`.
 
 ## Behavior
@@ -52,6 +56,25 @@ curl -X POST http://localhost:8000/automations/mission/plan \
 - High/critical/unknown mission risk forces `effective_start_immediately=false`.
 - For low/medium risk, `effective_start_immediately` follows user request.
 - `watch_fs` cadence requires explicit `schedule` payload with `path` and polling settings.
+- Template defaults are used when fields are omitted; explicit request fields always override template values.
+
+## Template Catalog
+
+```bash
+curl http://localhost:8000/automations/mission/templates
+```
+
+Each item includes:
+
+- `id`
+- `name`
+- `description`
+- `default_message`
+- `cadence_profile`
+- `start_immediately`
+- `max_attempts`
+- `budget`
+- `risk_tags`
 
 ## Related Tests
 

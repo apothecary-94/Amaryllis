@@ -4,9 +4,10 @@
 
 Define a deterministic service-management contract for local runtime lifecycle on Linux and macOS.
 
-Current implementation slice (`P3-B01`):
+Current implementation slice (`P3-B01`, `P3-B02`, `P3-B03`):
 
 - manifest renderer: `scripts/runtime/render_service_manifest.py`
+- lifecycle manager: `scripts/runtime/manage_service.py`
 - targets: `linux-systemd`, `macos-launchd`
 
 ## Manifest Renderer
@@ -31,6 +32,29 @@ python3 scripts/runtime/render_service_manifest.py \
   --output /tmp/org.amaryllis.amaryllis-runtime.plist
 ```
 
+Install service (manifest write + control hooks):
+
+```bash
+python3 scripts/runtime/manage_service.py install \
+  --target linux-systemd \
+  --channel stable
+```
+
+Dry-run lifecycle actions:
+
+```bash
+python3 scripts/runtime/manage_service.py status --target linux-systemd --dry-run
+python3 scripts/runtime/manage_service.py uninstall --target linux-systemd --dry-run
+python3 scripts/runtime/manage_service.py rollback --target linux-systemd --dry-run
+```
+
+Lifecycle smoke + startup SLO gate:
+
+```bash
+python3 scripts/release/runtime_lifecycle_smoke_gate.py \
+  --output artifacts/runtime-lifecycle-smoke-report.json
+```
+
 ## Contract Guarantees
 
 - Deterministic rendering for same input args.
@@ -41,13 +65,20 @@ python3 scripts/runtime/render_service_manifest.py \
   - `AMARYLLIS_PORT`
 - Extra env entries accepted via repeatable `--environment KEY=VALUE`.
 - Invalid env entries fail fast.
+- Manifest writes are atomic (temp-file + replace) to avoid partial state.
+- Install keeps deterministic rollback snapshot at:
+  - `<manifest-path>.rollback.bak`
+- Failed install attempts auto-restore previous manifest (or remove newly written manifest on first install).
+- Explicit rollback command restores from backup and reapplies runtime control hooks:
+  - `python3 scripts/runtime/manage_service.py rollback --target linux-systemd`
 
-## Planned Next Steps
+## Next Hardening Steps
 
-- lifecycle installer/uninstaller commands for `systemd --user` and `launchctl`.
-- start/stop/status/rollback CLI wrappers.
-- release smoke gate for lifecycle startup SLA and recovery checks.
+- Add dedicated-host integration smoke (real `systemctl --user` / `launchctl`) in addition to current dry-control contract checks.
+- Extend startup gate with recovery-time thresholds after forced lifecycle failure.
 
 ## Tests
 
 - `tests/test_runtime_service_manifest_renderer.py`
+- `tests/test_runtime_service_lifecycle.py`
+- `tests/test_runtime_lifecycle_smoke_gate.py`

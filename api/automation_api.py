@@ -5,7 +5,7 @@ from typing import Any
 from fastapi import APIRouter, Path, Query, Request
 from pydantic import BaseModel, Field
 
-from automation.mission_planner import build_mission_plan
+from automation.mission_planner import apply_mission_template, build_mission_plan, list_mission_templates
 from runtime.auth import assert_owner, auth_context_from_request, resolve_user_id
 from runtime.errors import AmaryllisError, NotFoundError, ProviderError, ValidationError
 
@@ -57,16 +57,28 @@ class CreateAutomationRequest(BaseModel):
 class PlanMissionRequest(BaseModel):
     agent_id: str = Field(min_length=1)
     user_id: str = Field(min_length=1)
-    message: str = Field(min_length=1)
+    message: str | None = None
     session_id: str | None = None
     timezone: str = Field(default="UTC", min_length=1)
-    cadence_profile: str = Field(default="workday", min_length=1)
-    start_immediately: bool = False
+    cadence_profile: str | None = None
+    start_immediately: bool | None = None
+    template_id: str | None = Field(default=None, min_length=1)
     schedule_type: str | None = Field(default=None)
     schedule: dict[str, Any] = Field(default_factory=dict)
     interval_sec: int | None = Field(default=None, ge=10, le=86400)
     max_attempts: int | None = Field(default=None, ge=1, le=10)
     budget: dict[str, Any] = Field(default_factory=dict)
+
+
+@router.get("/automations/mission/templates")
+def mission_templates(request: Request) -> dict[str, Any]:
+    auth_context_from_request(request)
+    templates = list_mission_templates()
+    return {
+        "items": templates,
+        "count": len(templates),
+        "request_id": _request_id(request),
+    }
 
 
 @router.post("/automations/mission/plan")
@@ -85,27 +97,42 @@ def plan_mission(payload: PlanMissionRequest, request: Request) -> dict[str, Any
             resource_id=payload.agent_id,
         )
 
-        simulation = services.agent_manager.simulate_run(
-            agent_id=payload.agent_id,
-            user_id=effective_user_id,
-            session_id=payload.session_id,
-            user_message=payload.message,
-            max_attempts=payload.max_attempts,
-            budget=payload.budget,
-        )
-        mission_plan = build_mission_plan(
-            agent_id=payload.agent_id,
-            user_id=effective_user_id,
+        resolved = apply_mission_template(
+            template_id=payload.template_id,
             message=payload.message,
-            session_id=payload.session_id,
-            timezone_name=payload.timezone,
             cadence_profile=payload.cadence_profile,
             start_immediately=payload.start_immediately,
             schedule_type=payload.schedule_type,
             schedule=payload.schedule,
             interval_sec=payload.interval_sec,
+            max_attempts=payload.max_attempts,
+            budget=payload.budget,
+        )
+
+        simulation = services.agent_manager.simulate_run(
+            agent_id=payload.agent_id,
+            user_id=effective_user_id,
+            session_id=payload.session_id,
+            user_message=str(resolved.get("message") or ""),
+            max_attempts=resolved.get("max_attempts"),
+            budget=resolved.get("budget", {}),
+        )
+        mission_plan = build_mission_plan(
+            agent_id=payload.agent_id,
+            user_id=effective_user_id,
+            message=str(resolved.get("message") or ""),
+            session_id=payload.session_id,
+            timezone_name=payload.timezone,
+            cadence_profile=str(resolved.get("cadence_profile") or "workday"),
+            start_immediately=bool(resolved.get("start_immediately")),
+            schedule_type=resolved.get("schedule_type"),
+            schedule=resolved.get("schedule"),
+            interval_sec=resolved.get("interval_sec"),
             simulation=simulation,
         )
+        selected_template = resolved.get("template")
+        if isinstance(selected_template, dict):
+            mission_plan["template"] = selected_template
         receipt = _sign_action(
             request,
             action="automation_plan_mission",
@@ -116,6 +143,7 @@ def plan_mission(payload: PlanMissionRequest, request: Request) -> dict[str, Any
         return {
             "mission_plan": mission_plan,
             "simulation": simulation,
+            "template": selected_template,
             "apply_hint": {
                 "endpoint": "/automations/create",
                 "payload": mission_plan.get("apply_payload", {}),

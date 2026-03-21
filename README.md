@@ -55,6 +55,7 @@ Implemented in this version:
 - release gate assets: compatibility script, canary smoke script, disaster-recovery gate, compliance gate, rollback playbook
 - lease/CAS ownership for agent runs (single-owner execution under concurrent workers)
 - mission simulation mode before apply with risk/rollback preview and signed dry-run receipt (`POST /agents/{agent_id}/runs/simulate`)
+- mission template catalog for automation planning (`GET /automations/mission/templates`) with defaults (`code_health`, `security_audit`, `release_guard`, `runtime_watchdog`)
 - compact run diagnostics endpoint for mission postmortem (`GET /agents/runs/{run_id}/diagnostics`)
 - voice push-to-talk session contract with explicit state transitions (`created -> listening -> stopping -> stopped`)
 - pluggable local STT adapter layer (`whisper_python` backend + graceful unavailable mode)
@@ -248,6 +249,10 @@ Render runtime lifecycle manifests (Phase 3 contract slice):
 ```bash
 python3 scripts/runtime/render_service_manifest.py --target linux-systemd
 python3 scripts/runtime/render_service_manifest.py --target macos-launchd
+python3 scripts/runtime/manage_service.py install --target linux-systemd --dry-run
+python3 scripts/runtime/manage_service.py status --target linux-systemd --dry-run
+python3 scripts/runtime/manage_service.py rollback --target linux-systemd --dry-run
+python3 scripts/release/runtime_lifecycle_smoke_gate.py --output artifacts/runtime-lifecycle-smoke-report.json
 ```
 
 Manual backend setup:
@@ -1041,6 +1046,7 @@ Implemented now:
   - view escalation/failure counters directly on automation cards
   - triage inbox notifications and mark read/unread
 - mission planner endpoint for risk-aware preflight before schedule creation (`POST /automations/mission/plan`)
+- mission template catalog endpoint for prebuilt planning profiles (`GET /automations/mission/templates`)
 
 Automation API:
 
@@ -1055,6 +1061,19 @@ curl -X POST http://localhost:8000/automations/mission/plan \
     "cadence_profile": "workday",
     "timezone": "UTC",
     "start_immediately": true
+  }'
+
+# list mission templates
+curl http://localhost:8000/automations/mission/templates
+
+# plan mission from template defaults (message/cadence inferred)
+curl -X POST http://localhost:8000/automations/mission/plan \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agent_id": "<agent_id>",
+    "user_id": "user-001",
+    "template_id": "release_guard",
+    "timezone": "UTC"
   }'
 
 # create

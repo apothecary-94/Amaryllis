@@ -120,6 +120,56 @@ class AutomationMissionPlanAPITests(unittest.TestCase):
         self.assertEqual(str(apply_payload.get("schedule_type")), "weekly")
         self.assertIn("start_immediately", apply_payload)
 
+    def test_mission_template_catalog_endpoint(self) -> None:
+        listed = self.client.get(
+            "/automations/mission/templates",
+            headers=self._auth("user-token"),
+        )
+        self.assertEqual(listed.status_code, 200)
+        payload = listed.json()
+        self.assertGreaterEqual(int(payload.get("count", 0)), 4)
+        items = payload.get("items", [])
+        self.assertIsInstance(items, list)
+        template_ids = {str(item.get("id")) for item in items if isinstance(item, dict)}
+        self.assertTrue(
+            {"code_health", "security_audit", "release_guard", "runtime_watchdog"}.issubset(template_ids)
+        )
+
+    def test_plan_mission_from_template_without_manual_prompt(self) -> None:
+        created = self.client.post(
+            "/agents/create",
+            headers=self._auth("user-token"),
+            json={
+                "name": "Template Planner Agent",
+                "system_prompt": "planner",
+                "user_id": "user-1",
+                "tools": ["web_search"],
+            },
+        )
+        self.assertEqual(created.status_code, 200)
+        agent_id = str(created.json().get("id"))
+
+        planned = self.client.post(
+            "/automations/mission/plan",
+            headers=self._auth("user-token"),
+            json={
+                "agent_id": agent_id,
+                "user_id": "user-1",
+                "template_id": "release_guard",
+                "timezone": "UTC",
+            },
+        )
+        self.assertEqual(planned.status_code, 200)
+        payload = planned.json()
+        mission_plan = payload.get("mission_plan", {})
+        message = str(mission_plan.get("message") or "")
+        self.assertIn("release guard mission", message.lower())
+        self.assertEqual(str(mission_plan.get("schedule_type")), "weekly")
+        schedule = mission_plan.get("schedule", {})
+        self.assertEqual(schedule.get("byday"), ["MO", "TU", "WE", "TH", "FR", "SA", "SU"])
+        template = payload.get("template", {})
+        self.assertEqual(str(template.get("id")), "release_guard")
+
     def test_plan_mission_cross_tenant_is_blocked(self) -> None:
         created = self.client.post(
             "/agents/create",

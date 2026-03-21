@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
 
@@ -12,6 +13,140 @@ _SUPPORTED_CADENCE_PROFILES: tuple[str, ...] = (
     "weekly",
     "watch_fs",
 )
+
+_MISSION_TEMPLATE_REGISTRY: dict[str, dict[str, Any]] = {
+    "code_health": {
+        "id": "code_health",
+        "name": "Code Health Sweep",
+        "description": "Run lint/test/dependency checks and return remediation backlog.",
+        "default_message": (
+            "Run code health sweep: execute lint/tests, detect flaky or failing areas, "
+            "summarize root causes, and propose prioritized fixes."
+        ),
+        "cadence_profile": "workday",
+        "start_immediately": False,
+        "max_attempts": 3,
+        "budget": {"max_steps": 24, "max_tool_calls": 40, "timeout_sec": 900},
+        "risk_tags": ["quality", "maintenance"],
+    },
+    "security_audit": {
+        "id": "security_audit",
+        "name": "Security Audit",
+        "description": "Review dependency, secrets, and policy posture with explicit risk findings.",
+        "default_message": (
+            "Run security audit: scan dependencies/secrets/config, classify risks, "
+            "and prepare mitigation plan with urgency levels."
+        ),
+        "cadence_profile": "weekly",
+        "start_immediately": False,
+        "max_attempts": 4,
+        "budget": {"max_steps": 28, "max_tool_calls": 48, "timeout_sec": 1200},
+        "risk_tags": ["security", "compliance"],
+    },
+    "release_guard": {
+        "id": "release_guard",
+        "name": "Release Guard",
+        "description": "Validate release readiness gates and summarize go/no-go blockers.",
+        "default_message": (
+            "Run release guard mission: validate quality gates, highlight blockers, "
+            "and provide go/no-go recommendation with rollback notes."
+        ),
+        "cadence_profile": "daily",
+        "start_immediately": False,
+        "max_attempts": 3,
+        "budget": {"max_steps": 22, "max_tool_calls": 36, "timeout_sec": 900},
+        "risk_tags": ["release", "reliability"],
+    },
+    "runtime_watchdog": {
+        "id": "runtime_watchdog",
+        "name": "Runtime Watchdog",
+        "description": "Continuously watch runtime health and auto-surface incident hints.",
+        "default_message": (
+            "Run runtime watchdog mission: inspect health/slo/incidents, detect regressions, "
+            "and generate actionable recovery checklist."
+        ),
+        "cadence_profile": "hourly",
+        "start_immediately": True,
+        "max_attempts": 2,
+        "budget": {"max_steps": 16, "max_tool_calls": 24, "timeout_sec": 600},
+        "risk_tags": ["ops", "watchdog"],
+    },
+}
+
+
+def list_mission_templates() -> list[dict[str, Any]]:
+    return [deepcopy(_MISSION_TEMPLATE_REGISTRY[key]) for key in sorted(_MISSION_TEMPLATE_REGISTRY)]
+
+
+def apply_mission_template(
+    *,
+    template_id: str | None,
+    message: str | None,
+    cadence_profile: str | None,
+    start_immediately: bool | None,
+    schedule_type: str | None,
+    schedule: dict[str, Any] | None,
+    interval_sec: int | None,
+    max_attempts: int | None,
+    budget: dict[str, Any] | None,
+) -> dict[str, Any]:
+    template = _resolve_template(template_id)
+
+    resolved_message = str(message or "").strip()
+    if not resolved_message and template is not None:
+        resolved_message = str(template.get("default_message") or "").strip()
+    if not resolved_message:
+        raise ValueError("message must be non-empty")
+
+    resolved_cadence = str(cadence_profile or "").strip().lower()
+    if not resolved_cadence and template is not None:
+        resolved_cadence = str(template.get("cadence_profile") or "").strip().lower()
+    if not resolved_cadence:
+        resolved_cadence = "workday"
+
+    if start_immediately is None:
+        resolved_start_immediately = bool(template.get("start_immediately")) if template is not None else False
+    else:
+        resolved_start_immediately = bool(start_immediately)
+
+    resolved_max_attempts = max_attempts
+    if resolved_max_attempts is None and template is not None:
+        template_max_attempts = template.get("max_attempts")
+        if template_max_attempts is not None:
+            resolved_max_attempts = int(template_max_attempts)
+
+    resolved_budget: dict[str, Any] = {}
+    if template is not None and isinstance(template.get("budget"), dict):
+        resolved_budget.update(deepcopy(template.get("budget", {})))
+    if isinstance(budget, dict):
+        resolved_budget.update(deepcopy(budget))
+
+    explicit_schedule = bool(schedule_type) or bool(schedule) or (interval_sec is not None)
+    resolved_schedule_type = schedule_type
+    resolved_schedule = deepcopy(schedule) if isinstance(schedule, dict) else schedule
+    resolved_interval = interval_sec
+    if not explicit_schedule and template is not None:
+        template_schedule_type = template.get("schedule_type")
+        template_schedule = template.get("schedule")
+        template_interval = template.get("interval_sec")
+        if template_schedule_type is not None or template_schedule is not None or template_interval is not None:
+            resolved_schedule_type = (
+                str(template_schedule_type).strip() if template_schedule_type is not None else None
+            )
+            resolved_schedule = deepcopy(template_schedule) if isinstance(template_schedule, dict) else template_schedule
+            resolved_interval = int(template_interval) if template_interval is not None else None
+
+    return {
+        "template": _template_view(template),
+        "message": resolved_message,
+        "cadence_profile": resolved_cadence,
+        "start_immediately": resolved_start_immediately,
+        "schedule_type": resolved_schedule_type,
+        "schedule": resolved_schedule,
+        "interval_sec": resolved_interval,
+        "max_attempts": resolved_max_attempts,
+        "budget": resolved_budget,
+    }
 
 
 def build_mission_plan(
@@ -152,6 +287,28 @@ def resolve_mission_schedule(
         schedule={"byday": ["MO", "TU", "WE", "TH", "FR"], "hour": 9, "minute": 0},
         interval_sec=None,
     )
+
+
+def _resolve_template(template_id: str | None) -> dict[str, Any] | None:
+    normalized = str(template_id or "").strip().lower()
+    if not normalized:
+        return None
+    normalized = normalized.replace("-", "_")
+    selected = _MISSION_TEMPLATE_REGISTRY.get(normalized)
+    if selected is None:
+        raise ValueError(f"unsupported mission template: {template_id}")
+    return deepcopy(selected)
+
+
+def _template_view(template: dict[str, Any] | None) -> dict[str, Any] | None:
+    if template is None:
+        return None
+    return {
+        "id": str(template.get("id") or ""),
+        "name": str(template.get("name") or ""),
+        "description": str(template.get("description") or ""),
+        "risk_tags": list(template.get("risk_tags") or []),
+    }
 
 
 def _normalize_profile(cadence_profile: str | None) -> str:

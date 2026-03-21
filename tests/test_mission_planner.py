@@ -3,7 +3,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import unittest
 
-from automation.mission_planner import build_mission_plan, resolve_mission_schedule
+from automation.mission_planner import (
+    apply_mission_template,
+    build_mission_plan,
+    list_mission_templates,
+    resolve_mission_schedule,
+)
 
 
 class MissionPlannerTests(unittest.TestCase):
@@ -83,6 +88,50 @@ class MissionPlannerTests(unittest.TestCase):
         apply_payload = plan.get("apply_payload", {})
         self.assertEqual(str(apply_payload.get("schedule_type")), "weekly")
         self.assertEqual(bool(apply_payload.get("start_immediately")), True)
+
+    def test_template_catalog_contains_phase3_defaults(self) -> None:
+        templates = list_mission_templates()
+        template_ids = {str(item.get("id")) for item in templates}
+        self.assertEqual(
+            template_ids,
+            {"code_health", "security_audit", "release_guard", "runtime_watchdog"},
+        )
+
+    def test_apply_template_uses_defaults_when_message_missing(self) -> None:
+        resolved = apply_mission_template(
+            template_id="release_guard",
+            message=None,
+            cadence_profile=None,
+            start_immediately=None,
+            schedule_type=None,
+            schedule=None,
+            interval_sec=None,
+            max_attempts=None,
+            budget=None,
+        )
+        self.assertEqual(str(resolved.get("cadence_profile")), "daily")
+        self.assertEqual(bool(resolved.get("start_immediately")), False)
+        self.assertEqual(int(resolved.get("max_attempts") or 0), 3)
+        message = str(resolved.get("message") or "")
+        self.assertIn("release guard mission", message.lower())
+        template = resolved.get("template")
+        self.assertIsInstance(template, dict)
+        assert isinstance(template, dict)
+        self.assertEqual(str(template.get("id")), "release_guard")
+
+    def test_apply_template_rejects_unknown_template(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unsupported mission template"):
+            apply_mission_template(
+                template_id="does-not-exist",
+                message="test",
+                cadence_profile=None,
+                start_immediately=None,
+                schedule_type=None,
+                schedule=None,
+                interval_sec=None,
+                max_attempts=None,
+                budget=None,
+            )
 
 
 if __name__ == "__main__":

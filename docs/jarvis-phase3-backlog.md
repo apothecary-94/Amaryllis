@@ -22,16 +22,16 @@ Open, extensible local cognitive platform with bounded autonomous missions (L4),
 | ID | Status | Task | Deliverable | Definition of Done |
 |---|---|---|---|---|
 | P3-A01 | done | Add risk-aware mission planning API before automation creation | `/automations/mission/plan` + planner module + tests | User can dry-run mission, get cadence-normalized plan and apply payload with trust recommendations |
-| P3-A02 | todo | Add mission template catalog (code health/security/release/watchdog) | template registry + docs | User can create mission from template with minimal manual tuning |
+| P3-A02 | done | Add mission template catalog (code health/security/release/watchdog) | template registry + docs | User can create mission from template with minimal manual tuning |
 | P3-A03 | todo | Add mission SLO policy overlays per automation | policy schema + scheduler enforcement | Mission profiles enforce per-mission reliability/risk envelopes |
 
 ### Epic B - Local Runtime Lifecycle Productization
 
 | ID | Status | Task | Deliverable | Definition of Done |
 |---|---|---|---|---|
-| P3-B01 | in_progress | Define Linux/macOS runtime lifecycle service contract | lifecycle spec + manifests contract tests | Runtime service management path is deterministic and testable |
-| P3-B02 | todo | Add lifecycle installer/uninstaller commands with rollback-safe behavior | lifecycle CLI + docs | Operator can install/start/stop/rollback runtime service without manual edits |
-| P3-B03 | todo | Add lifecycle smoke and SLO startup gate in release pipeline | blocking CI gate + artifacts | Release fails on lifecycle/startup regressions |
+| P3-B01 | done | Define Linux/macOS runtime lifecycle service contract | lifecycle spec + manifests contract tests | Runtime service management path is deterministic and testable |
+| P3-B02 | done | Add lifecycle installer/uninstaller commands with rollback-safe behavior | lifecycle CLI + docs | Operator can install/start/stop/rollback runtime service without manual edits |
+| P3-B03 | done | Add lifecycle smoke and SLO startup gate in release pipeline | blocking CI gate + artifacts | Release fails on lifecycle/startup regressions |
 
 ### Epic C - Skills and Plugin Compatibility
 
@@ -52,4 +52,7 @@ Open, extensible local cognitive platform with bounded autonomous missions (L4),
 | ID | Status | Scope |
 |---|---|---|
 | P3-A01 | done | mission planner API (`POST /automations/mission/plan`) + cadence heuristics + risk-aware apply hint |
-| P3-B01 | in_progress | runtime lifecycle contract + deterministic manifest renderer (`scripts/runtime/render_service_manifest.py`) with contract tests (`tests/test_runtime_service_manifest_renderer.py`) |
+| P3-A02 | done | mission template catalog endpoint (`GET /automations/mission/templates`) + template-aware mission planning defaults |
+| P3-B01 | done | runtime lifecycle contract + deterministic manifest renderer (`scripts/runtime/render_service_manifest.py`) with contract tests (`tests/test_runtime_service_manifest_renderer.py`) |
+| P3-B02 | done | lifecycle manager CLI (`scripts/runtime/manage_service.py`) with install/uninstall/start/stop/status/rollback paths, rollback-safe install behavior, and tests |
+| P3-B03 | done | blocking lifecycle smoke + startup SLO release gate (`scripts/release/runtime_lifecycle_smoke_gate.py`) with JSON artifact wiring in CI |
