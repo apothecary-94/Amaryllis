@@ -296,6 +296,7 @@ Reference:
 - `docs/flow-session-contract.md`
 - `docs/automation-mission-policy.md`
 - `docs/linux-desktop-action-adapters.md`
+- `docs/supervisor-task-graph-contract.md`
 - `docs/plugin-compat-contract.md`
 - `docs/plugin-capability-policy.md`
 - `docs/dynamic-mission-budgets.md`
@@ -804,6 +805,56 @@ curl -X POST http://localhost:8000/agents/<agent_id>/runs/dispatch \
       "max_tool_errors": 2
     }
   }'
+```
+
+### Supervisor: multi-agent DAG graph (bounded orchestration skeleton)
+
+Check contract:
+
+```bash
+curl "http://localhost:8000/supervisor/graphs/contract"
+```
+
+Create graph:
+
+```bash
+curl -X POST http://localhost:8000/supervisor/graphs/create \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_id": "user-001",
+    "objective": "Triage, fix, and verify production incident",
+    "nodes": [
+      {
+        "node_id": "triage",
+        "agent_id": "<triage_agent_id>",
+        "message": "Analyze incident and identify probable root cause"
+      },
+      {
+        "node_id": "fix",
+        "agent_id": "<fix_agent_id>",
+        "message": "Prepare remediation plan and patch proposal",
+        "depends_on": ["triage"]
+      },
+      {
+        "node_id": "verify",
+        "agent_id": "<verify_agent_id>",
+        "message": "Validate remediation and summarize residual risk",
+        "depends_on": ["fix"]
+      }
+    ]
+  }'
+```
+
+Launch and tick graph:
+
+```bash
+curl -X POST "http://localhost:8000/supervisor/graphs/<graph_id>/launch" \
+  -H "Content-Type: application/json" \
+  -d '{"session_id":"session-001"}'
+
+curl -X POST "http://localhost:8000/supervisor/graphs/<graph_id>/tick" \
+  -H "Content-Type: application/json" \
+  -d '{"noop": true}'
 ```
 
 ### Work Mode: create async run
@@ -1336,7 +1387,7 @@ curl -X POST "http://localhost:8000/mcp/tools/desktop_action/invoke" \
 
 Note: high/critical tool success responses include `high_risk_action` (`actor`, `policy_level`, `rollback_hint`) and are persisted into `/security/audit` as `high_risk_action_receipt`.
 
-List persisted terminal action receipts (for `python_exec`/terminal tools):
+List persisted action receipts (including `python_exec` and `desktop_action`):
 
 ```bash
 curl "http://localhost:8000/tools/actions/terminal?tool_name=python_exec&session_id=session-001&limit=50"

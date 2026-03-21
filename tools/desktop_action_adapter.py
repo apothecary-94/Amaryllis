@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import os
 import shutil
 import subprocess
@@ -15,11 +15,15 @@ SUPPORTED_DESKTOP_ACTIONS: tuple[str, ...] = (
     "clipboard_write",
     "app_launch",
     "window_list",
+    "window_focus",
+    "window_close",
 )
 MUTATING_DESKTOP_ACTIONS: set[str] = {
     "notify",
     "clipboard_write",
     "app_launch",
+    "window_focus",
+    "window_close",
 }
 MAX_TIMEOUT_SEC = 120
 MAX_CLIPBOARD_RESPONSE_CHARS = max(
@@ -64,8 +68,8 @@ class DesktopActionRequest:
             raise ValueError("notify action requires either 'message' or 'text'")
         if action == "clipboard_write" and text is None:
             raise ValueError("clipboard_write action requires 'text'")
-        if action == "app_launch" and target is None:
-            raise ValueError("app_launch action requires 'target'")
+        if action in {"app_launch", "window_focus", "window_close"} and target is None:
+            raise ValueError(f"{action} action requires 'target'")
 
         return cls(
             action=action,
@@ -188,20 +192,34 @@ class LinuxDesktopActionAdapter:
     def execute(self, request: DesktopActionRequest) -> DesktopActionResult:
         try:
             if request.action == "notify":
-                return self._notify(request)
+                result = self._notify(request)
+                return self._attach_action_context(result, request)
             if request.action == "clipboard_read":
-                return self._clipboard_read(request)
+                result = self._clipboard_read(request)
+                return self._attach_action_context(result, request)
             if request.action == "clipboard_write":
-                return self._clipboard_write(request)
+                result = self._clipboard_write(request)
+                return self._attach_action_context(result, request)
             if request.action == "app_launch":
-                return self._app_launch(request)
+                result = self._app_launch(request)
+                return self._attach_action_context(result, request)
             if request.action == "window_list":
-                return self._window_list(request)
-            return self._failed(request.action, "unsupported_action")
+                result = self._window_list(request)
+                return self._attach_action_context(result, request)
+            if request.action == "window_focus":
+                result = self._window_focus(request)
+                return self._attach_action_context(result, request)
+            if request.action == "window_close":
+                result = self._window_close(request)
+                return self._attach_action_context(result, request)
+            return self._attach_action_context(self._failed(request.action, "unsupported_action"), request)
         except subprocess.TimeoutExpired:
-            return self._failed(request.action, f"desktop command timeout ({request.timeout_sec}s)")
+            return self._attach_action_context(
+                self._failed(request.action, f"desktop command timeout ({request.timeout_sec}s)"),
+                request,
+            )
         except Exception as exc:
-            return self._failed(request.action, str(exc))
+            return self._attach_action_context(self._failed(request.action, str(exc)), request)
 
     def _notify(self, request: DesktopActionRequest) -> DesktopActionResult:
         command = self._which("notify-send")
@@ -345,6 +363,60 @@ class LinuxDesktopActionAdapter:
             },
         )
 
+    def _window_focus(self, request: DesktopActionRequest) -> DesktopActionResult:
+        target = str(request.target or "").strip()
+        if not target:
+            return self._failed(request.action, "target is required")
+        command = self._which("wmctrl")
+        if not command:
+            return self._unavailable(request.action, "wmctrl is not available on this host")
+        completed = self._run(
+            [command, "-ia", target],
+            capture_output=True,
+            text=True,
+            timeout=request.timeout_sec,
+            check=False,
+        )
+        if int(completed.returncode) != 0:
+            return self._failed(request.action, (completed.stderr or "").strip() or "wmctrl focus failed")
+        return DesktopActionResult(
+            ok=True,
+            provider=self.provider_name,
+            action=request.action,
+            status="succeeded",
+            data={
+                "target": target,
+                "command": [command, "-ia", target],
+            },
+        )
+
+    def _window_close(self, request: DesktopActionRequest) -> DesktopActionResult:
+        target = str(request.target or "").strip()
+        if not target:
+            return self._failed(request.action, "target is required")
+        command = self._which("wmctrl")
+        if not command:
+            return self._unavailable(request.action, "wmctrl is not available on this host")
+        completed = self._run(
+            [command, "-ic", target],
+            capture_output=True,
+            text=True,
+            timeout=request.timeout_sec,
+            check=False,
+        )
+        if int(completed.returncode) != 0:
+            return self._failed(request.action, (completed.stderr or "").strip() or "wmctrl close failed")
+        return DesktopActionResult(
+            ok=True,
+            provider=self.provider_name,
+            action=request.action,
+            status="succeeded",
+            data={
+                "target": target,
+                "command": [command, "-ic", target],
+            },
+        )
+
     def _clipboard_write_command(self) -> list[str] | None:
         wl_copy = self._which("wl-copy")
         if wl_copy:
@@ -400,6 +472,20 @@ class LinuxDesktopActionAdapter:
             metadata={"platform": sys.platform},
         )
 
+    def _attach_action_context(
+        self,
+        result: DesktopActionResult,
+        request: DesktopActionRequest,
+    ) -> DesktopActionResult:
+        rollback_hint = _rollback_hint_for_action(
+            action=request.action,
+            target=request.target,
+        )
+        metadata = dict(result.metadata)
+        metadata["rollback_hint"] = rollback_hint
+        metadata["mutating"] = request.action in MUTATING_DESKTOP_ACTIONS
+        return replace(result, metadata=metadata)
+
 
 def register_desktop_action_tool(
     registry: ToolRegistry,
@@ -414,6 +500,7 @@ def register_desktop_action_tool(
     def _handler(arguments: dict[str, Any]) -> dict[str, Any]:
         request = DesktopActionRequest.from_arguments(arguments or {})
         result = adapter.execute(request)
+        result = _enrich_result_with_action_context(result=result, request=request)
         payload = result.to_dict()
         payload["adapter"] = adapter.describe()
         payload["request"] = request.to_dict()
@@ -476,6 +563,43 @@ def _parse_wmctrl_lines(payload: str) -> list[dict[str, Any]]:
         }
         windows.append(window)
     return windows
+
+
+def _rollback_hint_for_action(*, action: str, target: str | None) -> str:
+    normalized = str(action or "").strip().lower()
+    if normalized == "notify":
+        return "Send a follow-up notification clarifying or correcting the previous message."
+    if normalized == "clipboard_write":
+        return (
+            "If needed, restore previous clipboard content by writing back the saved value "
+            "(capture it with clipboard_read before mutating)."
+        )
+    if normalized == "app_launch":
+        return "Close the launched application/window if unintended."
+    if normalized == "window_focus":
+        target_hint = f" (target: {target})" if str(target or "").strip() else ""
+        return f"Refocus the previously active window if focus changed unexpectedly{target_hint}."
+    if normalized == "window_close":
+        target_hint = f" (target: {target})" if str(target or "").strip() else ""
+        return f"Reopen the closed application/window from launcher or session restore{target_hint}."
+    if normalized in {"clipboard_read", "window_list"}:
+        return "Read-only action; no rollback required."
+    return "Review action impact and restore prior desktop state if needed."
+
+
+def _enrich_result_with_action_context(
+    *,
+    result: DesktopActionResult,
+    request: DesktopActionRequest,
+) -> DesktopActionResult:
+    rollback_hint = _rollback_hint_for_action(
+        action=request.action,
+        target=request.target,
+    )
+    metadata = dict(result.metadata)
+    metadata["rollback_hint"] = rollback_hint
+    metadata["mutating"] = request.action in MUTATING_DESKTOP_ACTIONS
+    return replace(result, metadata=metadata)
 
 
 def _optional_str(value: Any) -> str | None:

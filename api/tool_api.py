@@ -21,6 +21,7 @@ from tools.tool_executor import PermissionRequiredError, ToolBudgetLimitError
 router = APIRouter(tags=["tools"])
 TERMINAL_ACTION_TOOL_NAMES: set[str] = {
     "python_exec",
+    "desktop_action",
     "terminal_exec",
     "shell_exec",
     "bash_exec",
@@ -78,10 +79,31 @@ def _is_high_risk(risk_level: str) -> bool:
     return risk_level in {"high", "critical"}
 
 
-def _rollback_hint_for_tool(tool_name: str, risk_level: str) -> str:
+def _rollback_hint_for_tool(
+    tool_name: str,
+    risk_level: str,
+    *,
+    arguments: dict[str, Any] | None = None,
+) -> str:
     name = str(tool_name or "").strip().lower()
     if name == "python_exec":
         return "Review stdout/stderr and revert any filesystem changes introduced by executed code."
+    if name == "desktop_action":
+        action = str((arguments or {}).get("action", "")).strip().lower()
+        if action == "notify":
+            return "Send a follow-up notification clarifying or correcting the previous message."
+        if action == "clipboard_write":
+            return (
+                "If needed, restore previous clipboard content by writing back a saved value "
+                "captured before mutation."
+            )
+        if action == "app_launch":
+            return "Close the launched application/window if unintended."
+        if action == "window_focus":
+            return "Refocus the previously active window if focus changed unexpectedly."
+        if action == "window_close":
+            return "Reopen the closed application/window from launcher or session restore."
+        return "Read-only desktop action; no rollback required."
     if name == "filesystem":
         return "Revert changed files from VCS or restore from backup snapshot."
     if risk_level == "critical":
@@ -101,6 +123,7 @@ def _terminal_action_context(
     actor: str | None,
     session_id: str | None,
     permission_id: str | None,
+    arguments: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     if not _is_terminal_action_tool(tool_name):
         return None
@@ -119,7 +142,11 @@ def _terminal_action_context(
         "risk_level": normalized,
         "policy_level": policy_level,
         "policy": policy,
-        "rollback_hint": _rollback_hint_for_tool(tool_name=tool_name, risk_level=normalized),
+        "rollback_hint": _rollback_hint_for_tool(
+            tool_name=tool_name,
+            risk_level=normalized,
+            arguments=arguments,
+        ),
         "actor": actor,
         "session_id": session_id,
         "permission_id": permission_id,
@@ -134,6 +161,7 @@ def _high_risk_context(
     actor: str | None,
     session_id: str | None,
     permission_id: str | None,
+    arguments: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     normalized = _normalized_risk_level(risk_level)
     if not _is_high_risk(normalized):
@@ -146,7 +174,11 @@ def _high_risk_context(
         "approval_enforcement_mode": str(services.config.tool_approval_enforcement),
         "isolation_profile": str(services.config.tool_isolation_profile),
     }
-    rollback_hint = _rollback_hint_for_tool(tool_name=tool_name, risk_level=normalized)
+    rollback_hint = _rollback_hint_for_tool(
+        tool_name=tool_name,
+        risk_level=normalized,
+        arguments=arguments,
+    )
     return {
         "high_risk": True,
         "risk_level": normalized,
@@ -939,6 +971,7 @@ def invoke_mcp_tool(
         actor=auth.user_id,
         session_id=payload.session_id,
         permission_id=payload.permission_id,
+        arguments=payload.arguments,
     )
     high_risk_action = _high_risk_context(
         request,
@@ -947,6 +980,7 @@ def invoke_mcp_tool(
         actor=auth.user_id,
         session_id=payload.session_id,
         permission_id=payload.permission_id,
+        arguments=payload.arguments,
     )
     event_type = "high_risk_action_receipt" if high_risk_action is not None else "signed_action"
     sign_details: dict[str, Any] = {

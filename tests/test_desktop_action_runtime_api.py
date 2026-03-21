@@ -104,6 +104,32 @@ class DesktopActionRuntimeAPITests(unittest.TestCase):
         payload = response.json()
         self.assertEqual(str(payload.get("error", {}).get("type")), "permission_denied")
 
+    def test_desktop_action_receipt_contains_rollback_hint(self) -> None:
+        invoke = self.client.post(
+            "/mcp/tools/desktop_action/invoke",
+            headers=self._auth("user-token"),
+            json={
+                "user_id": "user-1",
+                "session_id": "desktop-session-3",
+                "arguments": {
+                    "action": "clipboard_read",
+                },
+            },
+        )
+        self.assertEqual(invoke.status_code, 200)
+
+        receipts = self.client.get(
+            "/tools/actions/terminal",
+            headers=self._auth("user-token"),
+            params={"tool_name": "desktop_action", "session_id": "desktop-session-3", "limit": 20},
+        )
+        self.assertEqual(receipts.status_code, 200)
+        items = receipts.json().get("items", [])
+        self.assertTrue(items)
+        first = items[0]
+        self.assertEqual(str(first.get("tool_name")), "desktop_action")
+        self.assertTrue(bool(str(first.get("rollback_hint") or "").strip()))
+
 
 if __name__ == "__main__":
     unittest.main()

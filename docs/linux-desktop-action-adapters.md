@@ -8,6 +8,7 @@ Provide policy-gated desktop control primitives for Linux-first "Jarvis on PC" w
 - clipboard read/write
 - app launch
 - window list
+- window focus/close
 
 ## Tool Contract
 
@@ -20,6 +21,8 @@ Supported actions:
 - `clipboard_write`
 - `app_launch`
 - `window_list`
+- `window_focus`
+- `window_close`
 
 Request fields:
 
@@ -28,6 +31,7 @@ Request fields:
 - `message` (optional, for `notify`)
 - `text` (optional; required for `clipboard_write`)
 - `target` (optional; required for `app_launch`)
+  - required for `app_launch`, `window_focus`, `window_close`
 - `timeout_sec` (optional)
 - `metadata` (optional)
 
@@ -43,16 +47,22 @@ Command usage on Linux:
 - clipboard read: `wl-paste` -> `xclip` -> `xsel`
 - app launch: `gtk-launch` (desktop id) or `xdg-open` fallback
 - window list: `wmctrl -l`
+- window focus: `wmctrl -ia <window_id>`
+- window close: `wmctrl -ic <window_id>`
 
 When required system commands are missing, tool returns `status=unavailable` with explicit reason.
+
+Each result includes metadata rollback guidance (`metadata.rollback_hint`) so UI and audit can expose recovery steps.
 
 ## Policy and Trust Boundary
 
 - Registered as `risk_level=medium`, `approval_mode=conditional`.
 - Conditional approval applies to mutating actions:
-  - `notify`
-  - `clipboard_write`
-  - `app_launch`
+- `notify`
+- `clipboard_write`
+- `app_launch`
+- `window_focus`
+- `window_close`
 - Existing autonomy and isolation guardrails remain active.
 
 ## Invocation

@@ -72,6 +72,7 @@ class DesktopActionAdapterTests(unittest.TestCase):
         self.assertEqual(str(payload.get("provider")), "stub-desktop-test")
         self.assertEqual(str(payload.get("request", {}).get("action")), "notify")
         self.assertEqual(str(payload.get("adapter", {}).get("kind")), "stub")
+        self.assertIn("rollback_hint", payload.get("metadata", {}))
 
     def test_desktop_action_invalid_action_fails_validation(self) -> None:
         registry = ToolRegistry()
@@ -174,6 +175,53 @@ class DesktopActionAdapterTests(unittest.TestCase):
         windows = result.data.get("windows", [])
         self.assertEqual(len(windows), 2)
         self.assertEqual(str(windows[0].get("title")), "Terminal")
+        self.assertIn("rollback_hint", result.metadata)
+
+    def test_linux_window_focus_uses_wmctrl(self) -> None:
+        def _which(name: str) -> str | None:
+            if name == "wmctrl":
+                return "/usr/bin/wmctrl"
+            return None
+
+        def _run(command: list[str], **kwargs: object) -> _Completed:
+            _ = kwargs
+            self.assertEqual(command, ["/usr/bin/wmctrl", "-ia", "0x03e00007"])
+            return _Completed(returncode=0, stdout="", stderr="")
+
+        adapter = LinuxDesktopActionAdapter(
+            which_resolver=_which,
+            run_command=_run,
+        )
+        request = DesktopActionRequest.from_arguments(
+            {"action": "window_focus", "target": "0x03e00007"},
+        )
+        result = adapter.execute(request)
+        self.assertTrue(result.ok)
+        self.assertEqual(result.status, "succeeded")
+        self.assertIn("rollback_hint", result.metadata)
+
+    def test_linux_window_close_uses_wmctrl(self) -> None:
+        def _which(name: str) -> str | None:
+            if name == "wmctrl":
+                return "/usr/bin/wmctrl"
+            return None
+
+        def _run(command: list[str], **kwargs: object) -> _Completed:
+            _ = kwargs
+            self.assertEqual(command, ["/usr/bin/wmctrl", "-ic", "0x03e00007"])
+            return _Completed(returncode=0, stdout="", stderr="")
+
+        adapter = LinuxDesktopActionAdapter(
+            which_resolver=_which,
+            run_command=_run,
+        )
+        request = DesktopActionRequest.from_arguments(
+            {"action": "window_close", "target": "0x03e00007"},
+        )
+        result = adapter.execute(request)
+        self.assertTrue(result.ok)
+        self.assertEqual(result.status, "succeeded")
+        self.assertIn("rollback_hint", result.metadata)
 
     def test_linux_app_launch_prefers_gtk_launch_for_desktop_id(self) -> None:
         popen_calls: list[list[str]] = []

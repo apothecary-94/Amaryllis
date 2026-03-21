@@ -26,6 +26,7 @@ from api.inbox_api import router as inbox_router
 from api.memory_api import router as memory_router
 from api.model_api import router as model_router
 from api.security_api import router as security_router
+from api.supervisor_api import router as supervisor_router
 from api.tool_api import router as tool_router
 from api.voice_api import router as voice_router
 from automation.automation_scheduler import AutomationScheduler
@@ -56,6 +57,7 @@ from runtime.security import LocalIdentityManager, SecurityManager
 from runtime.telemetry import LocalTelemetry
 from storage.database import Database
 from storage.vector_store import VectorStore
+from supervisor.task_graph_manager import SupervisorTaskGraphManager
 from tasks.task_executor import TaskExecutor
 from flow.session_manager import UnifiedSessionManager
 from tools.mcp_client_registry import MCPClientRegistry
@@ -96,6 +98,7 @@ class ServiceContainer:
     task_executor: TaskExecutor
     agent_run_manager: AgentRunManager
     agent_manager: AgentManager
+    supervisor_manager: SupervisorTaskGraphManager
     automation_scheduler: AutomationScheduler
     memory_consolidation_worker: MemoryConsolidationWorker | None
     backup_manager: BackupManager
@@ -316,6 +319,10 @@ def create_services() -> ServiceContainer:
         task_executor=kernel_executor,
         run_manager=agent_run_manager,
     )
+    supervisor_manager = SupervisorTaskGraphManager(
+        agent_manager=agent_manager,
+        telemetry_emitter=telemetry.emit,
+    )
     automation_scheduler = AutomationScheduler(
         database=database,
         run_manager=agent_run_manager,
@@ -390,6 +397,7 @@ def create_services() -> ServiceContainer:
         task_executor=task_executor,
         agent_run_manager=agent_run_manager,
         agent_manager=agent_manager,
+        supervisor_manager=supervisor_manager,
         automation_scheduler=automation_scheduler,
         memory_consolidation_worker=memory_consolidation_worker,
         backup_manager=backup_manager,
@@ -698,6 +706,7 @@ def create_app() -> FastAPI:
     app.include_router(flow_router)
     app.include_router(inbox_router)
     app.include_router(memory_router)
+    app.include_router(supervisor_router)
     app.include_router(tool_router)
     app.include_router(voice_router)
     app.include_router(backup_router)
@@ -708,6 +717,7 @@ def create_app() -> FastAPI:
     app.include_router(flow_router, prefix="/v1")
     app.include_router(inbox_router, prefix="/v1")
     app.include_router(memory_router, prefix="/v1")
+    app.include_router(supervisor_router, prefix="/v1")
     app.include_router(tool_router, prefix="/v1")
     app.include_router(voice_router, prefix="/v1")
     app.include_router(security_router)
