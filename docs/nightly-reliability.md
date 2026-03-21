@@ -29,6 +29,21 @@ python3 scripts/release/nightly_reliability_run.py \
   --strict
 ```
 
+Nightly user journey benchmark companion gate:
+
+```bash
+python3 scripts/release/user_journey_benchmark.py \
+  --iterations 8 \
+  --min-success-rate-pct 100 \
+  --max-p95-journey-latency-ms 3500 \
+  --max-p95-plan-dispatch-latency-ms 1500 \
+  --max-p95-execute-dispatch-latency-ms 1500 \
+  --min-plan-to-execute-conversion-rate-pct 100 \
+  --baseline eval/baselines/quality/user_journey_benchmark_baseline.json \
+  --output artifacts/nightly-user-journey-benchmark-report.json \
+  --strict
+```
+
 ## Report
 
 Default output path:
@@ -47,6 +62,12 @@ Burn-rate gate output artifact:
 
 ```text
 artifacts/nightly-burn-rate-gate-report.json
+```
+
+Nightly user journey benchmark artifact:
+
+```text
+artifacts/nightly-user-journey-benchmark-report.json
 ```
 
 Mission success/recovery report pack artifact:

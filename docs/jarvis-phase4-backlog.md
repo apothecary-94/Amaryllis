@@ -40,13 +40,13 @@ Move from OSS platform readiness to daily-driver "Jarvis on PC": unified multimo
 |---|---|---|---|---|
 | P4-C01 | in_progress | Introduce supervisor for bounded multi-agent task graphs | supervisor runtime + graph contract | Complex goals split into bounded subtasks with parent-level control |
 | P4-C02 | in_progress | Add mission checkpointing and resume across runtime restarts | checkpoint store + resume policy | Long missions recover from crash/restart without silent state corruption |
-| P4-C03 | todo | Add per-mission objective verification gates | verifier policies + escalation routes | Mission completion requires explicit objective checks, not only tool success |
+| P4-C03 | in_progress | Add per-mission objective verification gates | verifier policies + escalation routes | Mission completion requires explicit objective checks, not only tool success |
 
 ### Epic D - Product Reliability and Distribution
 
 | ID | Status | Task | Deliverable | Definition of Done |
 |---|---|---|---|---|
-| P4-D01 | todo | Add end-to-end user journey benchmark harness | journey benchmark suite + report | Release/nightly include comparable user-flow success/latency KPIs |
+| P4-D01 | in_progress | Add end-to-end user journey benchmark harness | journey benchmark suite + report | Release/nightly include comparable user-flow success/latency KPIs |
 | P4-D02 | todo | Add mission outcome public KPI pack v2 (release + nightly) | expanded KPI report schema | Success/recovery metrics include trendable mission-class breakdowns |
 | P4-D03 | todo | Harden packaging/update/rollback path for Linux primary and mac staging | updater/rollback contracts + smoke gates | Operator can safely install/update/rollback without manual recovery steps |
 
@@ -59,7 +59,8 @@ Move from OSS platform readiness to daily-driver "Jarvis on PC": unified multimo
 | P4-B01 | in_progress | Linux desktop integration adapters (first slice: `desktop_action` tool + Linux/Stub adapters + tests + docs) |
 | P4-C01 | in_progress | bounded multi-agent supervisor skeleton (task graph manager + API contract + launch/tick control loop + tests) |
 | P4-C02 | in_progress | supervisor checkpoint store + auto-hydrate on runtime start (SQLite migration + storage methods + recovery tests) |
-| P4-D01 | todo | end-to-end user journey benchmark baseline |
+| P4-C03 | in_progress | objective verification gates in supervisor (`objective_verification` policy + `/supervisor/graphs/{id}/verify` endpoint + tests) |
+| P4-D01 | in_progress | end-to-end user journey benchmark baseline (`scripts/release/user_journey_benchmark.py` + baseline + release/nightly artifact wiring) |
 
 ## Next Checkpoint
 - Deliver first executable "Jarvis on PC" flow:

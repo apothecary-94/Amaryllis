@@ -11,12 +11,13 @@ Mandatory gates before publish:
 5. Canary smoke checks
 6. Fault-injection reliability gate (provider/network/tool fault classes + retry/recovery assertions)
 7. Mission queue concurrency/load gate (queue-drain, p95 latency and success-rate SLO assertions)
-8. Release quality dashboard snapshot gate (normalized benchmark/reliability artifact + trend deltas)
-9. Mission success/recovery report pack export (public KPI artifact)
-10. Linux parity gate (runtime/voice/tools/observability API parity on Linux target)
-11. Linux installer smoke gate (install/upgrade/channel rollback path on Linux target)
-12. Disaster recovery gate (backup + verify + restore drill)
-13. Compliance operations gate (access review + incidents + evidence export)
+8. User journey benchmark gate (intent -> planning -> execute -> review KPI assertions)
+9. Release quality dashboard snapshot gate (normalized benchmark/reliability artifact + trend deltas)
+10. Mission success/recovery report pack export (public KPI artifact)
+11. Linux parity gate (runtime/voice/tools/observability API parity on Linux target)
+12. Linux installer smoke gate (install/upgrade/channel rollback path on Linux target)
+13. Disaster recovery gate (backup + verify + restore drill)
+14. Compliance operations gate (access review + incidents + evidence export)
 
 Commands:
 
@@ -31,8 +32,9 @@ python scripts/release/perf_smoke_gate.py --iterations 3 --max-p95-latency-ms 35
 python scripts/release/runtime_lifecycle_smoke_gate.py --max-startup-slo-latency-ms 3000 --output artifacts/runtime-lifecycle-smoke-report.json
 python scripts/release/fault_injection_reliability_gate.py --retry-max-attempts 2 --scenario-timeout-sec 8 --min-pass-rate-pct 100
 python scripts/release/mission_queue_load_gate.py --runs-total 40 --submit-concurrency 8 --worker-count 4 --task-latency-ms 35 --scenario-timeout-sec 30 --min-success-rate-pct 99 --max-failed-runs 0 --max-p95-queue-wait-ms 1500 --max-p95-end-to-end-ms 5000
+python scripts/release/user_journey_benchmark.py --iterations 5 --min-success-rate-pct 100 --max-p95-journey-latency-ms 3000 --max-p95-plan-dispatch-latency-ms 1200 --max-p95-execute-dispatch-latency-ms 1200 --min-plan-to-execute-conversion-rate-pct 100 --baseline eval/baselines/quality/user_journey_benchmark_baseline.json --output artifacts/user-journey-benchmark-report.json --strict
 python scripts/release/build_quality_dashboard_snapshot.py --perf-report artifacts/perf-smoke-report.json --fault-injection-report artifacts/fault-injection-reliability-report.json --mission-queue-report artifacts/mission-queue-load-report.json --runtime-lifecycle-report artifacts/runtime-lifecycle-smoke-report.json --baseline eval/baselines/quality/release_quality_dashboard_baseline.json --output artifacts/release-quality-dashboard.json --trend-output artifacts/release-quality-dashboard-trend.json
-python scripts/release/build_mission_success_recovery_report.py --mission-queue-report artifacts/mission-queue-load-report.json --fault-injection-report artifacts/fault-injection-reliability-report.json --quality-dashboard-report artifacts/release-quality-dashboard.json --scope release --output artifacts/mission-success-recovery-report.json
+python scripts/release/build_mission_success_recovery_report.py --mission-queue-report artifacts/mission-queue-load-report.json --fault-injection-report artifacts/fault-injection-reliability-report.json --quality-dashboard-report artifacts/release-quality-dashboard.json --user-journey-report artifacts/user-journey-benchmark-report.json --scope release --output artifacts/mission-success-recovery-report.json
 python scripts/release/linux_parity_smoke.py --iterations 1 --require-linux --output artifacts/linux-parity-smoke-report.json
 python scripts/release/linux_installer_smoke.py --require-linux --output artifacts/linux-installer-smoke-report.json
 python scripts/release/disaster_recovery_gate.py

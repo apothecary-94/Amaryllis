@@ -1,0 +1,10 @@
+{
+  "suite": "user_journey_benchmark_baseline_v1",
+  "summary": {
+    "journey_success_rate_pct": 100.0,
+    "p95_journey_latency_ms": 2500.0,
+    "p95_plan_dispatch_latency_ms": 1000.0,
+    "p95_execute_dispatch_latency_ms": 1000.0,
+    "plan_to_execute_conversion_rate_pct": 100.0
+  }
+}

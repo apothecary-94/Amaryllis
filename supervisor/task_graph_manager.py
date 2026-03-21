@@ -6,7 +6,14 @@ from threading import RLock
 from typing import Any, Callable
 from uuid import uuid4
 
-SUPERVISOR_GRAPH_STATUSES: set[str] = {"planned", "running", "succeeded", "failed", "canceled"}
+SUPERVISOR_GRAPH_STATUSES: set[str] = {
+    "planned",
+    "running",
+    "review_required",
+    "succeeded",
+    "failed",
+    "canceled",
+}
 SUPERVISOR_NODE_STATUSES: set[str] = {
     "planned",
     "queued",
@@ -18,6 +25,16 @@ SUPERVISOR_NODE_STATUSES: set[str] = {
 }
 _RUN_ACTIVE_STATUSES: set[str] = {"queued", "running"}
 _RUN_TERMINAL_STATUSES: set[str] = {"succeeded", "failed", "canceled"}
+_OBJECTIVE_GATE_MODES: set[str] = {"auto", "manual"}
+_OBJECTIVE_GATE_KEYWORD_MATCH: set[str] = {"any", "all"}
+_OBJECTIVE_GATE_ON_FAILURE: set[str] = {"review_required", "failed"}
+_OBJECTIVE_VERIFICATION_STATUSES: set[str] = {
+    "pending",
+    "review_required",
+    "passed",
+    "failed",
+    "skipped",
+}
 
 TelemetryEmitter = Callable[[str, dict[str, Any]], None]
 
@@ -47,6 +64,7 @@ class SupervisorTaskGraphManager:
         user_id: str,
         objective: str,
         nodes: list[dict[str, Any]],
+        objective_verification: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
         request_id: str | None = None,
         actor: str | None = None,
@@ -144,6 +162,11 @@ class SupervisorTaskGraphManager:
                     )
         self._assert_acyclic(normalized_nodes)
 
+        objective_gate = self._normalize_objective_gate(
+            objective=normalized_objective,
+            nodes=normalized_nodes,
+            raw_config=objective_verification,
+        )
         graph_id = f"sup-{uuid4().hex}"
         graph = {
             "id": graph_id,
@@ -156,6 +179,15 @@ class SupervisorTaskGraphManager:
             "finished_at": None,
             "default_session_id": None,
             "metadata": dict(metadata) if isinstance(metadata, dict) else {},
+            "objective_gate": objective_gate,
+            "objective_verification": {
+                "status": "pending",
+                "checked_at": None,
+                "summary": "Objective verification pending.",
+                "checks": [],
+                "last_failure_reasons": [],
+                "manual_override": None,
+            },
             "nodes": normalized_nodes,
             "timeline": [],
             "telemetry": {
@@ -328,6 +360,70 @@ class SupervisorTaskGraphManager:
                     "request_id": _optional_str(request_id),
                 },
             )
+            self._persist_graph(graph)
+            return _snapshot(graph)
+
+    def verify_graph_objective(
+        self,
+        *,
+        graph_id: str,
+        user_id: str | None = None,
+        override_pass: bool | None = None,
+        note: str | None = None,
+        force_recheck: bool = False,
+        request_id: str | None = None,
+        actor: str | None = None,
+    ) -> dict[str, Any]:
+        normalized_graph_id = str(graph_id or "").strip()
+        if not normalized_graph_id:
+            raise ValueError("graph_id is required")
+        normalized_note = str(note or "").strip()
+        with self._lock:
+            graph = self._graphs.get(normalized_graph_id)
+            if graph is None:
+                raise ValueError(f"Supervisor graph not found: {normalized_graph_id}")
+            self._assert_owner(graph=graph, user_id=user_id)
+
+            if force_recheck or override_pass is None:
+                self._evaluate_objective_gate(graph, request_id=request_id, actor=actor)
+
+            verification = graph.get("objective_verification")
+            if not isinstance(verification, dict):
+                verification = {}
+                graph["objective_verification"] = verification
+
+            if override_pass is not None:
+                checked_at = _utcnow_iso()
+                verification["checked_at"] = checked_at
+                verification["manual_override"] = {
+                    "actor": _optional_str(actor),
+                    "at": checked_at,
+                    "override_pass": bool(override_pass),
+                    "note": normalized_note or None,
+                    "request_id": _optional_str(request_id),
+                }
+                if bool(override_pass):
+                    verification["status"] = "passed"
+                    verification["summary"] = "Objective verification manually approved."
+                    verification["last_failure_reasons"] = []
+                else:
+                    verification["status"] = "failed"
+                    verification["summary"] = "Objective verification manually rejected."
+                    verification["last_failure_reasons"] = [normalized_note or "manual rejection"]
+                self._append_timeline(
+                    graph,
+                    event="objective_verification_manual_override",
+                    payload={
+                        "graph_id": normalized_graph_id,
+                        "override_pass": bool(override_pass),
+                        "note": normalized_note or None,
+                        "actor": _optional_str(actor),
+                        "request_id": _optional_str(request_id),
+                    },
+                )
+
+            self._sync_graph_status(graph)
+            graph["updated_at"] = _utcnow_iso()
             self._persist_graph(graph)
             return _snapshot(graph)
 
@@ -587,7 +683,24 @@ class SupervisorTaskGraphManager:
         all_succeeded = all(status == "succeeded" for status in node_statuses)
 
         if all_succeeded:
-            target_status = "succeeded"
+            existing_verification = graph.get("objective_verification")
+            existing_status = (
+                str(existing_verification.get("status") or "").strip().lower()
+                if isinstance(existing_verification, dict)
+                else ""
+            )
+            if existing_status in {"passed", "skipped", "failed", "review_required"}:
+                verification = existing_verification if isinstance(existing_verification, dict) else {}
+                verification_status = existing_status
+            else:
+                verification = self._evaluate_objective_gate(graph)
+                verification_status = str(verification.get("status") or "").strip().lower()
+            if verification_status in {"passed", "skipped"}:
+                target_status = "succeeded"
+            elif verification_status == "failed":
+                target_status = "failed"
+            else:
+                target_status = "review_required"
         elif has_failed:
             target_status = "failed"
         elif has_blocked and not has_active:
@@ -652,6 +765,297 @@ class SupervisorTaskGraphManager:
             telemetry = {}
             graph["telemetry"] = telemetry
         telemetry[key] = int(telemetry.get(key, 0)) + 1
+
+    def _normalize_objective_gate(
+        self,
+        *,
+        objective: str,
+        nodes: dict[str, dict[str, Any]],
+        raw_config: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        config = dict(raw_config) if isinstance(raw_config, dict) else {}
+        mode = str(config.get("mode") or "auto").strip().lower() or "auto"
+        if mode not in _OBJECTIVE_GATE_MODES:
+            allowed = ", ".join(sorted(_OBJECTIVE_GATE_MODES))
+            raise ValueError(f"Invalid objective_verification.mode '{mode}'. Allowed values: {allowed}.")
+
+        enabled = bool(config.get("enabled", True))
+        keyword_match = str(config.get("keyword_match") or "any").strip().lower() or "any"
+        if keyword_match not in _OBJECTIVE_GATE_KEYWORD_MATCH:
+            allowed = ", ".join(sorted(_OBJECTIVE_GATE_KEYWORD_MATCH))
+            raise ValueError(
+                f"Invalid objective_verification.keyword_match '{keyword_match}'. Allowed values: {allowed}."
+            )
+        on_failure = str(config.get("on_failure") or "review_required").strip().lower() or "review_required"
+        if on_failure not in _OBJECTIVE_GATE_ON_FAILURE:
+            allowed = ", ".join(sorted(_OBJECTIVE_GATE_ON_FAILURE))
+            raise ValueError(
+                f"Invalid objective_verification.on_failure '{on_failure}'. Allowed values: {allowed}."
+            )
+
+        min_response_chars = _safe_int(config.get("min_response_chars"), default=0, minimum=0)
+        if min_response_chars > 20_000:
+            raise ValueError("objective_verification.min_response_chars exceeds max value (20000).")
+
+        raw_required_nodes = config.get("required_node_ids")
+        if isinstance(raw_required_nodes, list):
+            required_node_ids = []
+            for item in raw_required_nodes:
+                node_id = str(item or "").strip()
+                if not node_id:
+                    continue
+                if node_id not in nodes:
+                    raise ValueError(
+                        f"objective_verification.required_node_ids contains unknown node '{node_id}'."
+                    )
+                if node_id not in required_node_ids:
+                    required_node_ids.append(node_id)
+        else:
+            required_node_ids = self._leaf_node_ids(nodes)
+        if not required_node_ids:
+            required_node_ids = self._leaf_node_ids(nodes)
+
+        raw_keywords = config.get("required_keywords")
+        required_keywords: list[str] = []
+        if isinstance(raw_keywords, list):
+            for item in raw_keywords:
+                keyword = str(item or "").strip().lower()
+                if keyword and keyword not in required_keywords:
+                    required_keywords.append(keyword)
+
+        objective_keywords = self._objective_keywords(objective)
+        return {
+            "enabled": enabled,
+            "mode": mode,
+            "on_failure": on_failure,
+            "required_node_ids": required_node_ids,
+            "min_response_chars": min_response_chars,
+            "required_keywords": required_keywords,
+            "keyword_match": keyword_match,
+            "objective_keywords": objective_keywords,
+        }
+
+    @staticmethod
+    def _leaf_node_ids(nodes: dict[str, dict[str, Any]]) -> list[str]:
+        inbound: dict[str, int] = {str(node_id): 0 for node_id in nodes.keys()}
+        for node in nodes.values():
+            depends_on = node.get("depends_on")
+            if not isinstance(depends_on, list):
+                continue
+            for dep_id in depends_on:
+                dep = str(dep_id or "").strip()
+                if dep and dep in inbound:
+                    inbound[dep] = inbound.get(dep, 0) + 1
+        leaves = [node_id for node_id, inbound_count in inbound.items() if inbound_count == 0]
+        leaves.sort()
+        return leaves
+
+    @staticmethod
+    def _objective_keywords(objective: str, *, max_keywords: int = 8) -> list[str]:
+        words: list[str] = []
+        for token in str(objective or "").split():
+            normalized = "".join(ch for ch in token.lower() if ch.isalnum() or ch in {"-", "_"}).strip("-_")
+            if len(normalized) < 4:
+                continue
+            if normalized in words:
+                continue
+            words.append(normalized)
+            if len(words) >= max_keywords:
+                break
+        return words
+
+    def _evaluate_objective_gate(
+        self,
+        graph: dict[str, Any],
+        *,
+        request_id: str | None = None,
+        actor: str | None = None,
+    ) -> dict[str, Any]:
+        gate = graph.get("objective_gate")
+        if not isinstance(gate, dict):
+            gate = self._normalize_objective_gate(
+                objective=str(graph.get("objective") or ""),
+                nodes={item["node_id"]: item for item in self._iter_nodes(graph)},
+                raw_config={},
+            )
+            graph["objective_gate"] = gate
+
+        verification = graph.get("objective_verification")
+        if not isinstance(verification, dict):
+            verification = {
+                "status": "pending",
+                "checked_at": None,
+                "summary": "Objective verification pending.",
+                "checks": [],
+                "last_failure_reasons": [],
+                "manual_override": None,
+            }
+            graph["objective_verification"] = verification
+
+        if not bool(gate.get("enabled", True)):
+            verification["status"] = "skipped"
+            verification["checked_at"] = _utcnow_iso()
+            verification["summary"] = "Objective verification gate is disabled."
+            verification["checks"] = []
+            verification["last_failure_reasons"] = []
+            return verification
+
+        checks: list[dict[str, Any]] = []
+        failures: list[str] = []
+        required_node_ids = [
+            str(item).strip()
+            for item in list(gate.get("required_node_ids") or [])
+            if str(item).strip()
+        ]
+        min_response_chars = _safe_int(gate.get("min_response_chars"), default=0, minimum=0)
+        required_keywords = [
+            str(item).strip().lower()
+            for item in list(gate.get("required_keywords") or [])
+            if str(item).strip()
+        ]
+        keyword_match = str(gate.get("keyword_match") or "any").strip().lower() or "any"
+        if keyword_match not in _OBJECTIVE_GATE_KEYWORD_MATCH:
+            keyword_match = "any"
+
+        responses_by_node: dict[str, str] = {}
+        for node_id in required_node_ids:
+            try:
+                node = self._node_by_id(graph, node_id)
+            except Exception:
+                checks.append(
+                    {
+                        "kind": "required_node_succeeded",
+                        "node_id": node_id,
+                        "passed": False,
+                        "reason": "node is missing",
+                    }
+                )
+                failures.append(f"required node '{node_id}' is missing from graph")
+                continue
+            node_status = str(node.get("status") or "")
+            run_id = str(node.get("run_id") or "").strip()
+            check = {
+                "kind": "required_node_succeeded",
+                "node_id": node_id,
+                "passed": False,
+                "reason": "",
+            }
+            if node_status != "succeeded":
+                check["reason"] = f"node status is '{node_status}'"
+                failures.append(f"required node '{node_id}' is not succeeded")
+                checks.append(check)
+                continue
+            if not run_id:
+                check["reason"] = "missing run_id"
+                failures.append(f"required node '{node_id}' has no run_id")
+                checks.append(check)
+                continue
+            run = None
+            try:
+                run = self._agent_manager.get_run(run_id)
+            except Exception as exc:
+                check["reason"] = str(exc)
+                failures.append(f"required node '{node_id}' run lookup failed")
+                checks.append(check)
+                continue
+            if not isinstance(run, dict):
+                check["reason"] = "run payload is invalid"
+                failures.append(f"required node '{node_id}' run payload is invalid")
+                checks.append(check)
+                continue
+
+            response_text = self._extract_run_response_text(run)
+            responses_by_node[node_id] = response_text
+            check["passed"] = True
+            checks.append(check)
+
+            if min_response_chars > 0:
+                response_len = len(response_text.strip())
+                passed = response_len >= min_response_chars
+                checks.append(
+                    {
+                        "kind": "min_response_chars",
+                        "node_id": node_id,
+                        "min": min_response_chars,
+                        "actual": response_len,
+                        "passed": passed,
+                        "reason": "" if passed else f"response too short: {response_len} chars",
+                    }
+                )
+                if not passed:
+                    failures.append(
+                        f"required node '{node_id}' response is shorter than {min_response_chars} chars"
+                    )
+
+        if required_keywords:
+            combined_response = "\n".join(responses_by_node.values()).strip().lower()
+            matched_keywords = [keyword for keyword in required_keywords if keyword in combined_response]
+            if keyword_match == "all":
+                keyword_passed = len(matched_keywords) == len(required_keywords)
+            else:
+                keyword_passed = bool(matched_keywords)
+            checks.append(
+                {
+                    "kind": "required_keywords",
+                    "required_keywords": required_keywords,
+                    "keyword_match": keyword_match,
+                    "matched_keywords": matched_keywords,
+                    "passed": keyword_passed,
+                    "reason": "" if keyword_passed else "required keywords not found in node responses",
+                }
+            )
+            if not keyword_passed:
+                failures.append("required objective keywords not found in node responses")
+
+        checked_at = _utcnow_iso()
+        mode = str(gate.get("mode") or "auto").strip().lower() or "auto"
+        on_failure = str(gate.get("on_failure") or "review_required").strip().lower() or "review_required"
+        if on_failure not in _OBJECTIVE_GATE_ON_FAILURE:
+            on_failure = "review_required"
+
+        if failures:
+            status = "failed" if on_failure == "failed" else "review_required"
+            summary = "Objective verification failed."
+        else:
+            if mode == "manual":
+                status = "review_required"
+                summary = "Objective checks passed. Manual verification required."
+            else:
+                status = "passed"
+                summary = "Objective verification passed."
+
+        verification["status"] = status
+        verification["checked_at"] = checked_at
+        verification["summary"] = summary
+        verification["checks"] = checks
+        verification["last_failure_reasons"] = failures
+        self._append_timeline(
+            graph,
+            event="objective_verification_evaluated",
+            payload={
+                "graph_id": str(graph.get("id") or ""),
+                "status": status,
+                "failures": failures,
+                "checks_count": len(checks),
+                "actor": _optional_str(actor),
+                "request_id": _optional_str(request_id),
+            },
+        )
+        return verification
+
+    @staticmethod
+    def _extract_run_response_text(run: dict[str, Any]) -> str:
+        candidates: list[Any] = [run.get("response")]
+        result = run.get("result")
+        if isinstance(result, dict):
+            candidates.append(result.get("response"))
+            candidates.append(result.get("output"))
+            candidates.append(result.get("summary"))
+        for candidate in candidates:
+            text = str(candidate or "").strip()
+            if text:
+                return text
+        return ""
 
     def _append_timeline(
         self,
@@ -756,7 +1160,10 @@ class SupervisorTaskGraphManager:
         graph["id"] = str(graph.get("id") or "").strip()
         graph["user_id"] = str(graph.get("user_id") or "").strip()
         graph["objective"] = str(graph.get("objective") or "").strip()
-        graph["status"] = str(graph.get("status") or "planned").strip().lower() or "planned"
+        status = str(graph.get("status") or "planned").strip().lower() or "planned"
+        if status not in SUPERVISOR_GRAPH_STATUSES:
+            status = "planned"
+        graph["status"] = status
         graph["created_at"] = str(graph.get("created_at") or _utcnow_iso())
         graph["updated_at"] = str(graph.get("updated_at") or graph["created_at"])
         graph["launched_at"] = _optional_str(str(graph.get("launched_at") or ""))
@@ -814,6 +1221,78 @@ class SupervisorTaskGraphManager:
                 "last_error": _optional_str(str(node.get("last_error") or "")),
             }
         graph["nodes"] = node_map
+
+        gate_raw = graph.get("objective_gate")
+        if not isinstance(gate_raw, dict):
+            gate_raw = {}
+        gate_mode = str(gate_raw.get("mode") or "auto").strip().lower() or "auto"
+        if gate_mode not in _OBJECTIVE_GATE_MODES:
+            gate_mode = "auto"
+        gate_on_failure = str(gate_raw.get("on_failure") or "review_required").strip().lower() or "review_required"
+        if gate_on_failure not in _OBJECTIVE_GATE_ON_FAILURE:
+            gate_on_failure = "review_required"
+        gate_keyword_match = str(gate_raw.get("keyword_match") or "any").strip().lower() or "any"
+        if gate_keyword_match not in _OBJECTIVE_GATE_KEYWORD_MATCH:
+            gate_keyword_match = "any"
+        required_node_ids: list[str] = []
+        raw_required_node_ids = gate_raw.get("required_node_ids")
+        if isinstance(raw_required_node_ids, list):
+            for item in raw_required_node_ids:
+                node_id = str(item or "").strip()
+                if node_id and node_id in node_map and node_id not in required_node_ids:
+                    required_node_ids.append(node_id)
+        if not required_node_ids:
+            required_node_ids = sorted(node_map.keys())
+        required_keywords: list[str] = []
+        raw_keywords = gate_raw.get("required_keywords")
+        if isinstance(raw_keywords, list):
+            for item in raw_keywords:
+                keyword = str(item or "").strip().lower()
+                if keyword and keyword not in required_keywords:
+                    required_keywords.append(keyword)
+        objective_keywords: list[str] = []
+        raw_objective_keywords = gate_raw.get("objective_keywords")
+        if isinstance(raw_objective_keywords, list):
+            for item in raw_objective_keywords:
+                keyword = str(item or "").strip().lower()
+                if keyword and keyword not in objective_keywords:
+                    objective_keywords.append(keyword)
+        if not objective_keywords:
+            objective_keywords = SupervisorTaskGraphManager._objective_keywords(graph["objective"])
+        graph["objective_gate"] = {
+            "enabled": bool(gate_raw.get("enabled", True)),
+            "mode": gate_mode,
+            "on_failure": gate_on_failure,
+            "required_node_ids": required_node_ids,
+            "min_response_chars": _safe_int(gate_raw.get("min_response_chars"), default=0, minimum=0),
+            "required_keywords": required_keywords,
+            "keyword_match": gate_keyword_match,
+            "objective_keywords": objective_keywords,
+        }
+
+        verification_raw = graph.get("objective_verification")
+        if not isinstance(verification_raw, dict):
+            verification_raw = {}
+        verification_status = str(verification_raw.get("status") or "pending").strip().lower() or "pending"
+        if verification_status not in _OBJECTIVE_VERIFICATION_STATUSES:
+            verification_status = "pending"
+        checks = verification_raw.get("checks")
+        graph["objective_verification"] = {
+            "status": verification_status,
+            "checked_at": _optional_str(str(verification_raw.get("checked_at") or "")),
+            "summary": str(verification_raw.get("summary") or "").strip() or "Objective verification pending.",
+            "checks": [item for item in checks if isinstance(item, dict)] if isinstance(checks, list) else [],
+            "last_failure_reasons": [
+                str(item).strip()
+                for item in list(verification_raw.get("last_failure_reasons") or [])
+                if str(item).strip()
+            ]
+            if isinstance(verification_raw.get("last_failure_reasons"), list)
+            else [],
+            "manual_override": dict(verification_raw.get("manual_override") or {})
+            if isinstance(verification_raw.get("manual_override"), dict)
+            else None,
+        }
 
         timeline = graph.get("timeline")
         graph["timeline"] = [item for item in timeline if isinstance(item, dict)] if isinstance(timeline, list) else []

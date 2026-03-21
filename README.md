@@ -58,7 +58,7 @@ Implemented in this version:
 - mission template catalog for automation planning (`GET /automations/mission/templates`) with defaults (`code_health`, `security_audit`, `release_guard`, `runtime_watchdog`)
 - mission policy catalog for per-automation SLO overlays (`GET /automations/mission/policies`) with enforcement profiles (`balanced`, `strict`, `watchdog`, `release`)
 - plugin compatibility contract + capability isolation policy (`compat` + `capabilities` manifest fields, fail-fast discovery validation)
-- release/nightly public quality artifacts: release quality dashboard snapshot + mission success/recovery report pack
+- release/nightly public quality artifacts: user journey benchmark + release quality dashboard snapshot + mission success/recovery report pack
 - compact run diagnostics endpoint for mission postmortem (`GET /agents/runs/{run_id}/diagnostics`)
 - voice push-to-talk session contract with explicit state transitions (`created -> listening -> stopping -> stopped`)
 - pluggable local STT adapter layer (`whisper_python` backend + graceful unavailable mode)
@@ -301,6 +301,7 @@ Reference:
 - `docs/plugin-capability-policy.md`
 - `docs/dynamic-mission-budgets.md`
 - `docs/release-quality-dashboard.md`
+- `docs/user-journey-benchmark.md`
 - `docs/mission-success-recovery-report-pack.md`
 - `docs/linux-runtime-installer.md`
 - `docs/linux-release-channels.md`
@@ -823,6 +824,13 @@ curl -X POST http://localhost:8000/supervisor/graphs/create \
   -d '{
     "user_id": "user-001",
     "objective": "Triage, fix, and verify production incident",
+    "objective_verification": {
+      "mode": "manual",
+      "required_node_ids": ["verify"],
+      "required_keywords": ["residual risk", "root cause"],
+      "keyword_match": "any",
+      "on_failure": "review_required"
+    },
     "nodes": [
       {
         "node_id": "triage",
@@ -855,6 +863,13 @@ curl -X POST "http://localhost:8000/supervisor/graphs/<graph_id>/launch" \
 curl -X POST "http://localhost:8000/supervisor/graphs/<graph_id>/tick" \
   -H "Content-Type: application/json" \
   -d '{"noop": true}'
+
+curl -X POST "http://localhost:8000/supervisor/graphs/<graph_id>/verify" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "override_pass": true,
+    "note": "Operator verified objective completion"
+  }'
 ```
 
 Supervisor checkpoints are persisted in SQLite. After runtime restart, existing graphs are auto-hydrated and can continue from the next `tick` without losing dependency/run linkage.
@@ -1573,6 +1588,12 @@ Blocking mission queue concurrency/load gate (queue-drain + p95 queue wait/end-t
 python3 scripts/release/mission_queue_load_gate.py --runs-total 40 --submit-concurrency 8 --worker-count 4 --task-latency-ms 35 --scenario-timeout-sec 30 --min-success-rate-pct 99 --max-failed-runs 0 --max-p95-queue-wait-ms 1500 --max-p95-end-to-end-ms 5000 --output artifacts/mission-queue-load-report.json
 ```
 
+User journey benchmark gate (intent -> planning -> execute -> review KPI surface):
+
+```bash
+python3 scripts/release/user_journey_benchmark.py --iterations 5 --min-success-rate-pct 100 --max-p95-journey-latency-ms 3000 --max-p95-plan-dispatch-latency-ms 1200 --max-p95-execute-dispatch-latency-ms 1200 --min-plan-to-execute-conversion-rate-pct 100 --baseline eval/baselines/quality/user_journey_benchmark_baseline.json --output artifacts/user-journey-benchmark-report.json --strict
+```
+
 Release quality dashboard snapshot (normalized benchmark artifact + trend delta):
 
 ```bash
@@ -1582,7 +1603,7 @@ python3 scripts/release/build_quality_dashboard_snapshot.py --perf-report artifa
 Mission success/recovery report pack (public KPI snapshot for release/nightly):
 
 ```bash
-python3 scripts/release/build_mission_success_recovery_report.py --mission-queue-report artifacts/mission-queue-load-report.json --fault-injection-report artifacts/fault-injection-reliability-report.json --quality-dashboard-report artifacts/release-quality-dashboard.json --scope release --output artifacts/mission-success-recovery-report.json
+python3 scripts/release/build_mission_success_recovery_report.py --mission-queue-report artifacts/mission-queue-load-report.json --fault-injection-report artifacts/fault-injection-reliability-report.json --quality-dashboard-report artifacts/release-quality-dashboard.json --user-journey-report artifacts/user-journey-benchmark-report.json --scope release --output artifacts/mission-success-recovery-report.json
 ```
 
 Linux parity smoke gate (run/voice/tools/observability acceptance on Linux target):
@@ -1609,6 +1630,7 @@ Reference:
 - `docs/fault-injection-reliability.md`
 - `docs/mission-queue-load-gate.md`
 - `docs/release-quality-dashboard.md`
+- `docs/user-journey-benchmark.md`
 - `docs/mission-success-recovery-report-pack.md`
 
 Autonomy level contract (L0-L5):

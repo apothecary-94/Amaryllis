@@ -24,16 +24,21 @@ Release scope:
 - mission queue load gate report
 - fault-injection reliability report
 - release quality dashboard snapshot
+- user journey benchmark report
 
 Nightly scope:
 - nightly reliability report
 - nightly burn-rate gate report
+- nightly user journey benchmark report
 
 The script accepts any subset and produces a normalized report with:
 - source metadata
 - extracted KPI values
 - normalized pass/fail checks (`gte` / `lte`)
 - summary status (`pass` / `fail`)
+
+Optional user-flow source flag:
+- `--user-journey-report <path>`
 
 ## CI Integration
 

@@ -33,6 +33,7 @@ class MissionSuccessRecoveryReportPackTests(unittest.TestCase):
             mission = base / "mission.json"
             fault = base / "fault.json"
             quality = base / "quality.json"
+            journey = base / "journey.json"
             output = base / "report.json"
 
             self._write_json(
@@ -73,6 +74,28 @@ class MissionSuccessRecoveryReportPackTests(unittest.TestCase):
                     },
                 },
             )
+            self._write_json(
+                journey,
+                {
+                    "suite": "user_journey_benchmark_v1",
+                    "config": {
+                        "thresholds": {
+                            "min_success_rate_pct": 100.0,
+                            "max_p95_journey_latency_ms": 3000.0,
+                            "max_p95_plan_dispatch_latency_ms": 1200.0,
+                            "max_p95_execute_dispatch_latency_ms": 1200.0,
+                            "min_plan_to_execute_conversion_rate_pct": 100.0,
+                        }
+                    },
+                    "summary": {
+                        "journey_success_rate_pct": 100.0,
+                        "p95_journey_latency_ms": 800.0,
+                        "p95_plan_dispatch_latency_ms": 300.0,
+                        "p95_execute_dispatch_latency_ms": 350.0,
+                        "plan_to_execute_conversion_rate_pct": 100.0,
+                    },
+                },
+            )
 
             proc = self._run(
                 "--mission-queue-report",
@@ -81,6 +104,8 @@ class MissionSuccessRecoveryReportPackTests(unittest.TestCase):
                 str(fault),
                 "--quality-dashboard-report",
                 str(quality),
+                "--user-journey-report",
+                str(journey),
                 "--scope",
                 "release",
                 "--output",
@@ -92,6 +117,8 @@ class MissionSuccessRecoveryReportPackTests(unittest.TestCase):
             self.assertEqual(payload.get("scope"), "release")
             self.assertEqual(payload.get("summary", {}).get("status"), "pass")
             self.assertGreaterEqual(int(payload.get("summary", {}).get("checks_total", 0)), 1)
+            self.assertIn("journey_success_rate_pct", payload.get("kpis", {}))
+            self.assertIn("journey.plan_to_execute_conversion_rate_pct", [c.get("id") for c in payload.get("checks", [])])
 
     def test_nightly_report_pack_marks_failed_summary_when_burn_gate_failed(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amaryllis-mission-report-pack-") as tmp:

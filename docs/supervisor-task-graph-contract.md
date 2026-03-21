@@ -7,7 +7,7 @@ Provide a bounded multi-agent orchestration skeleton for Phase 4 (`P4-C01`): spl
 - `graph_id`: `sup-<uuid>`
 - `user_id`: owner scope for all child node runs
 - `objective`: human-readable mission intent
-- `status`: `planned | running | succeeded | failed | canceled`
+- `status`: `planned | running | review_required | succeeded | failed | canceled`
 - `nodes[]`:
   - `node_id`
   - `agent_id`
@@ -30,6 +30,7 @@ Node statuses:
 - `GET /supervisor/graphs/{graph_id}`
 - `POST /supervisor/graphs/{graph_id}/launch`
 - `POST /supervisor/graphs/{graph_id}/tick`
+- `POST /supervisor/graphs/{graph_id}/verify`
 
 All endpoints are auth-scoped. Graph ownership is enforced (`user|admin` scopes), and each referenced `agent_id` must belong to the same effective `user_id`.
 
@@ -58,3 +59,18 @@ All endpoints are auth-scoped. Graph ownership is enforced (`user|admin` scopes)
   - dependency unlocking/blocking continues from hydrated state without rebuilding graph topology.
 
 Current mode remains explicit operator control (`launch/tick`), but now with crash/restart recovery baseline for the supervisor layer.
+
+## Objective Verification Gates (P4-C03 Slice)
+- Graph creation can include `objective_verification` policy:
+  - `mode`: `auto | manual`
+  - `required_node_ids[]`
+  - `min_response_chars`
+  - `required_keywords[]` with `keyword_match=any|all`
+  - `on_failure=review_required|failed`
+- Runtime writes `objective_verification` state into graph:
+  - `status`: `pending | review_required | passed | failed | skipped`
+  - `checks[]`, `last_failure_reasons[]`, `checked_at`, `manual_override`
+- Completion behavior:
+  - all nodes `succeeded` is necessary but not sufficient,
+  - graph reaches `succeeded` only when objective verification passes,
+  - manual mode keeps graph in `review_required` until explicit `POST /verify`.

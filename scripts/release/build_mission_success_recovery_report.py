@@ -31,6 +31,11 @@ def _parse_args() -> argparse.Namespace:
         help="Optional release quality dashboard report JSON path.",
     )
     parser.add_argument(
+        "--user-journey-report",
+        default="",
+        help="Optional user journey benchmark report JSON path.",
+    )
+    parser.add_argument(
         "--nightly-reliability-report",
         default="",
         help="Optional nightly reliability report JSON path.",
@@ -120,6 +125,7 @@ def main() -> int:
         "mission_queue": _resolve_optional_path(project_root, str(args.mission_queue_report)),
         "fault_injection": _resolve_optional_path(project_root, str(args.fault_injection_report)),
         "quality_dashboard": _resolve_optional_path(project_root, str(args.quality_dashboard_report)),
+        "user_journey": _resolve_optional_path(project_root, str(args.user_journey_report)),
         "nightly_reliability": _resolve_optional_path(project_root, str(args.nightly_reliability_report)),
         "nightly_burn_rate": _resolve_optional_path(project_root, str(args.nightly_burn_rate_report)),
     }
@@ -236,6 +242,82 @@ def main() -> int:
             )
         )
         kpis["release_quality_score_pct"] = round(score, 4)
+
+    journey = reports.get("user_journey")
+    if isinstance(journey, dict):
+        summary = journey.get("summary") if isinstance(journey.get("summary"), dict) else {}
+        thresholds = (
+            journey.get("config", {}).get("thresholds")
+            if isinstance(journey.get("config"), dict)
+            and isinstance(journey.get("config", {}).get("thresholds"), dict)
+            else {}
+        )
+        success_rate = _safe_float(summary.get("journey_success_rate_pct"))
+        p95_journey = _safe_float(summary.get("p95_journey_latency_ms"))
+        p95_plan = _safe_float(summary.get("p95_plan_dispatch_latency_ms"))
+        p95_execute = _safe_float(summary.get("p95_execute_dispatch_latency_ms"))
+        conversion = _safe_float(summary.get("plan_to_execute_conversion_rate_pct"))
+        checks.extend(
+            [
+                _check(
+                    check_id="journey.success_rate_pct",
+                    source="user_journey",
+                    value=success_rate,
+                    threshold=_safe_float(thresholds.get("min_success_rate_pct"), default=success_rate),
+                    comparator="gte",
+                    unit="pct",
+                ),
+                _check(
+                    check_id="journey.p95_end_to_end_ms",
+                    source="user_journey",
+                    value=p95_journey,
+                    threshold=_safe_float(
+                        thresholds.get("max_p95_journey_latency_ms"),
+                        default=p95_journey,
+                    ),
+                    comparator="lte",
+                    unit="ms",
+                ),
+                _check(
+                    check_id="journey.p95_plan_dispatch_ms",
+                    source="user_journey",
+                    value=p95_plan,
+                    threshold=_safe_float(
+                        thresholds.get("max_p95_plan_dispatch_latency_ms"),
+                        default=p95_plan,
+                    ),
+                    comparator="lte",
+                    unit="ms",
+                ),
+                _check(
+                    check_id="journey.p95_execute_dispatch_ms",
+                    source="user_journey",
+                    value=p95_execute,
+                    threshold=_safe_float(
+                        thresholds.get("max_p95_execute_dispatch_latency_ms"),
+                        default=p95_execute,
+                    ),
+                    comparator="lte",
+                    unit="ms",
+                ),
+                _check(
+                    check_id="journey.plan_to_execute_conversion_rate_pct",
+                    source="user_journey",
+                    value=conversion,
+                    threshold=_safe_float(
+                        thresholds.get("min_plan_to_execute_conversion_rate_pct"),
+                        default=conversion,
+                    ),
+                    comparator="gte",
+                    unit="pct",
+                ),
+            ]
+        )
+        kpis["journey_success_rate_pct"] = round(success_rate, 4)
+        kpis["journey_p95_end_to_end_ms"] = round(p95_journey, 2)
+        kpis["journey_p95_plan_dispatch_ms"] = round(p95_plan, 2)
+        kpis["journey_p95_execute_dispatch_ms"] = round(p95_execute, 2)
+        kpis["journey_plan_to_execute_conversion_rate_pct"] = round(conversion, 4)
 
     nightly = reports.get("nightly_reliability")
     if isinstance(nightly, dict):

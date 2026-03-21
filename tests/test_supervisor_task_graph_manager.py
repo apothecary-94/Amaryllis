@@ -54,6 +54,16 @@ class _FakeAgentManager:
         if error is not None:
             run["result"] = {"error": error}
 
+    def set_run_response(self, run_id: str, response: str) -> None:
+        run = self._runs.get(run_id)
+        if run is None:
+            raise ValueError(f"Run not found: {run_id}")
+        result = run.get("result")
+        if not isinstance(result, dict):
+            result = {}
+            run["result"] = result
+        result["response"] = str(response)
+
 
 def _node_by_id(graph: dict[str, Any], node_id: str) -> dict[str, Any]:
     for node in graph.get("nodes", []):
@@ -254,6 +264,79 @@ class SupervisorTaskGraphManagerTests(unittest.TestCase):
             completed = recovered_manager.tick_graph(graph_id=graph_id, user_id="user-1")
             self.assertEqual(str(completed.get("status")), "succeeded")
             database.close()
+
+    def test_objective_verification_manual_mode_requires_explicit_verify(self) -> None:
+        fake_agent_manager = _FakeAgentManager()
+        manager = SupervisorTaskGraphManager(agent_manager=fake_agent_manager)
+        created = manager.create_graph(
+            user_id="user-1",
+            objective="Deliver mitigation report",
+            nodes=[
+                {
+                    "node_id": "report",
+                    "agent_id": "agent-report",
+                    "message": "Generate mitigation report",
+                }
+            ],
+            objective_verification={
+                "mode": "manual",
+            },
+        )
+        graph_id = str(created.get("id") or "")
+        launched = manager.launch_graph(graph_id=graph_id, user_id="user-1")
+        run_id = str(_node_by_id(launched, "report").get("run_id") or "")
+        self.assertTrue(run_id)
+        fake_agent_manager.set_run_response(run_id, "Mitigation report completed.")
+        fake_agent_manager.set_run_status(run_id, "succeeded")
+
+        review_required = manager.tick_graph(graph_id=graph_id, user_id="user-1")
+        self.assertEqual(str(review_required.get("status")), "review_required")
+        verification = review_required.get("objective_verification", {})
+        self.assertEqual(str(verification.get("status")), "review_required")
+
+        approved = manager.verify_graph_objective(
+            graph_id=graph_id,
+            user_id="user-1",
+            override_pass=True,
+            note="Reviewed by operator",
+        )
+        self.assertEqual(str(approved.get("status")), "succeeded")
+        self.assertEqual(
+            str(approved.get("objective_verification", {}).get("status")),
+            "passed",
+        )
+
+    def test_objective_verification_keyword_gate_can_fail_graph(self) -> None:
+        fake_agent_manager = _FakeAgentManager()
+        manager = SupervisorTaskGraphManager(agent_manager=fake_agent_manager)
+        created = manager.create_graph(
+            user_id="user-1",
+            objective="Find root cause and remediation",
+            nodes=[
+                {
+                    "node_id": "analysis",
+                    "agent_id": "agent-analysis",
+                    "message": "Analyze incident",
+                }
+            ],
+            objective_verification={
+                "mode": "auto",
+                "required_keywords": ["root cause"],
+                "min_response_chars": 10,
+                "on_failure": "failed",
+            },
+        )
+        graph_id = str(created.get("id") or "")
+        launched = manager.launch_graph(graph_id=graph_id, user_id="user-1")
+        run_id = str(_node_by_id(launched, "analysis").get("run_id") or "")
+        self.assertTrue(run_id)
+
+        fake_agent_manager.set_run_response(run_id, "Short incident note.")
+        fake_agent_manager.set_run_status(run_id, "succeeded")
+        failed = manager.tick_graph(graph_id=graph_id, user_id="user-1")
+        self.assertEqual(str(failed.get("status")), "failed")
+        verification = failed.get("objective_verification", {})
+        self.assertEqual(str(verification.get("status")), "failed")
 
 
 if __name__ == "__main__":

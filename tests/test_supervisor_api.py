@@ -78,7 +78,14 @@ class SupervisorAPITests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertIn("planned", payload.get("graph_statuses", []))
+        self.assertIn("review_required", payload.get("graph_statuses", []))
         self.assertIn("queued", payload.get("node_statuses", []))
+        objective_contract = payload.get("objective_verification", {})
+        self.assertIn("manual", objective_contract.get("supported_modes", []))
+        self.assertEqual(
+            str(objective_contract.get("verify_endpoint")),
+            "/supervisor/graphs/{graph_id}/verify",
+        )
 
     def test_create_launch_tick_and_get_graph(self) -> None:
         agent_triage = self._create_agent(user_token="user-token", user_id="user-1", name="Sup Triage")
@@ -198,6 +205,44 @@ class SupervisorAPITests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         payload = response.json()
         self.assertEqual(str(payload.get("error", {}).get("type")), "validation_error")
+
+    def test_verify_endpoint_accepts_manual_override(self) -> None:
+        agent_id = self._create_agent(user_token="user-token", user_id="user-1", name="Sup Verify")
+        created = self.client.post(
+            "/supervisor/graphs/create",
+            headers=self._auth("user-token"),
+            json={
+                "user_id": "user-1",
+                "objective": "Manual verification flow",
+                "objective_verification": {
+                    "mode": "manual",
+                },
+                "nodes": [
+                    {
+                        "node_id": "n1",
+                        "agent_id": agent_id,
+                        "message": "Prepare verification artifact",
+                    }
+                ],
+            },
+        )
+        self.assertEqual(created.status_code, 200)
+        graph_id = str(created.json().get("supervisor_graph", {}).get("id") or "")
+        self.assertTrue(graph_id.startswith("sup-"))
+
+        verified = self.client.post(
+            f"/supervisor/graphs/{graph_id}/verify",
+            headers=self._auth("user-token"),
+            json={
+                "override_pass": True,
+                "note": "Approved by operator",
+            },
+        )
+        self.assertEqual(verified.status_code, 200)
+        graph = verified.json().get("supervisor_graph", {})
+        objective_verification = graph.get("objective_verification", {})
+        self.assertEqual(str(objective_verification.get("status")), "passed")
+        self.assertIn(str(graph.get("status")), {"planned", "running", "succeeded"})
 
 
 if __name__ == "__main__":

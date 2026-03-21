@@ -59,11 +59,22 @@ class SupervisorGraphNodeRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class SupervisorObjectiveVerificationRequest(BaseModel):
+    enabled: bool = True
+    mode: str = Field(default="auto")
+    required_node_ids: list[str] = Field(default_factory=list)
+    min_response_chars: int = Field(default=0, ge=0, le=20_000)
+    required_keywords: list[str] = Field(default_factory=list)
+    keyword_match: str = Field(default="any")
+    on_failure: str = Field(default="review_required")
+
+
 class SupervisorGraphCreateRequest(BaseModel):
     user_id: str | None = None
     objective: str = Field(min_length=1, max_length=20_000)
     nodes: list[SupervisorGraphNodeRequest] = Field(min_length=1, max_length=256)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    objective_verification: SupervisorObjectiveVerificationRequest | None = None
 
 
 class SupervisorGraphLaunchRequest(BaseModel):
@@ -72,6 +83,12 @@ class SupervisorGraphLaunchRequest(BaseModel):
 
 class SupervisorGraphTickRequest(BaseModel):
     noop: bool = True
+
+
+class SupervisorGraphVerifyRequest(BaseModel):
+    override_pass: bool | None = None
+    note: str | None = Field(default=None, max_length=4000)
+    force_recheck: bool = False
 
 
 def _validate_agent_ownership_for_nodes(
@@ -109,6 +126,13 @@ def supervisor_contract(request: Request) -> dict[str, Any]:
     return {
         "graph_statuses": sorted(SUPERVISOR_GRAPH_STATUSES),
         "node_statuses": sorted(SUPERVISOR_NODE_STATUSES),
+        "objective_verification": {
+            "supported_modes": ["auto", "manual"],
+            "supported_keyword_match": ["any", "all"],
+            "supported_on_failure": ["review_required", "failed"],
+            "verification_statuses": ["pending", "review_required", "passed", "failed", "skipped"],
+            "verify_endpoint": "/supervisor/graphs/{graph_id}/verify",
+        },
         "checkpoint_resume": {
             "enabled": True,
             "store": "sqlite.supervisor_graphs",
@@ -148,6 +172,11 @@ def create_supervisor_graph(payload: SupervisorGraphCreateRequest, request: Requ
                 }
                 for node in payload.nodes
             ],
+            objective_verification=(
+                payload.objective_verification.model_dump(exclude_none=True)
+                if payload.objective_verification is not None
+                else None
+            ),
             metadata=dict(payload.metadata),
             request_id=_request_id(request),
             actor=auth.user_id,
@@ -394,6 +423,80 @@ def tick_supervisor_graph(
         _sign_action(
             request,
             action="supervisor_graph_tick",
+            payload=sign_payload,
+            actor=auth.user_id,
+            target_id=graph_id,
+            status="failed",
+            details={"error": str(exc)},
+        )
+        raise ProviderError(str(exc)) from exc
+
+
+@router.post("/supervisor/graphs/{graph_id}/verify")
+def verify_supervisor_graph(
+    payload: SupervisorGraphVerifyRequest,
+    request: Request,
+    graph_id: str = Path(..., min_length=1, max_length=128),
+) -> dict[str, Any]:
+    services = request.app.state.services
+    auth = auth_context_from_request(request)
+    sign_payload = {
+        "graph_id": graph_id,
+        "override_pass": payload.override_pass,
+        "force_recheck": bool(payload.force_recheck),
+        "note": payload.note,
+    }
+    try:
+        existing = services.supervisor_manager.get_graph(graph_id=graph_id)
+        assert_owner(
+            owner_user_id=str(existing.get("user_id") or ""),
+            auth=auth,
+            resource_name="supervisor_graph",
+            resource_id=graph_id,
+        )
+        graph = services.supervisor_manager.verify_graph_objective(
+            graph_id=graph_id,
+            user_id=str(existing.get("user_id") or ""),
+            override_pass=payload.override_pass,
+            note=payload.note,
+            force_recheck=bool(payload.force_recheck),
+            request_id=_request_id(request),
+            actor=auth.user_id,
+        )
+        receipt = _sign_action(
+            request,
+            action="supervisor_graph_verify",
+            payload=sign_payload,
+            actor=auth.user_id,
+            target_id=graph_id,
+            details={"status": graph.get("status")},
+        )
+        return {
+            "supervisor_graph": graph,
+            "action_receipt": receipt,
+            "request_id": _request_id(request),
+            "graph_statuses": sorted(SUPERVISOR_GRAPH_STATUSES),
+            "node_statuses": sorted(SUPERVISOR_NODE_STATUSES),
+        }
+    except ValueError as exc:
+        if "not found" in str(exc).lower():
+            raise NotFoundError(str(exc)) from exc
+        _sign_action(
+            request,
+            action="supervisor_graph_verify",
+            payload=sign_payload,
+            actor=auth.user_id,
+            target_id=graph_id,
+            status="failed",
+            details={"error": str(exc)},
+        )
+        raise ValidationError(str(exc)) from exc
+    except AmaryllisError:
+        raise
+    except Exception as exc:
+        _sign_action(
+            request,
+            action="supervisor_graph_verify",
             payload=sign_payload,
             actor=auth.user_id,
             target_id=graph_id,
