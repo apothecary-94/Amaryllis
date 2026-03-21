@@ -6,7 +6,7 @@ from pathlib import Path
 
 from tools.policy import ToolIsolationPolicy
 from tools.tool_executor import ToolExecutionError, ToolExecutor
-from tools.tool_registry import ToolRegistry
+from tools.tool_registry import ToolDefinition, ToolRegistry
 
 
 class ToolIsolationPolicyTests(unittest.TestCase):
@@ -43,6 +43,48 @@ class ToolIsolationPolicyTests(unittest.TestCase):
                 )
 
             self.assertIn("disabled", str(ctx.exception).lower())
+
+    def test_plugin_network_capability_is_blocked_by_default(self) -> None:
+        policy = ToolIsolationPolicy(profile="balanced")
+        tool = ToolDefinition(
+            name="plugin_network_tool",
+            description="plugin network",
+            input_schema={"type": "object"},
+            handler=lambda _: {"ok": True},
+            source="plugin:test",
+            risk_level="medium",
+            execution_target={
+                "kind": "plugin",
+                "capabilities": ["filesystem_read", "network"],
+            },
+        )
+
+        decision = policy.evaluate(tool=tool, arguments={})
+        self.assertFalse(decision.allow)
+        self.assertIn("not allowed by policy", str(decision.reason or "").lower())
+
+    def test_plugin_filesystem_write_requires_approval_when_allowed(self) -> None:
+        policy = ToolIsolationPolicy(
+            profile="balanced",
+            allowed_plugin_capabilities=["filesystem_read", "filesystem_write"],
+            filesystem_allow_write=True,
+        )
+        tool = ToolDefinition(
+            name="plugin_writer",
+            description="plugin write",
+            input_schema={"type": "object"},
+            handler=lambda _: {"ok": True},
+            source="plugin:test",
+            risk_level="low",
+            execution_target={
+                "kind": "plugin",
+                "capabilities": ["filesystem_read", "filesystem_write"],
+            },
+        )
+
+        decision = policy.evaluate(tool=tool, arguments={})
+        self.assertTrue(decision.allow)
+        self.assertTrue(decision.requires_approval)
 
 
 if __name__ == "__main__":

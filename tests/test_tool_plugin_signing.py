@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 from typing import Any
 
+from tools.plugin_compat import PLUGIN_COMPAT_MANIFEST_VERSION, PLUGIN_REGISTRY_API_VERSION
 from tools.tool_registry import ToolRegistry
 
 
@@ -78,6 +79,71 @@ class ToolPluginSigningTests(unittest.TestCase):
             self.assertGreaterEqual(int(report["summary"].get("loaded", 0)), 1)
             self.assertTrue(any(item.get("signature_state") == "verified" for item in report.get("events", [])))
 
+    def test_missing_compat_blocks_plugin_before_signature(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amaryllis-plugin-signing-") as tmp:
+            plugins_dir = Path(tmp)
+            manifest = self._manifest("missing_compat_tool")
+            manifest.pop("compat", None)
+            self._write_plugin(
+                plugins_dir=plugins_dir,
+                plugin_dir_name="missing_compat",
+                manifest=manifest,
+            )
+
+            registry = ToolRegistry(plugin_signing_mode="off")
+            registry.discover_plugins(plugins_dir)
+
+            self.assertNotIn("missing_compat_tool", registry.names())
+            report = registry.plugin_discovery_report()
+            self.assertGreaterEqual(int(report["summary"].get("blocked", 0)), 1)
+            self.assertGreaterEqual(int(report["compat_summary"].get("incompatible", 0)), 1)
+            events = report.get("events", [])
+            self.assertTrue(any(str(item.get("reason", "")).startswith("compat_incompatible:") for item in events))
+            self.assertTrue(any(item.get("signature_state") == "not_checked" for item in events))
+
+    def test_runtime_mode_mismatch_blocks_plugin(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amaryllis-plugin-signing-") as tmp:
+            plugins_dir = Path(tmp)
+            manifest = self._manifest("legacy_only_tool", runtime_modes=["legacy"])
+            self._write_plugin(
+                plugins_dir=plugins_dir,
+                plugin_dir_name="legacy_only",
+                manifest=manifest,
+            )
+
+            registry = ToolRegistry(
+                plugin_signing_mode="off",
+                plugin_runtime_mode="sandboxed",
+            )
+            registry.discover_plugins(plugins_dir)
+
+            self.assertNotIn("legacy_only_tool", registry.names())
+            report = registry.plugin_discovery_report()
+            self.assertEqual(report["compat_contract"]["manifest_version"], PLUGIN_COMPAT_MANIFEST_VERSION)
+            self.assertEqual(report["compat_contract"]["tool_registry_api"], PLUGIN_REGISTRY_API_VERSION)
+            events = report.get("events", [])
+            self.assertTrue(any("runtime compatibility mismatch" in str(item.get("compat_reason", "")) for item in events))
+
+    def test_unknown_capability_blocks_plugin(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amaryllis-plugin-signing-") as tmp:
+            plugins_dir = Path(tmp)
+            manifest = self._manifest("unknown_cap_tool", capabilities=["filesystem_read", "root"])
+            self._write_plugin(
+                plugins_dir=plugins_dir,
+                plugin_dir_name="unknown_capability",
+                manifest=manifest,
+            )
+
+            registry = ToolRegistry(plugin_signing_mode="off")
+            registry.discover_plugins(plugins_dir)
+
+            self.assertNotIn("unknown_cap_tool", registry.names())
+            report = registry.plugin_discovery_report()
+            self.assertGreaterEqual(int(report["summary"].get("blocked", 0)), 1)
+            self.assertGreaterEqual(int(report["capability_summary"].get("incompatible", 0)), 1)
+            events = report.get("events", [])
+            self.assertTrue(any(str(item.get("reason", "")).startswith("capability_incompatible:") for item in events))
+
     @staticmethod
     def _write_plugin(
         *,
@@ -91,10 +157,22 @@ class ToolPluginSigningTests(unittest.TestCase):
         (target / "tool.py").write_text(PLUGIN_TOOL_CODE + "\n", encoding="utf-8")
 
     @staticmethod
-    def _manifest(name: str) -> dict[str, Any]:
+    def _manifest(
+        name: str,
+        runtime_modes: list[str] | None = None,
+        capabilities: list[str] | None = None,
+    ) -> dict[str, Any]:
+        modes = list(runtime_modes or ["sandboxed", "legacy"])
+        caps = list(capabilities or ["filesystem_read"])
         return {
             "name": name,
             "version": "1.0.0",
+            "compat": {
+                "manifest_version": PLUGIN_COMPAT_MANIFEST_VERSION,
+                "tool_registry_api": PLUGIN_REGISTRY_API_VERSION,
+                "runtime_modes": modes,
+            },
+            "capabilities": caps,
             "tool": {
                 "name": name,
                 "description": "plugin test tool",

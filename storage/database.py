@@ -2429,9 +2429,11 @@ class Database:
         schedule_type: str,
         schedule: dict[str, Any],
         timezone_name: str,
+        mission_policy: dict[str, Any] | None = None,
     ) -> None:
         now = self._utc_now()
         schedule_json = json.dumps(schedule, ensure_ascii=False)
+        mission_policy_json = json.dumps(mission_policy or {}, ensure_ascii=False)
         with self._lock:
             self._conn.execute(
                 """
@@ -2444,6 +2446,7 @@ class Database:
                     interval_sec,
                     schedule_type,
                     schedule_json,
+                    mission_policy_json,
                     timezone,
                     is_enabled,
                     next_run_at,
@@ -2457,7 +2460,7 @@ class Database:
                     created_at,
                     updated_at
                 )
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)
                 """,
                 (
                     automation_id,
@@ -2468,6 +2471,7 @@ class Database:
                     max(10, interval_sec),
                     schedule_type,
                     schedule_json,
+                    mission_policy_json,
                     timezone_name,
                     next_run_at,
                     now,
@@ -2742,6 +2746,7 @@ class Database:
             "interval_sec",
             "schedule_type",
             "schedule_json",
+            "mission_policy_json",
             "timezone",
             "is_enabled",
             "next_run_at",
@@ -2765,7 +2770,7 @@ class Database:
                     sanitized[key] = max(10, int(value))
                 except Exception:
                     continue
-            elif key == "schedule_json" and isinstance(value, (dict, list)):
+            elif key in {"schedule_json", "mission_policy_json"} and isinstance(value, (dict, list)):
                 sanitized[key] = json.dumps(value, ensure_ascii=False)
             elif key == "is_enabled" and isinstance(value, bool):
                 sanitized[key] = 1 if value else 0
@@ -3089,6 +3094,12 @@ class Database:
             row["schedule"] = parsed if isinstance(parsed, dict) else {}
         except Exception:
             row["schedule"] = {}
+        mission_policy_json = row.pop("mission_policy_json", "{}")
+        try:
+            parsed_policy = json.loads(mission_policy_json or "{}")
+            row["mission_policy"] = parsed_policy if isinstance(parsed_policy, dict) else {}
+        except Exception:
+            row["mission_policy"] = {}
         row["schedule_type"] = str(row.get("schedule_type") or "interval")
         row["timezone"] = str(row.get("timezone") or "UTC")
         try:

@@ -69,7 +69,17 @@ jobs:
             --max-consecutive-run-breach-samples "${AMARYLLIS_NIGHTLY_MAX_CONSECUTIVE_RUN_BURN_BREACHES:-2}" \
             --output "artifacts/nightly-burn-rate-gate-report.json"
 
+      - name: Build mission success/recovery report pack (nightly)
+        if: ${{ always() }}
+        run: |
+          python scripts/release/build_mission_success_recovery_report.py \
+            --nightly-reliability-report "artifacts/nightly-reliability-report.json" \
+            --nightly-burn-rate-report "artifacts/nightly-burn-rate-gate-report.json" \
+            --scope "nightly" \
+            --output "artifacts/nightly-mission-success-recovery-report.json"
+
       - name: Upload nightly reliability report
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: nightly-reliability-report
@@ -77,8 +87,17 @@ jobs:
           if-no-files-found: error
 
       - name: Upload nightly burn-rate gate report
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: nightly-burn-rate-gate-report
           path: artifacts/nightly-burn-rate-gate-report.json
+          if-no-files-found: error
+
+      - name: Upload nightly mission success/recovery report pack
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-mission-success-recovery-report
+          path: artifacts/nightly-mission-success-recovery-report.json
           if-no-files-found: error

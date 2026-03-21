@@ -4,6 +4,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
 
+from automation.mission_policy import resolve_mission_policy_overlay
 from automation.schedule import compute_next_run_at, normalize_schedule, validate_timezone
 
 _SUPPORTED_CADENCE_PROFILES: tuple[str, ...] = (
@@ -27,6 +28,7 @@ _MISSION_TEMPLATE_REGISTRY: dict[str, dict[str, Any]] = {
         "start_immediately": False,
         "max_attempts": 3,
         "budget": {"max_steps": 24, "max_tool_calls": 40, "timeout_sec": 900},
+        "mission_policy_profile": "balanced",
         "risk_tags": ["quality", "maintenance"],
     },
     "security_audit": {
@@ -41,6 +43,7 @@ _MISSION_TEMPLATE_REGISTRY: dict[str, dict[str, Any]] = {
         "start_immediately": False,
         "max_attempts": 4,
         "budget": {"max_steps": 28, "max_tool_calls": 48, "timeout_sec": 1200},
+        "mission_policy_profile": "strict",
         "risk_tags": ["security", "compliance"],
     },
     "release_guard": {
@@ -55,6 +58,7 @@ _MISSION_TEMPLATE_REGISTRY: dict[str, dict[str, Any]] = {
         "start_immediately": False,
         "max_attempts": 3,
         "budget": {"max_steps": 22, "max_tool_calls": 36, "timeout_sec": 900},
+        "mission_policy_profile": "release",
         "risk_tags": ["release", "reliability"],
     },
     "runtime_watchdog": {
@@ -69,6 +73,7 @@ _MISSION_TEMPLATE_REGISTRY: dict[str, dict[str, Any]] = {
         "start_immediately": True,
         "max_attempts": 2,
         "budget": {"max_steps": 16, "max_tool_calls": 24, "timeout_sec": 600},
+        "mission_policy_profile": "watchdog",
         "risk_tags": ["ops", "watchdog"],
     },
 }
@@ -89,6 +94,8 @@ def apply_mission_template(
     interval_sec: int | None,
     max_attempts: int | None,
     budget: dict[str, Any] | None,
+    mission_policy_profile: str | None = None,
+    mission_policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     template = _resolve_template(template_id)
 
@@ -103,6 +110,14 @@ def apply_mission_template(
         resolved_cadence = str(template.get("cadence_profile") or "").strip().lower()
     if not resolved_cadence:
         resolved_cadence = "workday"
+
+    resolved_policy_profile = str(mission_policy_profile or "").strip().lower()
+    if not resolved_policy_profile and template is not None:
+        resolved_policy_profile = str(template.get("mission_policy_profile") or "").strip().lower()
+    resolved_policy = resolve_mission_policy_overlay(
+        policy=mission_policy if isinstance(mission_policy, dict) else {},
+        profile=resolved_policy_profile or None,
+    )
 
     if start_immediately is None:
         resolved_start_immediately = bool(template.get("start_immediately")) if template is not None else False
@@ -146,6 +161,7 @@ def apply_mission_template(
         "interval_sec": resolved_interval,
         "max_attempts": resolved_max_attempts,
         "budget": resolved_budget,
+        "mission_policy": resolved_policy,
     }
 
 

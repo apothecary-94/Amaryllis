@@ -1,0 +1,51 @@
+{
+  "generated_at": "2026-03-21T00:00:00+00:00",
+  "suite": "release_quality_dashboard_baseline_v1",
+  "release": {
+    "release_id": "baseline",
+    "release_channel": "baseline",
+    "commit_sha": "baseline"
+  },
+  "signals": [
+    {
+      "metric_id": "perf.p95_latency_ms",
+      "value": 350.0
+    },
+    {
+      "metric_id": "perf.error_rate_pct",
+      "value": 0.0
+    },
+    {
+      "metric_id": "fault_injection.pass_rate_pct",
+      "value": 100.0
+    },
+    {
+      "metric_id": "mission_queue.success_rate_pct",
+      "value": 99.0
+    },
+    {
+      "metric_id": "mission_queue.p95_queue_wait_ms",
+      "value": 1500.0
+    },
+    {
+      "metric_id": "mission_queue.p95_end_to_end_ms",
+      "value": 5000.0
+    },
+    {
+      "metric_id": "mission_queue.failed_or_canceled",
+      "value": 0.0
+    },
+    {
+      "metric_id": "runtime_lifecycle.targets_ok",
+      "value": 1.0
+    },
+    {
+      "metric_id": "runtime_lifecycle.startup_ok",
+      "value": 1.0
+    },
+    {
+      "metric_id": "runtime_lifecycle.checks_failed",
+      "value": 0.0
+    }
+  ]
+}

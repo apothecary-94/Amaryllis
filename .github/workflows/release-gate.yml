@@ -93,11 +93,20 @@ jobs:
             tests.test_api_compatibility \
             -v
 
-      - name: Run mission planner and runtime lifecycle contract tests
+      - name: Run mission/runtime/plugin/quality contract tests
         run: |
           python -m unittest \
+            tests.test_mission_policy \
             tests.test_mission_planner \
             tests.test_automation_mission_plan_api \
+            tests.test_automation_scheduler \
+            tests.test_plugin_compat \
+            tests.test_plugin_capabilities \
+            tests.test_tool_plugin_signing \
+            tests.test_tool_isolation_policy \
+            tests.test_tool_sandbox \
+            tests.test_release_quality_dashboard_snapshot \
+            tests.test_mission_success_recovery_report_pack \
             tests.test_runtime_service_manifest_renderer \
             tests.test_runtime_service_lifecycle \
             tests.test_runtime_lifecycle_smoke_gate \
@@ -134,7 +143,15 @@ jobs:
           python scripts/release/perf_smoke_gate.py \
             --iterations "${AMARYLLIS_PERF_SMOKE_ITERATIONS:-3}" \
             --max-p95-latency-ms "${AMARYLLIS_PERF_SMOKE_MAX_P95_MS:-350}" \
-            --max-error-rate-pct "${AMARYLLIS_PERF_SMOKE_MAX_ERROR_RATE_PCT:-0}"
+            --max-error-rate-pct "${AMARYLLIS_PERF_SMOKE_MAX_ERROR_RATE_PCT:-0}" \
+            --output "artifacts/perf-smoke-report.json"
+
+      - name: Upload performance smoke report
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-smoke-report
+          path: artifacts/perf-smoke-report.json
+          if-no-files-found: error
 
       - name: Run runtime lifecycle smoke + startup SLO gate (blocking)
         run: |
@@ -183,6 +200,50 @@ jobs:
         with:
           name: mission-queue-load-report
           path: artifacts/mission-queue-load-report.json
+          if-no-files-found: error
+
+      - name: Build release quality dashboard snapshot (blocking)
+        run: |
+          RELEASE_CHANNEL="branch"
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            RELEASE_CHANNEL="stable"
+          fi
+
+          python scripts/release/build_quality_dashboard_snapshot.py \
+            --perf-report "artifacts/perf-smoke-report.json" \
+            --fault-injection-report "artifacts/fault-injection-reliability-report.json" \
+            --mission-queue-report "artifacts/mission-queue-load-report.json" \
+            --runtime-lifecycle-report "artifacts/runtime-lifecycle-smoke-report.json" \
+            --baseline "eval/baselines/quality/release_quality_dashboard_baseline.json" \
+            --output "artifacts/release-quality-dashboard.json" \
+            --trend-output "artifacts/release-quality-dashboard-trend.json" \
+            --release-id "${GITHUB_REF_NAME:-${GITHUB_SHA}}" \
+            --release-channel "${RELEASE_CHANNEL}" \
+            --commit-sha "${GITHUB_SHA}"
+
+      - name: Upload release quality dashboard artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-quality-dashboard
+          path: |
+            artifacts/release-quality-dashboard.json
+            artifacts/release-quality-dashboard-trend.json
+          if-no-files-found: error
+
+      - name: Build mission success/recovery report pack (release)
+        run: |
+          python scripts/release/build_mission_success_recovery_report.py \
+            --mission-queue-report "artifacts/mission-queue-load-report.json" \
+            --fault-injection-report "artifacts/fault-injection-reliability-report.json" \
+            --quality-dashboard-report "artifacts/release-quality-dashboard.json" \
+            --scope "release" \
+            --output "artifacts/mission-success-recovery-report.json"
+
+      - name: Upload mission success/recovery report pack
+        uses: actions/upload-artifact@v4
+        with:
+          name: mission-success-recovery-report
+          path: artifacts/mission-success-recovery-report.json
           if-no-files-found: error
 
   linux-parity-gate:

@@ -134,6 +134,24 @@ class AutomationMissionPlanAPITests(unittest.TestCase):
         self.assertTrue(
             {"code_health", "security_audit", "release_guard", "runtime_watchdog"}.issubset(template_ids)
         )
+        release_guard = next(
+            (item for item in items if isinstance(item, dict) and str(item.get("id")) == "release_guard"),
+            {},
+        )
+        self.assertEqual(str(release_guard.get("mission_policy_profile")), "release")
+
+    def test_mission_policy_catalog_endpoint(self) -> None:
+        listed = self.client.get(
+            "/automations/mission/policies",
+            headers=self._auth("user-token"),
+        )
+        self.assertEqual(listed.status_code, 200)
+        payload = listed.json()
+        self.assertGreaterEqual(int(payload.get("count", 0)), 4)
+        items = payload.get("items", [])
+        self.assertIsInstance(items, list)
+        policy_ids = {str(item.get("id")) for item in items if isinstance(item, dict)}
+        self.assertTrue({"balanced", "strict", "watchdog", "release"}.issubset(policy_ids))
 
     def test_plan_mission_from_template_without_manual_prompt(self) -> None:
         created = self.client.post(
@@ -169,6 +187,10 @@ class AutomationMissionPlanAPITests(unittest.TestCase):
         self.assertEqual(schedule.get("byday"), ["MO", "TU", "WE", "TH", "FR", "SA", "SU"])
         template = payload.get("template", {})
         self.assertEqual(str(template.get("id")), "release_guard")
+        mission_policy = payload.get("mission_policy", {})
+        self.assertEqual(str(mission_policy.get("profile")), "release")
+        apply_payload = payload.get("apply_hint", {}).get("payload", {})
+        self.assertEqual(str(apply_payload.get("mission_policy", {}).get("profile")), "release")
 
     def test_plan_mission_cross_tenant_is_blocked(self) -> None:
         created = self.client.post(

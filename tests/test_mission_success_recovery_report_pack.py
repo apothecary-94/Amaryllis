@@ -1,0 +1,161 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import unittest
+
+
+class MissionSuccessRecoveryReportPackTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.repo_root = Path(__file__).resolve().parents[1]
+        self.script = self.repo_root / "scripts" / "release" / "build_mission_success_recovery_report.py"
+
+    def _run(self, *args: str) -> subprocess.CompletedProcess[str]:
+        command = [sys.executable, str(self.script), *args]
+        return subprocess.run(
+            command,
+            cwd=str(self.repo_root),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    @staticmethod
+    def _write_json(path: Path, payload: dict) -> None:
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    def test_release_report_pack_is_generated(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amaryllis-mission-report-pack-") as tmp:
+            base = Path(tmp)
+            mission = base / "mission.json"
+            fault = base / "fault.json"
+            quality = base / "quality.json"
+            output = base / "report.json"
+
+            self._write_json(
+                mission,
+                {
+                    "suite": "mission_queue_load_gate_v1",
+                    "config": {
+                        "min_success_rate_pct": 99.0,
+                        "max_failed_runs": 0,
+                        "max_p95_queue_wait_ms": 1500.0,
+                        "max_p95_end_to_end_ms": 5000.0,
+                    },
+                    "summary": {
+                        "success_rate_pct": 100.0,
+                        "failed_or_canceled": 0,
+                        "p95_queue_wait_ms": 800.0,
+                        "p95_end_to_end_ms": 1900.0,
+                    },
+                },
+            )
+            self._write_json(
+                fault,
+                {
+                    "suite": "fault_injection_reliability_v1",
+                    "summary": {
+                        "pass_rate_pct": 100.0,
+                        "min_pass_rate_pct": 100.0,
+                    },
+                },
+            )
+            self._write_json(
+                quality,
+                {
+                    "suite": "release_quality_dashboard_v1",
+                    "summary": {
+                        "quality_score_pct": 100.0,
+                        "status": "pass",
+                    },
+                },
+            )
+
+            proc = self._run(
+                "--mission-queue-report",
+                str(mission),
+                "--fault-injection-report",
+                str(fault),
+                "--quality-dashboard-report",
+                str(quality),
+                "--scope",
+                "release",
+                "--output",
+                str(output),
+            )
+            self.assertEqual(proc.returncode, 0, msg=f"stdout={proc.stdout}\nstderr={proc.stderr}")
+            self.assertIn("[mission-report-pack] OK", proc.stdout)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(payload.get("scope"), "release")
+            self.assertEqual(payload.get("summary", {}).get("status"), "pass")
+            self.assertGreaterEqual(int(payload.get("summary", {}).get("checks_total", 0)), 1)
+
+    def test_nightly_report_pack_marks_failed_summary_when_burn_gate_failed(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amaryllis-mission-report-pack-") as tmp:
+            base = Path(tmp)
+            nightly = base / "nightly.json"
+            burn = base / "burn.json"
+            output = base / "report.json"
+
+            self._write_json(
+                nightly,
+                {
+                    "suite": "nightly_reliability_smoke_v1",
+                    "thresholds": {
+                        "min_success_rate_pct": 99.0,
+                        "max_p95_latency_ms": 600.0,
+                        "max_latency_jitter_ms": 120.0,
+                    },
+                    "summary": {
+                        "success_rate_pct": 99.5,
+                        "p95_latency_ms": 400.0,
+                        "latency_jitter_ms": 60.0,
+                    },
+                },
+            )
+            self._write_json(
+                burn,
+                {
+                    "suite": "nightly_slo_burn_rate_gate_v1",
+                    "passed": False,
+                    "summary": {
+                        "request": {"max_consecutive_breach_samples": 3},
+                        "runs": {"max_consecutive_breach_samples": 2},
+                    },
+                },
+            )
+
+            proc = self._run(
+                "--nightly-reliability-report",
+                str(nightly),
+                "--nightly-burn-rate-report",
+                str(burn),
+                "--scope",
+                "nightly",
+                "--output",
+                str(output),
+            )
+            self.assertEqual(proc.returncode, 0, msg=f"stdout={proc.stdout}\nstderr={proc.stderr}")
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(payload.get("scope"), "nightly")
+            self.assertEqual(payload.get("summary", {}).get("status"), "fail")
+
+    def test_missing_source_report_returns_error(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amaryllis-mission-report-pack-") as tmp:
+            base = Path(tmp)
+            output = base / "report.json"
+            proc = self._run(
+                "--mission-queue-report",
+                str(base / "missing.json"),
+                "--output",
+                str(output),
+            )
+            self.assertEqual(proc.returncode, 2, msg=f"stdout={proc.stdout}\nstderr={proc.stderr}")
+            self.assertIn("missing source report", proc.stderr.lower())
+
+
+if __name__ == "__main__":
+    unittest.main()

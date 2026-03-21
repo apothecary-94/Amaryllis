@@ -3,6 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from tools.plugin_capabilities import (
+    default_allowed_plugin_capabilities,
+    plugin_capabilities_requiring_approval,
+    plugin_capability_policy_snapshot,
+    supported_plugin_capabilities,
+)
 from tools.tool_registry import ToolDefinition
 
 
@@ -24,6 +30,8 @@ class ToolIsolationPolicy:
         python_exec_max_timeout_sec: int = 10,
         python_exec_max_code_chars: int = 4000,
         filesystem_allow_write: bool = True,
+        allowed_plugin_capabilities: list[str] | None = None,
+        blocked_plugin_capabilities: list[str] | None = None,
     ) -> None:
         self.blocked_tools = {item.strip() for item in (blocked_tools or []) if item.strip()}
         normalized_profile = str(profile or "balanced").strip().lower()
@@ -38,6 +46,23 @@ class ToolIsolationPolicy:
         self.python_exec_max_timeout_sec = max(1, int(python_exec_max_timeout_sec))
         self.python_exec_max_code_chars = max(100, int(python_exec_max_code_chars))
         self.filesystem_allow_write = bool(filesystem_allow_write)
+        supported_capabilities = supported_plugin_capabilities()
+        allowed_source = (
+            list(allowed_plugin_capabilities)
+            if allowed_plugin_capabilities is not None
+            else default_allowed_plugin_capabilities()
+        )
+        self.allowed_plugin_capabilities = {
+            str(item).strip().lower()
+            for item in allowed_source
+            if str(item).strip().lower() in supported_capabilities
+        }
+        self.blocked_plugin_capabilities = {
+            str(item).strip().lower()
+            for item in (blocked_plugin_capabilities or [])
+            if str(item).strip().lower() in supported_capabilities
+        }
+        self._plugin_capabilities_requiring_approval = plugin_capabilities_requiring_approval()
 
     def evaluate(self, tool: ToolDefinition, arguments: dict[str, Any]) -> ToolDecision:
         if tool.name in self.blocked_tools:
@@ -69,6 +94,14 @@ class ToolIsolationPolicy:
                     f"Tool '{tool.name}' is high-risk and blocked in strict isolation profile. "
                     "Allow explicitly via policy config."
                 ),
+            )
+
+        plugin_allowed, plugin_requires_approval, plugin_reason = self._evaluate_plugin_capabilities(tool)
+        if not plugin_allowed:
+            return ToolDecision(
+                allow=False,
+                requires_approval=False,
+                reason=plugin_reason or "Plugin capability policy blocked tool.",
             )
 
         tool_name = str(tool.name).strip().lower()
@@ -106,7 +139,7 @@ class ToolIsolationPolicy:
                     reason="filesystem write is disabled by isolation policy.",
                 )
 
-        requires_approval = False
+        requires_approval = bool(plugin_requires_approval)
         if tool.approval_mode == "required":
             requires_approval = True
         elif tool.approval_mode == "conditional" and tool.approval_predicate is not None:
@@ -149,6 +182,53 @@ class ToolIsolationPolicy:
             approval_ttl_sec=approval_ttl_sec,
         )
 
+    def _evaluate_plugin_capabilities(self, tool: ToolDefinition) -> tuple[bool, bool, str | None]:
+        if not str(tool.source or "").startswith("plugin:"):
+            return True, False, None
+
+        target = tool.execution_target if isinstance(tool.execution_target, dict) else {}
+        raw = target.get("capabilities")
+        if not isinstance(raw, list) or not raw:
+            return False, False, f"Plugin tool '{tool.name}' is missing declared capabilities."
+
+        capabilities = sorted({str(item).strip().lower() for item in raw if str(item).strip()})
+        if not capabilities:
+            return False, False, f"Plugin tool '{tool.name}' is missing declared capabilities."
+
+        supported = supported_plugin_capabilities()
+        unknown = [item for item in capabilities if item not in supported]
+        if unknown:
+            return (
+                False,
+                False,
+                f"Plugin tool '{tool.name}' declares unsupported capabilities: {', '.join(unknown)}",
+            )
+
+        blocked = [item for item in capabilities if item in self.blocked_plugin_capabilities]
+        if blocked:
+            return (
+                False,
+                False,
+                f"Plugin tool '{tool.name}' declares blocked capabilities: {', '.join(blocked)}",
+            )
+
+        disallowed = [item for item in capabilities if item not in self.allowed_plugin_capabilities]
+        if disallowed:
+            return (
+                False,
+                False,
+                f"Plugin tool '{tool.name}' capabilities are not allowed by policy: {', '.join(disallowed)}",
+            )
+
+        if "filesystem_write" in capabilities and not self.filesystem_allow_write:
+            return False, False, "Plugin filesystem write is disabled by isolation policy."
+
+        requires_approval = any(
+            capability in self._plugin_capabilities_requiring_approval
+            for capability in capabilities
+        )
+        return True, requires_approval, None
+
     def describe(self) -> dict[str, Any]:
         tier_rules: dict[str, dict[str, str]] = {
             "low": {"balanced": "allow", "strict": "allow"},
@@ -166,4 +246,9 @@ class ToolIsolationPolicy:
                 "max_code_chars": self.python_exec_max_code_chars,
             },
             "filesystem_allow_write": self.filesystem_allow_write,
+            "plugin_capabilities": {
+                "allowed": sorted(self.allowed_plugin_capabilities),
+                "blocked": sorted(self.blocked_plugin_capabilities),
+                "policy": plugin_capability_policy_snapshot(),
+            },
         }

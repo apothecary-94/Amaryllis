@@ -1,0 +1,219 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import unittest
+
+
+class ReleaseQualityDashboardSnapshotTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.repo_root = Path(__file__).resolve().parents[1]
+        self.script = self.repo_root / "scripts" / "release" / "build_quality_dashboard_snapshot.py"
+
+    def _run(self, *args: str) -> subprocess.CompletedProcess[str]:
+        command = [sys.executable, str(self.script), *args]
+        return subprocess.run(
+            command,
+            cwd=str(self.repo_root),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    @staticmethod
+    def _write_json(path: Path, payload: dict) -> None:
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    def _write_reports(self, *, base: Path, perf_p95: float = 210.0) -> dict[str, Path]:
+        perf = base / "perf.json"
+        fault = base / "fault.json"
+        mission = base / "mission.json"
+        runtime = base / "runtime.json"
+
+        self._write_json(
+            perf,
+            {
+                "suite": "perf_smoke_v1",
+                "generated_at": "2026-03-21T00:00:00+00:00",
+                "summary": {
+                    "p95_latency_ms": perf_p95,
+                    "error_rate_pct": 0.0,
+                },
+                "thresholds": {
+                    "max_p95_latency_ms": 350.0,
+                    "max_error_rate_pct": 0.0,
+                },
+            },
+        )
+        self._write_json(
+            fault,
+            {
+                "suite": "fault_injection_reliability_v1",
+                "generated_at": "2026-03-21T00:00:00+00:00",
+                "summary": {
+                    "pass_rate_pct": 100.0,
+                    "min_pass_rate_pct": 100.0,
+                },
+            },
+        )
+        self._write_json(
+            mission,
+            {
+                "suite": "mission_queue_load_gate_v1",
+                "generated_at": "2026-03-21T00:00:00+00:00",
+                "config": {
+                    "min_success_rate_pct": 99.0,
+                    "max_failed_runs": 0,
+                    "max_p95_queue_wait_ms": 1500.0,
+                    "max_p95_end_to_end_ms": 5000.0,
+                },
+                "summary": {
+                    "success_rate_pct": 100.0,
+                    "failed_or_canceled": 0,
+                    "p95_queue_wait_ms": 500.0,
+                    "p95_end_to_end_ms": 1600.0,
+                },
+            },
+        )
+        self._write_json(
+            runtime,
+            {
+                "suite": "runtime_lifecycle_smoke_v1",
+                "generated_at": "2026-03-21T00:00:00+00:00",
+                "summary": {
+                    "targets_ok": True,
+                    "startup_ok": True,
+                    "checks_failed": 0,
+                },
+            },
+        )
+
+        return {
+            "perf": perf,
+            "fault": fault,
+            "mission": mission,
+            "runtime": runtime,
+        }
+
+    @staticmethod
+    def _write_baseline(path: Path) -> None:
+        payload = {
+            "suite": "release_quality_dashboard_baseline_v1",
+            "signals": [
+                {"metric_id": "perf.p95_latency_ms", "value": 350.0},
+                {"metric_id": "perf.error_rate_pct", "value": 0.0},
+                {"metric_id": "fault_injection.pass_rate_pct", "value": 100.0},
+                {"metric_id": "mission_queue.success_rate_pct", "value": 99.0},
+                {"metric_id": "mission_queue.p95_queue_wait_ms", "value": 1500.0},
+                {"metric_id": "mission_queue.p95_end_to_end_ms", "value": 5000.0},
+                {"metric_id": "mission_queue.failed_or_canceled", "value": 0.0},
+                {"metric_id": "runtime_lifecycle.targets_ok", "value": 1.0},
+                {"metric_id": "runtime_lifecycle.startup_ok", "value": 1.0},
+                {"metric_id": "runtime_lifecycle.checks_failed", "value": 0.0},
+            ],
+        }
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    def test_snapshot_and_trend_are_generated(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amaryllis-quality-dashboard-") as tmp:
+            base = Path(tmp)
+            reports = self._write_reports(base=base)
+            baseline = base / "baseline.json"
+            snapshot = base / "dashboard.json"
+            trend = base / "trend.json"
+            self._write_baseline(baseline)
+
+            proc = self._run(
+                "--perf-report",
+                str(reports["perf"]),
+                "--fault-injection-report",
+                str(reports["fault"]),
+                "--mission-queue-report",
+                str(reports["mission"]),
+                "--runtime-lifecycle-report",
+                str(reports["runtime"]),
+                "--baseline",
+                str(baseline),
+                "--output",
+                str(snapshot),
+                "--trend-output",
+                str(trend),
+                "--release-id",
+                "v-test",
+                "--release-channel",
+                "stable",
+                "--commit-sha",
+                "deadbeef",
+            )
+            self.assertEqual(proc.returncode, 0, msg=f"stdout={proc.stdout}\nstderr={proc.stderr}")
+            self.assertIn("[quality-dashboard] OK", proc.stdout)
+            self.assertTrue(snapshot.exists())
+            self.assertTrue(trend.exists())
+
+            payload = json.loads(snapshot.read_text(encoding="utf-8"))
+            self.assertEqual(payload.get("suite"), "release_quality_dashboard_v1")
+            self.assertEqual(payload.get("summary", {}).get("status"), "pass")
+            self.assertEqual(int(payload.get("summary", {}).get("signals_total", 0)), 10)
+
+            trend_payload = json.loads(trend.read_text(encoding="utf-8"))
+            self.assertEqual(trend_payload.get("suite"), "release_quality_dashboard_trend_v1")
+            self.assertEqual(int(trend_payload.get("summary", {}).get("compared_metrics", 0)), 10)
+
+    def test_snapshot_fails_when_quality_signal_breaches_threshold(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amaryllis-quality-dashboard-") as tmp:
+            base = Path(tmp)
+            reports = self._write_reports(base=base, perf_p95=900.0)
+            baseline = base / "baseline.json"
+            snapshot = base / "dashboard.json"
+            trend = base / "trend.json"
+            self._write_baseline(baseline)
+
+            proc = self._run(
+                "--perf-report",
+                str(reports["perf"]),
+                "--fault-injection-report",
+                str(reports["fault"]),
+                "--mission-queue-report",
+                str(reports["mission"]),
+                "--runtime-lifecycle-report",
+                str(reports["runtime"]),
+                "--baseline",
+                str(baseline),
+                "--output",
+                str(snapshot),
+                "--trend-output",
+                str(trend),
+            )
+            self.assertEqual(proc.returncode, 1, msg=f"stdout={proc.stdout}\nstderr={proc.stderr}")
+            self.assertIn("[quality-dashboard] FAILED", proc.stdout)
+            payload = json.loads(snapshot.read_text(encoding="utf-8"))
+            self.assertEqual(payload.get("summary", {}).get("status"), "fail")
+
+    def test_snapshot_fails_when_required_report_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amaryllis-quality-dashboard-") as tmp:
+            base = Path(tmp)
+            reports = self._write_reports(base=base)
+            snapshot = base / "dashboard.json"
+            proc = self._run(
+                "--perf-report",
+                str(reports["perf"]),
+                "--fault-injection-report",
+                str(reports["fault"]),
+                "--mission-queue-report",
+                str(base / "missing-mission.json"),
+                "--runtime-lifecycle-report",
+                str(reports["runtime"]),
+                "--output",
+                str(snapshot),
+                "--trend-output",
+                "",
+            )
+            self.assertEqual(proc.returncode, 2, msg=f"stdout={proc.stdout}\nstderr={proc.stderr}")
+            self.assertIn("missing report", proc.stderr.lower())
+
+
+if __name__ == "__main__":
+    unittest.main()

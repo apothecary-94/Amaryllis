@@ -12,6 +12,8 @@ It combines:
 
 `GET /automations/mission/templates` returns preset mission templates (`code_health`, `security_audit`, `release_guard`, `runtime_watchdog`) for low-friction planning.
 
+`GET /automations/mission/policies` returns per-mission SLO policy profiles (`balanced`, `strict`, `watchdog`, `release`).
+
 ## Endpoint
 
 ```bash
@@ -39,6 +41,8 @@ curl -X POST http://localhost:8000/automations/mission/plan \
 - `template_id` (optional): one of `code_health`, `security_audit`, `release_guard`, `runtime_watchdog`.
 - `schedule_type`, `schedule`, `interval_sec` (optional): explicit schedule override.
 - `max_attempts`, `budget` (optional): passed to dry-run simulation only.
+- `mission_policy_profile` (optional): one of `balanced`, `strict`, `watchdog`, `release`.
+- `mission_policy` (optional): profile or per-key SLO overrides (`warning_failures`, `critical_failures`, `disable_failures`, `backoff_base_sec`, `backoff_max_sec`, `circuit_failure_threshold`, `circuit_open_sec`).
 
 ## Response Shape
 
@@ -49,6 +53,7 @@ curl -X POST http://localhost:8000/automations/mission/plan \
   - `apply_payload` compatible with `POST /automations/create`.
 - `simulation`: full dry-run simulation payload.
 - `template`: selected template metadata (`id`, `name`, `description`, `risk_tags`) if template was used.
+- `mission_policy`: resolved mission SLO policy used for scheduler enforcement.
 - `apply_hint`: `{ endpoint: "/automations/create", payload: ... }`.
 
 ## Behavior
@@ -57,6 +62,7 @@ curl -X POST http://localhost:8000/automations/mission/plan \
 - For low/medium risk, `effective_start_immediately` follows user request.
 - `watch_fs` cadence requires explicit `schedule` payload with `path` and polling settings.
 - Template defaults are used when fields are omitted; explicit request fields always override template values.
+- `mission_policy` is embedded into `apply_payload` and enforced by scheduler failure/backoff/circuit thresholds per automation.
 
 ## Template Catalog
 
@@ -75,8 +81,24 @@ Each item includes:
 - `max_attempts`
 - `budget`
 - `risk_tags`
+- `mission_policy_profile`
+
+## Mission Policy Catalog
+
+```bash
+curl http://localhost:8000/automations/mission/policies
+```
+
+Each item includes:
+
+- `id`
+- `name`
+- `description`
+- `slo`
 
 ## Related Tests
 
+- `tests/test_mission_policy.py`
 - `tests/test_mission_planner.py`
 - `tests/test_automation_mission_plan_api.py`
+- `tests/test_automation_scheduler.py`

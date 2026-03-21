@@ -194,6 +194,79 @@ class AutomationSchedulerTests(unittest.TestCase):
         self.assertIn("Automation in critical failure state", titles)
         self.assertIn("Automation disabled after failures", titles)
 
+    def test_mission_policy_overlay_enforces_custom_failure_thresholds(self) -> None:
+        automation = self.scheduler.create_automation(
+            agent_id=self.agent.id,
+            user_id="user-1",
+            session_id=None,
+            message="policy controlled",
+            interval_sec=60,
+            start_immediately=False,
+            mission_policy={
+                "profile": "balanced",
+                "slo": {
+                    "warning_failures": 2,
+                    "critical_failures": 3,
+                    "disable_failures": 4,
+                    "backoff_base_sec": 1,
+                    "backoff_max_sec": 1,
+                    "circuit_failure_threshold": 4,
+                    "circuit_open_sec": 1,
+                },
+            },
+        )
+        self.database.delete_agent(self.agent.id)
+
+        for index in range(1, 5):
+            with self.assertRaises(ValueError):
+                self.scheduler.run_now(automation["id"])
+            row = self.database.get_automation(automation["id"])
+            self.assertIsNotNone(row)
+            assert row is not None
+            self.assertEqual(int(row["consecutive_failures"]), index)
+            if index == 1:
+                self.assertEqual(str(row["escalation_level"]), "none")
+                self.assertTrue(bool(row["is_enabled"]))
+            if index == 2:
+                self.assertEqual(str(row["escalation_level"]), "warning")
+                self.assertTrue(bool(row["is_enabled"]))
+            if index == 3:
+                self.assertEqual(str(row["escalation_level"]), "critical")
+                self.assertTrue(bool(row["is_enabled"]))
+            if index == 4:
+                self.assertEqual(str(row["escalation_level"]), "critical")
+                self.assertFalse(bool(row["is_enabled"]))
+
+    def test_health_snapshot_reports_mission_policy_profiles(self) -> None:
+        strict = self.scheduler.create_automation(
+            agent_id=self.agent.id,
+            user_id="user-1",
+            session_id="strict",
+            message="strict mission",
+            interval_sec=60,
+            start_immediately=False,
+            mission_policy={"profile": "strict"},
+        )
+        balanced = self.scheduler.create_automation(
+            agent_id=self.agent.id,
+            user_id="user-1",
+            session_id="balanced",
+            message="balanced mission",
+            interval_sec=60,
+            start_immediately=False,
+        )
+        self.assertIsNotNone(strict.get("mission_policy"))
+        self.assertIsNotNone(balanced.get("mission_policy"))
+
+        health = self.scheduler.health_snapshot(user_id="user-1", limit=50)
+        scheduler_block = health.get("scheduler", {})
+        self.assertIsInstance(scheduler_block, dict)
+        assert isinstance(scheduler_block, dict)
+        profiles = scheduler_block.get("mission_policy_profiles", {})
+        self.assertIsInstance(profiles, dict)
+        assert isinstance(profiles, dict)
+        self.assertGreaterEqual(int(profiles.get("strict", 0)), 1)
+
     def test_mark_inbox_item_read_and_unread(self) -> None:
         item = self.database.add_inbox_item(
             user_id="user-1",

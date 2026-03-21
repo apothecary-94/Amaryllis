@@ -56,6 +56,9 @@ Implemented in this version:
 - lease/CAS ownership for agent runs (single-owner execution under concurrent workers)
 - mission simulation mode before apply with risk/rollback preview and signed dry-run receipt (`POST /agents/{agent_id}/runs/simulate`)
 - mission template catalog for automation planning (`GET /automations/mission/templates`) with defaults (`code_health`, `security_audit`, `release_guard`, `runtime_watchdog`)
+- mission policy catalog for per-automation SLO overlays (`GET /automations/mission/policies`) with enforcement profiles (`balanced`, `strict`, `watchdog`, `release`)
+- plugin compatibility contract + capability isolation policy (`compat` + `capabilities` manifest fields, fail-fast discovery validation)
+- release/nightly public quality artifacts: release quality dashboard snapshot + mission success/recovery report pack
 - compact run diagnostics endpoint for mission postmortem (`GET /agents/runs/{run_id}/diagnostics`)
 - voice push-to-talk session contract with explicit state transitions (`created -> listening -> stopping -> stopped`)
 - pluggable local STT adapter layer (`whisper_python` backend + graceful unavailable mode)
@@ -289,7 +292,12 @@ Reference:
 - `docs/release-provenance-sbom.md`
 - `docs/mission-simulation-mode.md`
 - `docs/mission-planner.md`
+- `docs/automation-mission-policy.md`
+- `docs/plugin-compat-contract.md`
+- `docs/plugin-capability-policy.md`
 - `docs/dynamic-mission-budgets.md`
+- `docs/release-quality-dashboard.md`
+- `docs/mission-success-recovery-report-pack.md`
 - `docs/linux-runtime-installer.md`
 - `docs/linux-release-channels.md`
 - `docs/runtime-lifecycle-contract.md`
@@ -1017,6 +1025,7 @@ Implemented now:
   - `POST /mcp/tools/{tool_name}/invoke`
 - MCP client aggregation from remote MCP endpoints into local tool registry
 - signed plugin manifest verification modes (`off|warn|strict`) with discovery report
+- plugin capability isolation matrix with discovery/runtime policy gates (`filesystem_read|filesystem_write|network|process`)
 - MCP endpoint health scoring with automatic temporary quarantine on repeated failures
 - structured tool execution trace (`status`, `duration_ms`, `permission_prompt_id`) in chat responses
 - telemetry events for tool controls:
@@ -1047,6 +1056,7 @@ Implemented now:
   - triage inbox notifications and mark read/unread
 - mission planner endpoint for risk-aware preflight before schedule creation (`POST /automations/mission/plan`)
 - mission template catalog endpoint for prebuilt planning profiles (`GET /automations/mission/templates`)
+- mission policy catalog endpoint for per-mission reliability envelopes (`GET /automations/mission/policies`)
 
 Automation API:
 
@@ -1065,6 +1075,9 @@ curl -X POST http://localhost:8000/automations/mission/plan \
 
 # list mission templates
 curl http://localhost:8000/automations/mission/templates
+
+# list mission policy profiles
+curl http://localhost:8000/automations/mission/policies
 
 # plan mission from template defaults (message/cadence inferred)
 curl -X POST http://localhost:8000/automations/mission/plan \
@@ -1320,6 +1333,12 @@ In sandboxed mode, plugin manifest must include `tool` descriptor:
 {
   "name": "example_plugin",
   "version": "1.0.0",
+  "compat": {
+    "manifest_version": "v1",
+    "tool_registry_api": "v1",
+    "runtime_modes": ["sandboxed", "legacy"]
+  },
+  "capabilities": ["filesystem_read", "filesystem_write"],
   "tool": {
     "name": "example_tool",
     "description": "Example plugin tool",
@@ -1330,6 +1349,14 @@ In sandboxed mode, plugin manifest must include `tool` descriptor:
   }
 }
 ```
+
+Compatibility contract is enforced during discovery. If `compat` is missing or incompatible,
+the plugin is blocked before loading with actionable reason in plugin discovery report
+(`compat_incompatible:*`).
+
+Capability policy is also enforced during discovery and execution. Unsupported or blocked
+capabilities are rejected (`capability_incompatible:*`), and runtime policy gates can block
+declared capabilities (for example `network`) unless explicitly allowed.
 
 `tool.py` must expose:
 - `execute(arguments, context)` (or `execute(arguments)` fallback)
@@ -1365,7 +1392,7 @@ python3 scripts/eval/run_golden_tasks.py --max-tasks 5 --strict
 Blocking performance smoke gate (chat/run/voice/stream critical paths + p95/error-rate budget):
 
 ```bash
-python3 scripts/release/perf_smoke_gate.py --iterations 3 --max-p95-latency-ms 350 --max-error-rate-pct 0
+python3 scripts/release/perf_smoke_gate.py --iterations 3 --max-p95-latency-ms 350 --max-error-rate-pct 0 --output artifacts/perf-smoke-report.json
 ```
 
 Blocking fault-injection reliability gate (provider/network/tool fault classes + retry/recovery assertions):
@@ -1378,6 +1405,18 @@ Blocking mission queue concurrency/load gate (queue-drain + p95 queue wait/end-t
 
 ```bash
 python3 scripts/release/mission_queue_load_gate.py --runs-total 40 --submit-concurrency 8 --worker-count 4 --task-latency-ms 35 --scenario-timeout-sec 30 --min-success-rate-pct 99 --max-failed-runs 0 --max-p95-queue-wait-ms 1500 --max-p95-end-to-end-ms 5000 --output artifacts/mission-queue-load-report.json
+```
+
+Release quality dashboard snapshot (normalized benchmark artifact + trend delta):
+
+```bash
+python3 scripts/release/build_quality_dashboard_snapshot.py --perf-report artifacts/perf-smoke-report.json --fault-injection-report artifacts/fault-injection-reliability-report.json --mission-queue-report artifacts/mission-queue-load-report.json --runtime-lifecycle-report artifacts/runtime-lifecycle-smoke-report.json --baseline eval/baselines/quality/release_quality_dashboard_baseline.json --output artifacts/release-quality-dashboard.json --trend-output artifacts/release-quality-dashboard-trend.json
+```
+
+Mission success/recovery report pack (public KPI snapshot for release/nightly):
+
+```bash
+python3 scripts/release/build_mission_success_recovery_report.py --mission-queue-report artifacts/mission-queue-load-report.json --fault-injection-report artifacts/fault-injection-reliability-report.json --quality-dashboard-report artifacts/release-quality-dashboard.json --scope release --output artifacts/mission-success-recovery-report.json
 ```
 
 Linux parity smoke gate (run/voice/tools/observability acceptance on Linux target):
@@ -1403,6 +1442,8 @@ Reference:
 - `docs/nightly-slo-burn-rate-gate.md`
 - `docs/fault-injection-reliability.md`
 - `docs/mission-queue-load-gate.md`
+- `docs/release-quality-dashboard.md`
+- `docs/mission-success-recovery-report-pack.md`
 
 Autonomy level contract (L0-L5):
 

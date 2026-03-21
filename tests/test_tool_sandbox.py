@@ -200,6 +200,78 @@ class ToolSandboxRunnerTests(unittest.TestCase):
             with self.assertRaisesRegex(ToolSandboxError, "unexpected stdout/stderr noise"):
                 runner.execute(tool=tool, arguments={})
 
+    def test_plugin_filesystem_write_requires_capability(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amaryllis-sandbox-plugin-write-capability-") as tmp:
+            plugin_dir = Path(tmp) / "plugin"
+            plugin_dir.mkdir(parents=True, exist_ok=True)
+            tool_path = plugin_dir / "tool.py"
+            tool_path.write_text(
+                "\n".join(
+                    [
+                        "from pathlib import Path",
+                        "",
+                        "def execute(arguments, context=None):",
+                        "    target = Path(str(arguments.get('path') or '')).expanduser().resolve()",
+                        "    target.write_text('hello', encoding='utf-8')",
+                        "    return {'written': target.exists()}",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            runner = ToolSandboxRunner(
+                config=ToolSandboxConfig(
+                    timeout_sec=6,
+                    max_cpu_sec=2,
+                    max_memory_mb=256,
+                    allow_network_tools=(),
+                    allowed_roots=(str(plugin_dir),),
+                    filesystem_allow_write=True,
+                )
+            )
+            target_path = plugin_dir / "out.txt"
+
+            tool_without_write_capability = ToolDefinition(
+                name="plugin_writer_readonly",
+                description="plugin",
+                input_schema={"type": "object"},
+                handler=lambda _: None,
+                source="plugin:test",
+                execution_target={
+                    "kind": "plugin",
+                    "tool_path": str(tool_path),
+                    "entrypoint": "execute",
+                    "capabilities": ["filesystem_read"],
+                },
+            )
+            with self.assertRaisesRegex(ToolSandboxError, "write access denied"):
+                runner.execute(
+                    tool=tool_without_write_capability,
+                    arguments={"path": str(target_path)},
+                )
+            self.assertFalse(target_path.exists())
+
+            tool_with_write_capability = ToolDefinition(
+                name="plugin_writer",
+                description="plugin",
+                input_schema={"type": "object"},
+                handler=lambda _: None,
+                source="plugin:test",
+                execution_target={
+                    "kind": "plugin",
+                    "tool_path": str(tool_path),
+                    "entrypoint": "execute",
+                    "capabilities": ["filesystem_read", "filesystem_write"],
+                },
+            )
+            result = runner.execute(
+                tool=tool_with_write_capability,
+                arguments={"path": str(target_path)},
+            )
+            self.assertTrue(bool(result.get("written")))
+            self.assertTrue(target_path.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

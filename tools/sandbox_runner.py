@@ -105,9 +105,13 @@ class ToolSandboxRunner:
         return decoded.get("result")
 
     def _limits_for_tool(self, tool: ToolDefinition) -> dict[str, Any]:
-        allow_network = tool.name in set(self.config.allow_network_tools)
+        allow_network_tools = set(self.config.allow_network_tools)
+        allow_network = tool.name in allow_network_tools
+        allow_write = bool(self.config.filesystem_allow_write)
         if str(tool.source).startswith("plugin:"):
-            allow_network = False
+            capabilities = self._plugin_capabilities(tool)
+            allow_network = "network" in capabilities and tool.name in allow_network_tools
+            allow_write = bool(self.config.filesystem_allow_write and "filesystem_write" in capabilities)
         allowed_roots = [
             str(Path(item).expanduser().resolve())
             for item in self.config.allowed_roots
@@ -122,8 +126,16 @@ class ToolSandboxRunner:
             "max_code_chars": max(100, int(self.config.max_python_code_chars)),
             "allow_network": bool(allow_network),
             "allowed_roots": allowed_roots,
-            "filesystem_allow_write": bool(self.config.filesystem_allow_write),
+            "filesystem_allow_write": bool(allow_write),
         }
+
+    @staticmethod
+    def _plugin_capabilities(tool: ToolDefinition) -> set[str]:
+        target = tool.execution_target if isinstance(tool.execution_target, dict) else {}
+        raw = target.get("capabilities")
+        if not isinstance(raw, list):
+            return set()
+        return {str(item).strip().lower() for item in raw if str(item).strip()}
 
     @staticmethod
     def _sandbox_env() -> dict[str, str]:

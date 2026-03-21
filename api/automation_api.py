@@ -6,6 +6,7 @@ from fastapi import APIRouter, Path, Query, Request
 from pydantic import BaseModel, Field
 
 from automation.mission_planner import apply_mission_template, build_mission_plan, list_mission_templates
+from automation.mission_policy import list_mission_policy_profiles
 from runtime.auth import assert_owner, auth_context_from_request, resolve_user_id
 from runtime.errors import AmaryllisError, NotFoundError, ProviderError, ValidationError
 
@@ -52,6 +53,7 @@ class CreateAutomationRequest(BaseModel):
     schedule: dict[str, Any] = Field(default_factory=dict)
     timezone: str = Field(default="UTC", min_length=1)
     start_immediately: bool = False
+    mission_policy: dict[str, Any] = Field(default_factory=dict)
 
 
 class PlanMissionRequest(BaseModel):
@@ -68,6 +70,8 @@ class PlanMissionRequest(BaseModel):
     interval_sec: int | None = Field(default=None, ge=10, le=86400)
     max_attempts: int | None = Field(default=None, ge=1, le=10)
     budget: dict[str, Any] = Field(default_factory=dict)
+    mission_policy_profile: str | None = None
+    mission_policy: dict[str, Any] = Field(default_factory=dict)
 
 
 @router.get("/automations/mission/templates")
@@ -77,6 +81,17 @@ def mission_templates(request: Request) -> dict[str, Any]:
     return {
         "items": templates,
         "count": len(templates),
+        "request_id": _request_id(request),
+    }
+
+
+@router.get("/automations/mission/policies")
+def mission_policy_profiles(request: Request) -> dict[str, Any]:
+    auth_context_from_request(request)
+    policies = list_mission_policy_profiles()
+    return {
+        "items": policies,
+        "count": len(policies),
         "request_id": _request_id(request),
     }
 
@@ -107,6 +122,8 @@ def plan_mission(payload: PlanMissionRequest, request: Request) -> dict[str, Any
             interval_sec=payload.interval_sec,
             max_attempts=payload.max_attempts,
             budget=payload.budget,
+            mission_policy_profile=payload.mission_policy_profile,
+            mission_policy=payload.mission_policy,
         )
 
         simulation = services.agent_manager.simulate_run(
@@ -133,6 +150,12 @@ def plan_mission(payload: PlanMissionRequest, request: Request) -> dict[str, Any
         selected_template = resolved.get("template")
         if isinstance(selected_template, dict):
             mission_plan["template"] = selected_template
+        resolved_mission_policy = resolved.get("mission_policy")
+        if isinstance(resolved_mission_policy, dict):
+            mission_plan["mission_policy"] = resolved_mission_policy
+            apply_payload = mission_plan.get("apply_payload")
+            if isinstance(apply_payload, dict):
+                apply_payload["mission_policy"] = dict(resolved_mission_policy)
         receipt = _sign_action(
             request,
             action="automation_plan_mission",
@@ -144,6 +167,7 @@ def plan_mission(payload: PlanMissionRequest, request: Request) -> dict[str, Any
             "mission_plan": mission_plan,
             "simulation": simulation,
             "template": selected_template,
+            "mission_policy": resolved_mission_policy,
             "apply_hint": {
                 "endpoint": "/automations/create",
                 "payload": mission_plan.get("apply_payload", {}),
@@ -204,6 +228,7 @@ def create_automation(payload: CreateAutomationRequest, request: Request) -> dic
             schedule=payload.schedule,
             timezone_name=payload.timezone,
             start_immediately=payload.start_immediately,
+            mission_policy=payload.mission_policy,
         )
         receipt = _sign_action(
             request,
@@ -250,6 +275,7 @@ class UpdateAutomationRequest(BaseModel):
     schedule_type: str | None = None
     schedule: dict[str, Any] | None = None
     timezone: str | None = None
+    mission_policy: dict[str, Any] | None = None
 
 
 @router.post("/automations/{automation_id}/update")
@@ -278,6 +304,7 @@ def update_automation(
             schedule_type=payload.schedule_type,
             schedule=payload.schedule,
             timezone_name=payload.timezone,
+            mission_policy=payload.mission_policy,
         )
         receipt = _sign_action(
             request,

@@ -801,6 +801,13 @@ MIGRATIONS: list[Migration] = [
             ON filesystem_patch_previews(status, expires_at);
         """,
     ),
+    Migration(
+        version=18,
+        name="automation_mission_policy_v1",
+        sql="""
+        ALTER TABLE automations ADD COLUMN mission_policy_json TEXT NOT NULL DEFAULT '{}';
+        """,
+    ),
 ]
 
 

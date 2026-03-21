@@ -9,6 +9,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from tools.plugin_capabilities import plugin_capability_policy_snapshot, validate_plugin_manifest_capabilities
+from tools.plugin_compat import plugin_compat_contract_snapshot, validate_plugin_manifest_compat
+
 
 @dataclass(frozen=True)
 class ToolDefinition:
@@ -132,6 +135,10 @@ class ToolRegistry:
                     status="skipped",
                     reason=f"manifest_invalid:{exc}",
                     signature_state="manifest_invalid",
+                    compat_state="manifest_invalid",
+                    compat_reason=f"manifest_invalid:{exc}",
+                    capability_state="manifest_invalid",
+                    capability_reason=f"manifest_invalid:{exc}",
                 )
                 continue
 
@@ -142,6 +149,43 @@ class ToolRegistry:
                     status="skipped",
                     reason="manifest_must_be_object",
                     signature_state="manifest_invalid",
+                    compat_state="manifest_invalid",
+                    compat_reason="manifest_must_be_object",
+                    capability_state="manifest_invalid",
+                    capability_reason="manifest_must_be_object",
+                )
+                continue
+
+            compat = validate_plugin_manifest_compat(
+                manifest=manifest,
+                runtime_mode=self.plugin_runtime_mode,
+            )
+            if not compat.ok:
+                self.logger.error("plugin_compat_incompatible plugin=%s reason=%s", item.name, compat.reason)
+                self._record_plugin_event(
+                    plugin=item.name,
+                    status="blocked",
+                    reason=f"compat_incompatible:{compat.reason}",
+                    signature_state="not_checked",
+                    compat_state="incompatible",
+                    compat_reason=compat.reason,
+                    capability_state="not_checked",
+                    capability_reason="compatibility_failed_before_capability_checks",
+                )
+                continue
+
+            capability = validate_plugin_manifest_capabilities(manifest=manifest)
+            if not capability.ok:
+                self.logger.error("plugin_capability_incompatible plugin=%s reason=%s", item.name, capability.reason)
+                self._record_plugin_event(
+                    plugin=item.name,
+                    status="blocked",
+                    reason=f"capability_incompatible:{capability.reason}",
+                    signature_state="not_checked",
+                    compat_state="compatible",
+                    compat_reason=compat.reason,
+                    capability_state="incompatible",
+                    capability_reason=capability.reason,
                 )
                 continue
 
@@ -152,6 +196,10 @@ class ToolRegistry:
                     status="blocked",
                     reason=reason,
                     signature_state=signature_state,
+                    compat_state="compatible",
+                    compat_reason=compat.reason,
+                    capability_state="valid",
+                    capability_reason=capability.reason,
                 )
                 continue
 
@@ -161,6 +209,7 @@ class ToolRegistry:
                         plugin_name=item.name,
                         plugin_dir=item,
                         manifest=manifest,
+                        capabilities=list(capability.capabilities),
                     )
                     self.logger.info("plugin_loaded plugin=%s mode=sandboxed", item.name)
                     self._record_plugin_event(
@@ -168,6 +217,10 @@ class ToolRegistry:
                         status="loaded",
                         reason="ok",
                         signature_state=signature_state,
+                        compat_state="compatible",
+                        compat_reason=compat.reason,
+                        capability_state="valid",
+                        capability_reason=capability.reason,
                     )
                 except Exception as exc:
                     self.logger.error("plugin_register_failed plugin=%s mode=sandboxed error=%s", item.name, exc)
@@ -176,6 +229,10 @@ class ToolRegistry:
                         status="failed",
                         reason=f"register_failed:{exc}",
                         signature_state=signature_state,
+                        compat_state="compatible",
+                        compat_reason=compat.reason,
+                        capability_state="valid",
+                        capability_reason=capability.reason,
                     )
                 continue
 
@@ -192,6 +249,10 @@ class ToolRegistry:
                     status="failed",
                     reason=f"load_failed:{exc}",
                     signature_state=signature_state,
+                    compat_state="compatible",
+                    compat_reason=compat.reason,
+                    capability_state="valid",
+                    capability_reason=capability.reason,
                 )
                 continue
 
@@ -208,6 +269,10 @@ class ToolRegistry:
                     status="loaded",
                     reason="ok",
                     signature_state=signature_state,
+                    compat_state="compatible",
+                    compat_reason=compat.reason,
+                    capability_state="valid",
+                    capability_reason=capability.reason,
                 )
             except Exception as exc:
                 self.logger.error("plugin_register_failed plugin=%s error=%s", item.name, exc)
@@ -216,6 +281,10 @@ class ToolRegistry:
                     status="failed",
                     reason=f"register_failed:{exc}",
                     signature_state=signature_state,
+                    compat_state="compatible",
+                    compat_reason=compat.reason,
+                    capability_state="valid",
+                    capability_reason=capability.reason,
                 )
 
     def plugin_discovery_report(self, limit: int = 200) -> dict[str, Any]:
@@ -226,16 +295,43 @@ class ToolRegistry:
             "failed": 0,
             "skipped": 0,
         }
+        compat_summary = {
+            "compatible": 0,
+            "incompatible": 0,
+            "manifest_invalid": 0,
+            "unknown": 0,
+        }
+        capability_summary = {
+            "valid": 0,
+            "incompatible": 0,
+            "not_checked": 0,
+            "manifest_invalid": 0,
+            "unknown": 0,
+        }
         for item in rows:
             status = str(item.get("status") or "").strip().lower()
             if status in summary:
                 summary[status] += 1
+            compat_state = str(item.get("compat_state") or "").strip().lower()
+            if compat_state in compat_summary:
+                compat_summary[compat_state] += 1
+            else:
+                compat_summary["unknown"] += 1
+            capability_state = str(item.get("capability_state") or "").strip().lower()
+            if capability_state in capability_summary:
+                capability_summary[capability_state] += 1
+            else:
+                capability_summary["unknown"] += 1
         return {
             "signing_mode": self.plugin_signing_mode,
             "runtime_mode": self.plugin_runtime_mode,
             "signing_key_configured": self.plugin_signing_key is not None,
+            "compat_contract": plugin_compat_contract_snapshot(),
+            "capability_policy": plugin_capability_policy_snapshot(),
             "events": rows,
             "summary": summary,
+            "compat_summary": compat_summary,
+            "capability_summary": capability_summary,
         }
 
     def _register_sandboxed_plugin(
@@ -244,6 +340,7 @@ class ToolRegistry:
         plugin_name: str,
         plugin_dir: Path,
         manifest: dict[str, Any],
+        capabilities: list[str] | None = None,
     ) -> None:
         tool_descriptor = manifest.get("tool")
         if not isinstance(tool_descriptor, dict):
@@ -267,6 +364,13 @@ class ToolRegistry:
         tool_path = (plugin_dir / "tool.py").resolve()
         if not tool_path.is_file():
             raise RuntimeError("Sandboxed plugin tool.py is missing")
+        normalized_capabilities = [str(item).strip().lower() for item in (capabilities or []) if str(item).strip()]
+        if not normalized_capabilities:
+            capabilities_raw = manifest.get("capabilities")
+            if isinstance(capabilities_raw, list):
+                normalized_capabilities = [str(item).strip().lower() for item in capabilities_raw if str(item).strip()]
+        if not normalized_capabilities:
+            raise RuntimeError("Sandboxed plugin capabilities are invalid")
 
         def _sandbox_proxy_handler(_: dict[str, Any]) -> dict[str, Any]:
             raise RuntimeError("Sandboxed plugin cannot execute in-process")
@@ -286,6 +390,7 @@ class ToolRegistry:
                 "plugin_dir": str(plugin_dir.resolve()),
                 "tool_path": str(tool_path),
                 "entrypoint": entrypoint,
+                "capabilities": sorted(set(normalized_capabilities)),
             },
         )
 
@@ -339,6 +444,10 @@ class ToolRegistry:
         status: str,
         reason: str,
         signature_state: str,
+        compat_state: str = "unknown",
+        compat_reason: str | None = None,
+        capability_state: str = "unknown",
+        capability_reason: str | None = None,
     ) -> None:
         self._plugin_events.append(
             {
@@ -346,5 +455,9 @@ class ToolRegistry:
                 "status": status,
                 "reason": reason,
                 "signature_state": signature_state,
+                "compat_state": compat_state,
+                "compat_reason": compat_reason or "",
+                "capability_state": capability_state,
+                "capability_reason": capability_reason or "",
             }
         )

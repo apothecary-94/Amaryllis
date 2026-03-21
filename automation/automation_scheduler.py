@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from agents.agent import Agent
 from agents.agent_run_manager import AgentRunManager
+from automation.mission_policy import resolve_mission_policy_overlay
 from automation.schedule import compute_next_run_at, normalize_schedule, validate_timezone
 from storage.database import Database
 
@@ -114,6 +115,7 @@ class AutomationScheduler:
         schedule: dict[str, Any] | None = None,
         timezone_name: str = "UTC",
         start_immediately: bool = False,
+        mission_policy: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         self._assert_agent_owner(agent_id=agent_id, user_id=user_id)
 
@@ -127,6 +129,10 @@ class AutomationScheduler:
         if normalized_type == "watch_fs" and "last_seen_mtime_ns" not in raw_schedule:
             normalized_schedule["last_seen_mtime_ns"] = self._current_watch_cursor(normalized_schedule)
         normalized_timezone = validate_timezone(timezone_name)
+        normalized_policy = resolve_mission_policy_overlay(
+            policy=mission_policy if isinstance(mission_policy, dict) else {},
+            defaults=self._default_mission_policy(),
+        )
 
         now = self._utc_now()
         next_run_at = (
@@ -152,13 +158,15 @@ class AutomationScheduler:
                 schedule_type=normalized_type,
                 schedule=normalized_schedule,
                 timezone_name=normalized_timezone,
+                mission_policy=normalized_policy,
             )
             self.database.add_automation_event(
                 automation_id=automation_id,
                 event_type="created",
                 message=(
                     f"Automation created "
-                    f"(schedule_type={normalized_type}, timezone={normalized_timezone})."
+                    f"(schedule_type={normalized_type}, timezone={normalized_timezone}, "
+                    f"policy={normalized_policy.get('profile')})."
                 ),
             )
         self._emit(
@@ -169,6 +177,7 @@ class AutomationScheduler:
                 "user_id": user_id,
                 "schedule_type": normalized_type,
                 "timezone": normalized_timezone,
+                "mission_policy_profile": str(normalized_policy.get("profile") or "unknown"),
             },
         )
         created = self.database.get_automation(automation_id)
@@ -185,6 +194,7 @@ class AutomationScheduler:
         schedule_type: str | None = None,
         schedule: dict[str, Any] | None = None,
         timezone_name: str | None = None,
+        mission_policy: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         automation = self.database.get_automation(automation_id)
         if automation is None:
@@ -223,6 +233,11 @@ class AutomationScheduler:
             updates["message"] = message
         if session_id is not None:
             updates["session_id"] = session_id
+        if mission_policy is not None:
+            updates["mission_policy_json"] = resolve_mission_policy_overlay(
+                policy=mission_policy,
+                defaults=self._default_mission_policy(),
+            )
 
         if bool(automation.get("is_enabled", False)):
             updates["next_run_at"] = compute_next_run_at(
@@ -239,7 +254,8 @@ class AutomationScheduler:
                 event_type="updated",
                 message=(
                     f"Automation updated "
-                    f"(schedule_type={normalized_type}, timezone={normalized_timezone})."
+                    f"(schedule_type={normalized_type}, timezone={normalized_timezone}"
+                    f"{', policy=' + str(updates['mission_policy_json'].get('profile')) if 'mission_policy_json' in updates else ''})."
                 ),
             )
         updated = self.database.get_automation(automation_id)
@@ -379,6 +395,7 @@ class AutomationScheduler:
         lease_active_count = 0
         backoff_active_count = 0
         circuit_open_count = 0
+        mission_policy_profiles: dict[str, int] = {}
         for automation in automations:
             if bool(automation.get("is_enabled", False)):
                 enabled_count += 1
@@ -393,6 +410,12 @@ class AutomationScheduler:
                 backoff_active_count += 1
             if self._is_future_timestamp(automation.get("circuit_open_until"), now=now):
                 circuit_open_count += 1
+            policy = automation.get("mission_policy")
+            if isinstance(policy, dict):
+                profile = str(policy.get("profile") or "").strip().lower() or "scheduler_default"
+            else:
+                profile = "scheduler_default"
+            mission_policy_profiles[profile] = int(mission_policy_profiles.get(profile, 0)) + 1
 
         event_breakdown: dict[str, int] = {}
         for event in events:
@@ -452,6 +475,7 @@ class AutomationScheduler:
                 "backoff_max_sec": self.backoff_max_sec,
                 "circuit_failure_threshold": self.circuit_failure_threshold,
                 "circuit_open_sec": self.circuit_open_sec,
+                "mission_policy_profiles": mission_policy_profiles,
             },
         }
 
@@ -518,6 +542,9 @@ class AutomationScheduler:
         user_id = str(automation["user_id"])
         previous_failures = max(0, int(automation.get("consecutive_failures", 0)))
         previous_level = str(automation.get("escalation_level", "none")).strip().lower() or "none"
+        mission_policy = self._effective_mission_policy(automation)
+        mission_slo = mission_policy["slo"]
+        mission_policy_profile = str(mission_policy.get("profile") or "scheduler_default")
         source_name = str(source or "scheduled").strip().lower() or "scheduled"
         scheduled_slot = now_iso if source_name == "manual" else str(automation.get("next_run_at") or now_iso)
         dispatch_key = self._build_dispatch_key(
@@ -678,18 +705,29 @@ class AutomationScheduler:
                     "source": source_name,
                     "schedule_type": schedule_type,
                     "dispatch_key": dispatch_key,
+                    "mission_policy_profile": mission_policy_profile,
                 },
             )
         except Exception as exc:
             error = str(exc)
             failures = previous_failures + 1
-            level = self._escalation_level_for_failures(failures)
-            disable_now = failures >= self.escalation_disable_threshold
-            backoff_seconds = self._backoff_seconds_for_failures(failures)
+            level = self._escalation_level_for_failures(
+                failures,
+                warning_threshold=int(mission_slo["warning_failures"]),
+                critical_threshold=int(mission_slo["critical_failures"]),
+            )
+            disable_now = failures >= int(mission_slo["disable_failures"])
+            backoff_seconds = self._backoff_seconds_for_failures(
+                failures,
+                base_sec=float(mission_slo["backoff_base_sec"]),
+                max_sec=float(mission_slo["backoff_max_sec"]),
+            )
             backoff_until = (now + timedelta(seconds=backoff_seconds)).isoformat()
             circuit_open_until = None
-            if failures >= self.circuit_failure_threshold:
-                circuit_open_until = (now + timedelta(seconds=self.circuit_open_sec)).isoformat()
+            if failures >= int(mission_slo["circuit_failure_threshold"]):
+                circuit_open_until = (
+                    now + timedelta(seconds=float(mission_slo["circuit_open_sec"]))
+                ).isoformat()
             retry_next = compute_next_run_at(
                 schedule_type="interval",
                 schedule={"interval_sec": max(interval_sec, 30)},
@@ -738,6 +776,7 @@ class AutomationScheduler:
                     failures=failures,
                     level=level,
                     disabled=disable_now,
+                    mission_policy_profile=mission_policy_profile,
                 )
             self._emit(
                 "automation_run_error",
@@ -751,14 +790,15 @@ class AutomationScheduler:
                     "backoff_sec": backoff_seconds,
                     "circuit_open_until": circuit_open_until,
                     "dispatch_key": dispatch_key,
+                    "mission_policy_profile": mission_policy_profile,
                 },
             )
             raise
 
-    def _backoff_seconds_for_failures(self, failures: int) -> float:
+    def _backoff_seconds_for_failures(self, failures: int, *, base_sec: float, max_sec: float) -> float:
         exponent = max(0, int(failures) - 1)
-        value = float(self.backoff_base_sec) * float(2**exponent)
-        return float(min(self.backoff_max_sec, value))
+        value = float(base_sec) * float(2**exponent)
+        return float(min(max_sec, value))
 
     def _assert_agent_owner(self, *, agent_id: str, user_id: str) -> None:
         agent = self.database.get_agent(agent_id)
@@ -879,12 +919,49 @@ class AutomationScheduler:
         updated_schedule["last_seen_mtime_ns"] = max_seen
         return changed_files, updated_schedule
 
-    def _escalation_level_for_failures(self, failures: int) -> str:
-        if failures >= self.escalation_critical_threshold:
+    def _escalation_level_for_failures(
+        self,
+        failures: int,
+        *,
+        warning_threshold: int,
+        critical_threshold: int,
+    ) -> str:
+        if failures >= critical_threshold:
             return "critical"
-        if failures >= self.escalation_warning_threshold:
+        if failures >= warning_threshold:
             return "warning"
         return "none"
+
+    def _default_mission_policy(self) -> dict[str, Any]:
+        return {
+            "profile": "scheduler_default",
+            "slo": {
+                "warning_failures": int(self.escalation_warning_threshold),
+                "critical_failures": int(self.escalation_critical_threshold),
+                "disable_failures": int(self.escalation_disable_threshold),
+                "backoff_base_sec": float(self.backoff_base_sec),
+                "backoff_max_sec": float(self.backoff_max_sec),
+                "circuit_failure_threshold": int(self.circuit_failure_threshold),
+                "circuit_open_sec": float(self.circuit_open_sec),
+            },
+        }
+
+    def _effective_mission_policy(self, automation: dict[str, Any]) -> dict[str, Any]:
+        raw = automation.get("mission_policy")
+        if not isinstance(raw, dict):
+            raw = {}
+        try:
+            return resolve_mission_policy_overlay(
+                policy=raw,
+                defaults=self._default_mission_policy(),
+            )
+        except ValueError as exc:
+            self.logger.warning(
+                "automation_policy_invalid automation_id=%s error=%s",
+                str(automation.get("id") or ""),
+                exc,
+            )
+            return self._default_mission_policy()
 
     def _notify_watch_triggered(
         self,
@@ -928,6 +1005,7 @@ class AutomationScheduler:
         failures: int,
         level: str,
         disabled: bool,
+        mission_policy_profile: str,
     ) -> None:
         if disabled:
             title = "Automation disabled after failures"
@@ -966,6 +1044,7 @@ class AutomationScheduler:
                 "consecutive_failures": failures,
                 "escalation_level": level,
                 "disabled": disabled,
+                "mission_policy_profile": mission_policy_profile,
             },
             requires_action=requires_action,
         )

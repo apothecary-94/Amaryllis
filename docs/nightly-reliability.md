@@ -49,6 +49,12 @@ Burn-rate gate output artifact:
 artifacts/nightly-burn-rate-gate-report.json
 ```
 
+Mission success/recovery report pack artifact:
+
+```text
+artifacts/nightly-mission-success-recovery-report.json
+```
+
 Report includes:
 - `summary`: total/failed requests, success/error rate, avg/p95 latency, jitter, stability score.
 - `trend_deltas`: deltas vs baseline metrics.

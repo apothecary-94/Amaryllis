@@ -62,6 +62,12 @@ def _install_filesystem_guard(*, roots: list[Path], allow_write: bool) -> None:
         return original_open(resolved, mode, *args, **kwargs)
 
     builtins.open = _guarded_open  # type: ignore[assignment]
+    io.open = _guarded_open  # type: ignore[assignment]
+
+    def _guarded_path_open(path_self: Path, mode: str = "r", *args: Any, **kwargs: Any):  # type: ignore[no-untyped-def]
+        return _guarded_open(path_self, mode, *args, **kwargs)
+
+    Path.open = _guarded_path_open  # type: ignore[assignment]
 
 
 def _install_network_guard() -> None:
