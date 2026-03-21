@@ -36,6 +36,11 @@ def _parse_args() -> argparse.Namespace:
         help="Optional user journey benchmark report JSON path.",
     )
     parser.add_argument(
+        "--distribution-resilience-report",
+        default="",
+        help="Optional distribution resilience report JSON path.",
+    )
+    parser.add_argument(
         "--nightly-reliability-report",
         default="",
         help="Optional nightly reliability report JSON path.",
@@ -123,6 +128,7 @@ def _source_class(source: str) -> str:
         "mission_queue": "mission_execution",
         "fault_injection": "recovery",
         "quality_dashboard": "quality",
+        "distribution_resilience": "distribution",
         "user_journey": "user_flow",
         "nightly_reliability": "nightly_reliability",
         "nightly_burn_rate": "nightly_reliability",
@@ -138,6 +144,8 @@ def _kpi_class(kpi_key: str) -> str:
         return "recovery"
     if normalized.startswith("release_quality_"):
         return "quality"
+    if normalized.startswith("distribution_"):
+        return "distribution"
     if normalized.startswith("journey_"):
         return "user_flow"
     if normalized.startswith("nightly_"):
@@ -150,6 +158,7 @@ def _class_order() -> list[str]:
         "mission_execution",
         "recovery",
         "quality",
+        "distribution",
         "user_flow",
         "nightly_reliability",
         "other",
@@ -231,6 +240,7 @@ def main() -> int:
         "mission_queue": _resolve_optional_path(project_root, str(args.mission_queue_report)),
         "fault_injection": _resolve_optional_path(project_root, str(args.fault_injection_report)),
         "quality_dashboard": _resolve_optional_path(project_root, str(args.quality_dashboard_report)),
+        "distribution_resilience": _resolve_optional_path(project_root, str(args.distribution_resilience_report)),
         "user_journey": _resolve_optional_path(project_root, str(args.user_journey_report)),
         "nightly_reliability": _resolve_optional_path(project_root, str(args.nightly_reliability_report)),
         "nightly_burn_rate": _resolve_optional_path(project_root, str(args.nightly_burn_rate_report)),
@@ -348,6 +358,35 @@ def main() -> int:
             )
         )
         kpis["release_quality_score_pct"] = round(score, 4)
+
+    distribution = reports.get("distribution_resilience")
+    if isinstance(distribution, dict):
+        summary = distribution.get("summary") if isinstance(distribution.get("summary"), dict) else {}
+        status = str(summary.get("status") or "").strip().lower()
+        checks_failed = _safe_float(summary.get("checks_failed"))
+        score_pct = _safe_float(summary.get("score_pct"))
+        checks.extend(
+            [
+                _check(
+                    check_id="distribution.status",
+                    source="distribution_resilience",
+                    value=1.0 if status == "pass" else 0.0,
+                    threshold=1.0,
+                    comparator="gte",
+                    unit="bool",
+                ),
+                _check(
+                    check_id="distribution.checks_failed",
+                    source="distribution_resilience",
+                    value=checks_failed,
+                    threshold=0.0,
+                    comparator="lte",
+                    unit="count",
+                ),
+            ]
+        )
+        kpis["distribution_score_pct"] = round(score_pct, 4)
+        kpis["distribution_checks_failed"] = int(checks_failed)
 
     journey = reports.get("user_journey")
     if isinstance(journey, dict):

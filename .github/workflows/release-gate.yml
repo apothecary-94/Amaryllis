@@ -114,6 +114,7 @@ jobs:
             tests.test_supervisor_api \
             tests.test_release_quality_dashboard_snapshot \
             tests.test_mission_success_recovery_report_pack \
+            tests.test_distribution_resilience_report \
             tests.test_user_journey_benchmark \
             tests.test_runtime_service_manifest_renderer \
             tests.test_runtime_service_lifecycle \
@@ -259,23 +260,6 @@ jobs:
             artifacts/release-quality-dashboard-trend.json
           if-no-files-found: error
 
-      - name: Build mission success/recovery report pack (release)
-        run: |
-          python scripts/release/build_mission_success_recovery_report.py \
-            --mission-queue-report "artifacts/mission-queue-load-report.json" \
-            --fault-injection-report "artifacts/fault-injection-reliability-report.json" \
-            --quality-dashboard-report "artifacts/release-quality-dashboard.json" \
-            --user-journey-report "artifacts/user-journey-benchmark-report.json" \
-            --scope "release" \
-            --output "artifacts/mission-success-recovery-report.json"
-
-      - name: Upload mission success/recovery report pack
-        uses: actions/upload-artifact@v4
-        with:
-          name: mission-success-recovery-report
-          path: artifacts/mission-success-recovery-report.json
-          if-no-files-found: error
-
   linux-parity-gate:
     name: Linux Parity Gate
     runs-on: ubuntu-latest
@@ -327,6 +311,81 @@ jobs:
         with:
           name: linux-installer-smoke-report
           path: artifacts/linux-installer-smoke-report.json
+          if-no-files-found: error
+
+      - name: Build distribution resilience report (blocking)
+        run: |
+          python scripts/release/build_distribution_resilience_report.py \
+            --linux-parity-report "artifacts/linux-parity-smoke-report.json" \
+            --linux-installer-report "artifacts/linux-installer-smoke-report.json" \
+            --output "artifacts/distribution-resilience-report.json"
+
+      - name: Upload distribution resilience report
+        uses: actions/upload-artifact@v4
+        with:
+          name: distribution-resilience-report
+          path: artifacts/distribution-resilience-report.json
+          if-no-files-found: error
+
+  release-kpi-pack:
+    name: Release KPI Pack
+    runs-on: ubuntu-latest
+    needs: linux-parity-gate
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11.11"
+
+      - name: Download mission queue load report
+        uses: actions/download-artifact@v4
+        with:
+          name: mission-queue-load-report
+          path: artifacts/mission-queue
+
+      - name: Download fault-injection reliability report
+        uses: actions/download-artifact@v4
+        with:
+          name: fault-injection-reliability-report
+          path: artifacts/fault-injection
+
+      - name: Download release quality dashboard report
+        uses: actions/download-artifact@v4
+        with:
+          name: release-quality-dashboard
+          path: artifacts/release-quality
+
+      - name: Download user journey benchmark report
+        uses: actions/download-artifact@v4
+        with:
+          name: user-journey-benchmark-report
+          path: artifacts/user-journey
+
+      - name: Download distribution resilience report
+        uses: actions/download-artifact@v4
+        with:
+          name: distribution-resilience-report
+          path: artifacts/distribution
+
+      - name: Build mission success/recovery report pack (release)
+        run: |
+          python scripts/release/build_mission_success_recovery_report.py \
+            --mission-queue-report "artifacts/mission-queue/mission-queue-load-report.json" \
+            --fault-injection-report "artifacts/fault-injection/fault-injection-reliability-report.json" \
+            --quality-dashboard-report "artifacts/release-quality/release-quality-dashboard.json" \
+            --distribution-resilience-report "artifacts/distribution/distribution-resilience-report.json" \
+            --user-journey-report "artifacts/user-journey/user-journey-benchmark-report.json" \
+            --scope "release" \
+            --output "artifacts/mission-success-recovery-report.json"
+
+      - name: Upload mission success/recovery report pack
+        uses: actions/upload-artifact@v4
+        with:
+          name: mission-success-recovery-report
+          path: artifacts/mission-success-recovery-report.json
           if-no-files-found: error
 
   disaster-recovery-gate:

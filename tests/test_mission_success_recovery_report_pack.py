@@ -33,6 +33,7 @@ class MissionSuccessRecoveryReportPackTests(unittest.TestCase):
             mission = base / "mission.json"
             fault = base / "fault.json"
             quality = base / "quality.json"
+            distribution = base / "distribution.json"
             journey = base / "journey.json"
             output = base / "report.json"
 
@@ -75,6 +76,19 @@ class MissionSuccessRecoveryReportPackTests(unittest.TestCase):
                 },
             )
             self._write_json(
+                distribution,
+                {
+                    "suite": "distribution_resilience_report_v1",
+                    "summary": {
+                        "checks_total": 14,
+                        "checks_passed": 14,
+                        "checks_failed": 0,
+                        "score_pct": 100.0,
+                        "status": "pass",
+                    },
+                },
+            )
+            self._write_json(
                 journey,
                 {
                     "suite": "user_journey_benchmark_v1",
@@ -104,6 +118,8 @@ class MissionSuccessRecoveryReportPackTests(unittest.TestCase):
                 str(fault),
                 "--quality-dashboard-report",
                 str(quality),
+                "--distribution-resilience-report",
+                str(distribution),
                 "--user-journey-report",
                 str(journey),
                 "--scope",
@@ -123,6 +139,8 @@ class MissionSuccessRecoveryReportPackTests(unittest.TestCase):
             self.assertIn("journey.plan_to_execute_conversion_rate_pct", [c.get("id") for c in payload.get("checks", [])])
             class_breakdown = payload.get("class_breakdown", {})
             self.assertEqual(str(class_breakdown.get("mission_execution", {}).get("status")), "pass")
+            self.assertEqual(str(class_breakdown.get("distribution", {}).get("status")), "pass")
+            self.assertIn("distribution_score_pct", class_breakdown.get("distribution", {}).get("kpis", {}))
             self.assertIn("journey_success_rate_pct", class_breakdown.get("user_flow", {}).get("kpis", {}))
 
     def test_nightly_report_pack_marks_failed_summary_when_burn_gate_failed(self) -> None:
@@ -190,6 +208,42 @@ class MissionSuccessRecoveryReportPackTests(unittest.TestCase):
             )
             self.assertEqual(proc.returncode, 2, msg=f"stdout={proc.stdout}\nstderr={proc.stderr}")
             self.assertIn("missing source report", proc.stderr.lower())
+
+    def test_release_report_pack_marks_failed_summary_when_distribution_failed(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amaryllis-mission-report-pack-") as tmp:
+            base = Path(tmp)
+            distribution = base / "distribution.json"
+            output = base / "report.json"
+
+            self._write_json(
+                distribution,
+                {
+                    "suite": "distribution_resilience_report_v1",
+                    "summary": {
+                        "checks_total": 12,
+                        "checks_passed": 10,
+                        "checks_failed": 2,
+                        "score_pct": 83.3333,
+                        "status": "fail",
+                    },
+                },
+            )
+
+            proc = self._run(
+                "--distribution-resilience-report",
+                str(distribution),
+                "--scope",
+                "release",
+                "--output",
+                str(output),
+            )
+            self.assertEqual(proc.returncode, 0, msg=f"stdout={proc.stdout}\nstderr={proc.stderr}")
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(str(payload.get("suite")), "mission_success_recovery_report_pack_v2")
+            self.assertEqual(payload.get("summary", {}).get("status"), "fail")
+            self.assertIn("distribution.status", [c.get("id") for c in payload.get("checks", [])])
+            class_breakdown = payload.get("class_breakdown", {})
+            self.assertEqual(str(class_breakdown.get("distribution", {}).get("status")), "fail")
 
 
 if __name__ == "__main__":

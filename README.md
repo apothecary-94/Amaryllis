@@ -52,13 +52,13 @@ Implemented in this version:
 - automatic incident detection from SLO breaches (availability, latency p95, run success)
 - API lifecycle policy with version headers and legacy deprecation headers (`Deprecation`, `Sunset`)
 - versioned API aliases for core routes under `/v1/*` with compatibility contract gate
-- release gate assets: compatibility script, canary smoke script, disaster-recovery gate, compliance gate, rollback playbook
+- release gate assets: compatibility script, canary smoke script, Linux parity/installer + distribution resilience gates, disaster-recovery gate, compliance gate, rollback playbook
 - lease/CAS ownership for agent runs (single-owner execution under concurrent workers)
 - mission simulation mode before apply with risk/rollback preview and signed dry-run receipt (`POST /agents/{agent_id}/runs/simulate`)
 - mission template catalog for automation planning (`GET /automations/mission/templates`) with defaults (`code_health`, `security_audit`, `release_guard`, `runtime_watchdog`)
 - mission policy catalog for per-automation SLO overlays (`GET /automations/mission/policies`) with enforcement profiles (`balanced`, `strict`, `watchdog`, `release`)
 - plugin compatibility contract + capability isolation policy (`compat` + `capabilities` manifest fields, fail-fast discovery validation)
-- release/nightly public quality artifacts: user journey benchmark + release quality dashboard snapshot + mission success/recovery report pack
+- release/nightly public quality artifacts: user journey benchmark + release quality dashboard snapshot + mission success/recovery report pack + release distribution resilience report
 - compact run diagnostics endpoint for mission postmortem (`GET /agents/runs/{run_id}/diagnostics`)
 - voice push-to-talk session contract with explicit state transitions (`created -> listening -> stopping -> stopped`)
 - pluggable local STT adapter layer (`whisper_python` backend + graceful unavailable mode)
@@ -1600,16 +1600,28 @@ Release quality dashboard snapshot (normalized benchmark artifact + trend delta)
 python3 scripts/release/build_quality_dashboard_snapshot.py --perf-report artifacts/perf-smoke-report.json --fault-injection-report artifacts/fault-injection-reliability-report.json --mission-queue-report artifacts/mission-queue-load-report.json --runtime-lifecycle-report artifacts/runtime-lifecycle-smoke-report.json --user-journey-report artifacts/user-journey-benchmark-report.json --baseline eval/baselines/quality/release_quality_dashboard_baseline.json --output artifacts/release-quality-dashboard.json --trend-output artifacts/release-quality-dashboard-trend.json
 ```
 
-Mission success/recovery report pack (public KPI snapshot for release/nightly):
-
-```bash
-python3 scripts/release/build_mission_success_recovery_report.py --mission-queue-report artifacts/mission-queue-load-report.json --fault-injection-report artifacts/fault-injection-reliability-report.json --quality-dashboard-report artifacts/release-quality-dashboard.json --user-journey-report artifacts/user-journey-benchmark-report.json --scope release --output artifacts/mission-success-recovery-report.json
-```
-
 Linux parity smoke gate (run/voice/tools/observability acceptance on Linux target):
 
 ```bash
 python3 scripts/release/linux_parity_smoke.py --iterations 1 --output artifacts/linux-parity-smoke-report.json
+```
+
+Linux installer smoke gate (install/upgrade/rollback channel contract on Linux target):
+
+```bash
+python3 scripts/release/linux_installer_smoke.py --output artifacts/linux-installer-smoke-report.json
+```
+
+Distribution resilience report (aggregated Linux parity + installer/rollback reliability):
+
+```bash
+python3 scripts/release/build_distribution_resilience_report.py --linux-parity-report artifacts/linux-parity-smoke-report.json --linux-installer-report artifacts/linux-installer-smoke-report.json --output artifacts/distribution-resilience-report.json
+```
+
+Mission success/recovery report pack (public KPI snapshot for release/nightly):
+
+```bash
+python3 scripts/release/build_mission_success_recovery_report.py --mission-queue-report artifacts/mission-queue-load-report.json --fault-injection-report artifacts/fault-injection-reliability-report.json --quality-dashboard-report artifacts/release-quality-dashboard.json --distribution-resilience-report artifacts/distribution-resilience-report.json --user-journey-report artifacts/user-journey-benchmark-report.json --scope release --output artifacts/mission-success-recovery-report.json
 ```
 
 Nightly extended reliability run (success/latency/stability + trend deltas):
@@ -1917,6 +1929,18 @@ python scripts/release/canary_smoke.py
 python scripts/release/linux_parity_smoke.py --iterations 1 --output artifacts/linux-parity-smoke-report.json
 ```
 
+- Linux installer smoke:
+
+```bash
+python scripts/release/linux_installer_smoke.py --output artifacts/linux-installer-smoke-report.json
+```
+
+- Distribution resilience report (aggregated Linux parity + installer/rollback checks):
+
+```bash
+python scripts/release/build_distribution_resilience_report.py --linux-parity-report artifacts/linux-parity-smoke-report.json --linux-installer-report artifacts/linux-installer-smoke-report.json --output artifacts/distribution-resilience-report.json
+```
+
 - Disaster recovery gate:
 
 ```bash
@@ -1937,6 +1961,7 @@ python scripts/release/check_runtime_profile_drift.py
 
 - Rollback playbook: `docs/release-playbook.md`
 - Linux parity matrix: `docs/linux-parity-matrix.md`
+- Distribution resilience report contract: `docs/distribution-resilience-report.md`
 - Local rollback helper:
 
 ```bash

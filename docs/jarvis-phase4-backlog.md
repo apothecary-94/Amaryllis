@@ -48,7 +48,7 @@ Move from OSS platform readiness to daily-driver "Jarvis on PC": unified multimo
 |---|---|---|---|---|
 | P4-D01 | in_progress | Add end-to-end user journey benchmark harness | journey benchmark suite + report | Release/nightly include comparable user-flow success/latency KPIs |
 | P4-D02 | in_progress | Add mission outcome public KPI pack v2 (release + nightly) | expanded KPI report schema | Success/recovery metrics include trendable mission-class breakdowns |
-| P4-D03 | todo | Harden packaging/update/rollback path for Linux primary and mac staging | updater/rollback contracts + smoke gates | Operator can safely install/update/rollback without manual recovery steps |
+| P4-D03 | in_progress | Harden packaging/update/rollback path for Linux primary and mac staging | updater/rollback contracts + smoke gates | Operator can safely install/update/rollback without manual recovery steps |
 
 ## Current Sprint (P4-S0)
 
@@ -62,6 +62,7 @@ Move from OSS platform readiness to daily-driver "Jarvis on PC": unified multimo
 | P4-C03 | in_progress | objective verification gates in supervisor (`objective_verification` policy + `/supervisor/graphs/{id}/verify` endpoint + tests) |
 | P4-D01 | in_progress | end-to-end user journey benchmark baseline (`scripts/release/user_journey_benchmark.py` + baseline + release/nightly artifact wiring) |
 | P4-D02 | in_progress | mission KPI pack schema v2 (`mission_success_recovery_report_pack_v2` + class breakdown by mission/recovery/quality/user_flow/nightly) |
+| P4-D03 | in_progress | distribution resilience report (`scripts/release/build_distribution_resilience_report.py`) + release-gate blocking artifact wiring (`distribution-resilience-report.json`) |
 
 ## Next Checkpoint
 - Deliver first executable "Jarvis on PC" flow:
@@ -69,4 +70,5 @@ Move from OSS platform readiness to daily-driver "Jarvis on PC": unified multimo
   - explicit plan-vs-execute control path,
   - Linux desktop adapter baseline under policy guardrails,
   - supervisor skeleton for bounded multi-agent decomposition,
-  - initial journey benchmark artifact in release/nightly quality pack.
+  - initial journey benchmark artifact in release/nightly quality pack,
+  - Linux distribution resilience gate for install/upgrade/rollback reliability.

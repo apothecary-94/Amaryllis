@@ -66,6 +66,7 @@ This prevents deleting currently deployed stable/canary rollback points.
 Blocking release gate includes:
 
 - `scripts/release/linux_installer_smoke.py --require-linux`
+- `scripts/release/build_distribution_resilience_report.py --linux-parity-report artifacts/linux-parity-smoke-report.json --linux-installer-report artifacts/linux-installer-smoke-report.json`
 
 Smoke verifies:
 
