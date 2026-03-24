@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 import time
 from typing import Any
@@ -18,6 +19,10 @@ router = APIRouter(tags=["chat"])
 
 def _request_id(request: Request) -> str:
     return str(getattr(request.state, "request_id", ""))
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 class ChatMessage(BaseModel):
@@ -59,6 +64,138 @@ class ChatCompletionsRequest(BaseModel):
     tools: list[ToolDefinition] | None = None
     permission_ids: list[str] = Field(default_factory=list)
     routing: ChatRoutingOptions | None = None
+
+
+def _last_user_query(messages: list[dict[str, Any]]) -> str:
+    for message in reversed(messages):
+        role = str(message.get("role") or "").strip().lower()
+        if role != "user":
+            continue
+        content = str(message.get("content") or "").strip()
+        if content:
+            return content
+    return ""
+
+
+def _build_provenance_payload(
+    request: Request,
+    payload: ChatCompletionsRequest,
+    normalized_messages: list[dict[str, Any]],
+    *,
+    top_k: int = 3,
+) -> dict[str, Any]:
+    query = _last_user_query(normalized_messages)
+    base = {
+        "version": "provenance_v1",
+        "generated_at": _utc_now_iso(),
+        "strategy": "none",
+        "grounded": False,
+        "query": query,
+        "coverage_pct": 0.0,
+        "sources": [],
+    }
+    if not payload.user_id or not query:
+        return base
+
+    services = request.app.state.services
+    try:
+        rows = services.memory_manager.debug_retrieval(
+            user_id=payload.user_id,
+            query=query,
+            top_k=max(1, min(int(top_k), 8)),
+        )
+    except Exception as exc:
+        return {
+            **base,
+            "strategy": "memory_retrieval_debug_v1",
+            "errors": [str(exc)],
+        }
+
+    sources: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        text = str(row.get("text") or "").strip()
+        score = float(row.get("score") or 0.0)
+        if not text:
+            continue
+        sources.append(
+            {
+                "layer": "semantic_memory",
+                "source_id": row.get("semantic_id"),
+                "rank": int(row.get("rank") or 0),
+                "kind": str(row.get("kind") or "fact"),
+                "score": round(score, 6),
+                "excerpt": text[:220],
+                "created_at": row.get("created_at"),
+            }
+        )
+
+    grounded = len(sources) > 0
+    return {
+        **base,
+        "strategy": "memory_retrieval_debug_v1",
+        "grounded": grounded,
+        "coverage_pct": 100.0 if grounded else 0.0,
+        "sources": sources,
+    }
+
+
+def _routing_fallback_used(routing: dict[str, Any] | None) -> bool:
+    if not isinstance(routing, dict):
+        return False
+    final = routing.get("final")
+    if isinstance(final, dict) and bool(final.get("fallback_used", False)):
+        return True
+    return bool(routing.get("fallback_used", False))
+
+
+def _emit_generation_loop_metrics(
+    request: Request,
+    *,
+    payload: ChatCompletionsRequest,
+    provider: str,
+    model: str,
+    routing: dict[str, Any] | None,
+    stream: bool,
+    ttft_ms: float | None,
+    total_latency_ms: float | None,
+    chunks: int,
+    output_chars: int,
+    tool_rounds: int,
+    provenance: dict[str, Any] | None,
+) -> None:
+    services = request.app.state.services
+    mode = str((payload.routing.model_dump(exclude_none=True) if payload.routing else {}).get("mode") or "balanced")
+    event = {
+        "request_id": _request_id(request),
+        "session_id": payload.session_id,
+        "user_id": payload.user_id,
+        "provider": provider,
+        "model": model,
+        "mode": mode,
+        "stream": bool(stream),
+        "fallback_used": _routing_fallback_used(routing),
+        "ttft_ms": round(float(ttft_ms), 3) if ttft_ms is not None else None,
+        "total_latency_ms": round(float(total_latency_ms), 3) if total_latency_ms is not None else None,
+        "chunks": int(max(0, chunks)),
+        "output_chars": int(max(0, output_chars)),
+        "tool_rounds": int(max(0, tool_rounds)),
+        "provenance_grounded": bool((provenance or {}).get("grounded", False)),
+        "provenance_sources_count": len((provenance or {}).get("sources", []))
+        if isinstance((provenance or {}).get("sources", []), list)
+        else 0,
+        "kv_cache": {
+            "pressure_state": "unknown",
+            "estimated_tokens": None,
+            "estimated_bytes": None,
+            "eviction_count": 0,
+        },
+    }
+    try:
+        services.telemetry.emit("generation_loop_metrics", event)
+    except Exception:
+        pass
 
 
 def _validate_chat_request_limits(payload: ChatCompletionsRequest, request: Request) -> None:
@@ -266,6 +403,11 @@ def chat_completions(payload: ChatCompletionsRequest, request: Request):
     normalized_messages = _normalize_messages(payload.messages)
     tool_names = _tool_names_from_request(payload=payload, request=request)
     request_id = _request_id(request)
+    provenance = _build_provenance_payload(
+        request=request,
+        payload=payload,
+        normalized_messages=normalized_messages,
+    )
 
     route_payload = payload.routing.model_dump(exclude_none=True) if payload.routing is not None else None
     if route_payload is not None and tool_names and not bool(route_payload.get("require_tools", False)):
@@ -281,6 +423,7 @@ def chat_completions(payload: ChatCompletionsRequest, request: Request):
                 }
             )
 
+        stream_started = time.perf_counter()
         try:
             iterator, provider_used, model_used, routing_used = services.model_manager.stream_chat(
                 messages=stream_messages,
@@ -306,6 +449,7 @@ def chat_completions(payload: ChatCompletionsRequest, request: Request):
                 "provider": provider_used,
                 "request_id": request_id,
                 "routing": routing_used,
+                "provenance": provenance,
                 "choices": [
                     {
                         "index": 0,
@@ -317,8 +461,15 @@ def chat_completions(payload: ChatCompletionsRequest, request: Request):
             yield f"data: {json.dumps(first_chunk, ensure_ascii=False)}\n\n"
 
             stream_error = False
+            first_content_ts: float | None = None
+            chunk_count = 0
+            output_chars = 0
             try:
                 for chunk in iterator:
+                    chunk_count += 1
+                    output_chars += len(str(chunk))
+                    if first_content_ts is None:
+                        first_content_ts = time.perf_counter()
                     payload_chunk = {
                         "id": completion_id,
                         "object": "chat.completion.chunk",
@@ -356,6 +507,22 @@ def chat_completions(payload: ChatCompletionsRequest, request: Request):
                 }
                 yield f"data: {json.dumps(error_chunk, ensure_ascii=False)}\n\n"
 
+            total_latency_ms = (time.perf_counter() - stream_started) * 1000.0
+            ttft_ms = ((first_content_ts - stream_started) * 1000.0) if first_content_ts is not None else None
+            _emit_generation_loop_metrics(
+                request=request,
+                payload=payload,
+                provider=provider_used,
+                model=model_used,
+                routing=routing_used,
+                stream=True,
+                ttft_ms=ttft_ms,
+                total_latency_ms=total_latency_ms,
+                chunks=chunk_count,
+                output_chars=output_chars,
+                tool_rounds=0,
+                provenance=provenance,
+            )
             done_chunk = {
                 "id": completion_id,
                 "object": "chat.completion.chunk",
@@ -376,6 +543,7 @@ def chat_completions(payload: ChatCompletionsRequest, request: Request):
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
 
+    non_stream_started = time.perf_counter()
     try:
         content, provider_used, model_used, tool_events, routing_used = _chat_with_tool_loop(
             request=request,
@@ -389,6 +557,21 @@ def chat_completions(payload: ChatCompletionsRequest, request: Request):
         )
     except Exception as exc:
         raise ProviderError(str(exc)) from exc
+    total_latency_ms = (time.perf_counter() - non_stream_started) * 1000.0
+    _emit_generation_loop_metrics(
+        request=request,
+        payload=payload,
+        provider=provider_used,
+        model=model_used,
+        routing=routing_used,
+        stream=False,
+        ttft_ms=total_latency_ms,
+        total_latency_ms=total_latency_ms,
+        chunks=1,
+        output_chars=len(content),
+        tool_rounds=len(tool_events),
+        provenance=provenance,
+    )
 
     completion_id = f"chatcmpl-{uuid4().hex}"
     created = int(time.time())
@@ -416,5 +599,6 @@ def chat_completions(payload: ChatCompletionsRequest, request: Request):
             "completion_tokens": 0,
             "total_tokens": 0,
         },
+        "provenance": provenance,
         "tool_events": tool_events,
     }

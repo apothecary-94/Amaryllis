@@ -57,8 +57,8 @@ Move from OSS platform readiness to daily-driver "Jarvis on PC": unified multimo
 
 | ID | Status | Task | Deliverable | Definition of Done |
 |---|---|---|---|---|
-| P4-E01 | todo | Define backend-portable generation-loop contract (`prefill/decode`, cache, fallback semantics) | contract spec + conformance tests | CPU/GPU/NPU backends pass the same functional contract and fallback determinism checks |
-| P4-E02 | todo | Add KV cache observability and pressure-policy framework | KV telemetry schema + policy engine | Runtime emits KV pressure signals and applies policy transitions without silent quality collapse |
+| P4-E01 | in_progress | Define backend-portable generation-loop contract (`prefill/decode`, cache, fallback semantics) | contract spec + conformance tests | CPU/GPU/NPU backends pass the same functional contract and fallback determinism checks |
+| P4-E02 | in_progress | Add KV cache observability and pressure-policy framework | KV telemetry schema + policy engine | Runtime emits KV pressure signals and applies policy transitions without silent quality collapse |
 | P4-E03 | todo | Implement QoS governor (`TTFT`, sustained decode, thermal-aware mode switching) | qos governor module + benchmark hooks | User-visible modes maintain target latency/stability envelopes under stress |
 | P4-E04 | todo | Add long-context reliability eval pack | eval dataset + gate job | Release/nightly fail on long-context regressions in relevance and stability |
 
@@ -66,7 +66,7 @@ Move from OSS platform readiness to daily-driver "Jarvis on PC": unified multimo
 
 | ID | Status | Task | Deliverable | Definition of Done |
 |---|---|---|---|---|
-| P4-F01 | todo | Make provenance mandatory for RAG-grounded answers | provenance contract + UI/API exposure | Responses using external context include verifiable source trace by default |
+| P4-F01 | in_progress | Make provenance mandatory for RAG-grounded answers | provenance contract + UI/API exposure | Responses using external context include verifiable source trace by default |
 | P4-F02 | todo | Enforce zero-trust tool execution and unsafe-deserialization bans | hardened executor + security policy tests | Tool chain blocks known unsafe deserialization patterns and enforces sandbox permissions |
 | P4-F03 | todo | Build injection-resilience regression suite for RAG and agent flows | attack scenarios + CI gate | Release/nightly publish containment score and block severe regressions |
 | P4-F04 | todo | Introduce secure model package + quantization passport | signed artifact spec + validator tooling | Model artifacts fail admission without signatures, hashes, and quant recipe metadata |
@@ -98,10 +98,10 @@ Move from OSS platform readiness to daily-driver "Jarvis on PC": unified multimo
 
 | ID | Status | Scope |
 |---|---|---|
-| P4-E01 | todo | generation-loop portability contract draft + backend conformance matrix |
-| P4-E02 | todo | KV telemetry schema + initial pressure-policy transitions |
+| P4-E01 | in_progress | generation-loop portability contract draft + backend conformance matrix |
+| P4-E02 | in_progress | KV telemetry schema + initial pressure-policy transitions |
 | P4-E03 | todo | QoS governor baseline with `balanced` and `power-save` modes |
-| P4-F01 | todo | provenance contract for RAG responses + API payload wiring |
+| P4-F01 | in_progress | provenance contract for RAG responses + API payload wiring |
 | P4-F02 | todo | unsafe-deserialization denylist checks + sandbox policy tests |
 | P4-F04 | todo | signed model artifact and quant-passport validator MVP |
 | P4-G01 | todo | environment passport collector in release/nightly artifacts |

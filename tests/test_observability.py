@@ -154,6 +154,34 @@ class ObservabilityTests(unittest.TestCase):
             bool({"request_availability", "request_latency_p95", "run_success_rate"} & incident_types)
         )
 
+    def test_generation_loop_metrics_are_ingested_and_exported(self) -> None:
+        manager = self._build_manager()
+        manager.sre.ingest_event(
+            "generation_loop_metrics",
+            {
+                "request_id": "req-1",
+                "provider": "mlx",
+                "model": "mlx-community/test",
+                "stream": True,
+                "fallback_used": True,
+                "ttft_ms": 120.5,
+                "total_latency_ms": 530.0,
+                "kv_cache": {"pressure_state": "high"},
+            },
+        )
+
+        snapshot = manager.sre.snapshot()
+        generation = snapshot["sli"]["generation"]
+        self.assertEqual(int(generation["total"]), 1)
+        self.assertEqual(int(generation["stream_total"]), 1)
+        self.assertEqual(int(generation["fallback_total"]), 1)
+        self.assertGreater(float(generation["ttft_p95_ms"]), 0.0)
+        self.assertEqual(int(generation["kv_pressure_events"]), 1)
+
+        metrics = manager.sre.render_prometheus_metrics()
+        self.assertIn("amaryllis_generation_events_total 1", metrics)
+        self.assertIn("amaryllis_generation_kv_pressure_events_total 1", metrics)
+
 
 if __name__ == "__main__":
     unittest.main()

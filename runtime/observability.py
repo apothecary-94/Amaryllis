@@ -78,6 +78,7 @@ class SREMonitor:
         self._lock = Lock()
         self._http_events: deque[dict[str, Any]] = deque(maxlen=20000)
         self._run_events: deque[dict[str, Any]] = deque(maxlen=20000)
+        self._generation_events: deque[dict[str, Any]] = deque(maxlen=20000)
         self._incidents: deque[dict[str, Any]] = deque(maxlen=2000)
         self._active_incidents: dict[str, float] = {}
         self._recent_snapshots: deque[dict[str, Any]] = deque(maxlen=32)
@@ -137,6 +138,34 @@ class SREMonitor:
             self._prune_unlocked()
             self._evaluate_incidents_unlocked()
 
+    def record_generation_loop(
+        self,
+        *,
+        request_id: str | None = None,
+        provider: str | None = None,
+        model: str | None = None,
+        stream: bool = False,
+        fallback_used: bool = False,
+        ttft_ms: float | None = None,
+        total_latency_ms: float | None = None,
+        kv_pressure_state: str | None = None,
+    ) -> None:
+        row = {
+            "ts": self._now_epoch(),
+            "request_id": str(request_id or ""),
+            "provider": str(provider or ""),
+            "model": str(model or ""),
+            "stream": bool(stream),
+            "fallback_used": bool(fallback_used),
+            "ttft_ms": float(max(0.0, ttft_ms or 0.0)),
+            "total_latency_ms": float(max(0.0, total_latency_ms or 0.0)),
+            "kv_pressure_state": str(kv_pressure_state or "unknown").strip().lower() or "unknown",
+        }
+        with self._lock:
+            self._generation_events.append(row)
+            self._prune_unlocked()
+            self._evaluate_incidents_unlocked()
+
     def ingest_event(self, event_type: str, payload: dict[str, Any]) -> None:
         normalized_type = str(event_type or "").strip().lower()
         data = dict(payload or {})
@@ -168,6 +197,19 @@ class SREMonitor:
                 stop_reason=str(data.get("stop_reason") or ""),
                 duration_ms=float(data.get("duration_ms") or 0.0),
             )
+            return
+        if normalized_type == "generation_loop_metrics":
+            kv_cache = data.get("kv_cache") if isinstance(data.get("kv_cache"), dict) else {}
+            self.record_generation_loop(
+                request_id=str(data.get("request_id") or ""),
+                provider=str(data.get("provider") or ""),
+                model=str(data.get("model") or ""),
+                stream=bool(data.get("stream", False)),
+                fallback_used=bool(data.get("fallback_used", False)),
+                ttft_ms=float(data.get("ttft_ms") or 0.0),
+                total_latency_ms=float(data.get("total_latency_ms") or 0.0),
+                kv_pressure_state=str(kv_cache.get("pressure_state") or "unknown"),
+            )
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -185,6 +227,7 @@ class SREMonitor:
         snapshot = self.snapshot()
         request_sli = snapshot["sli"]["requests"]
         run_sli = snapshot["sli"]["runs"]
+        generation_sli = snapshot["sli"]["generation"]
         budgets = snapshot["error_budget"]
         release_quality = self._release_quality_snapshot_metrics()
         nightly_mission = self._nightly_mission_snapshot_metrics()
@@ -204,6 +247,21 @@ class SREMonitor:
             "# HELP amaryllis_run_success_ratio Agent run success ratio.",
             "# TYPE amaryllis_run_success_ratio gauge",
             f"amaryllis_run_success_ratio {float(run_sli['success_rate']):.6f}",
+            "# HELP amaryllis_generation_events_total Generation loop events observed in SLO window.",
+            "# TYPE amaryllis_generation_events_total gauge",
+            f"amaryllis_generation_events_total {float(generation_sli['total']):.0f}",
+            "# HELP amaryllis_generation_ttft_p95_ms Generation TTFT p95 in milliseconds.",
+            "# TYPE amaryllis_generation_ttft_p95_ms gauge",
+            f"amaryllis_generation_ttft_p95_ms {float(generation_sli['ttft_p95_ms']):.6f}",
+            "# HELP amaryllis_generation_total_latency_p95_ms Generation total latency p95 in milliseconds.",
+            "# TYPE amaryllis_generation_total_latency_p95_ms gauge",
+            f"amaryllis_generation_total_latency_p95_ms {float(generation_sli['total_latency_p95_ms']):.6f}",
+            "# HELP amaryllis_generation_fallback_rate Generation fallback usage ratio.",
+            "# TYPE amaryllis_generation_fallback_rate gauge",
+            f"amaryllis_generation_fallback_rate {float(generation_sli['fallback_rate']):.6f}",
+            "# HELP amaryllis_generation_kv_pressure_events_total Generation events with high/critical KV pressure.",
+            "# TYPE amaryllis_generation_kv_pressure_events_total gauge",
+            f"amaryllis_generation_kv_pressure_events_total {float(generation_sli['kv_pressure_events']):.0f}",
             "# HELP amaryllis_error_budget_remaining_ratio Remaining request error budget ratio.",
             "# TYPE amaryllis_error_budget_remaining_ratio gauge",
             f"amaryllis_error_budget_remaining_ratio{{scope=\"requests\"}} "
@@ -381,10 +439,13 @@ class SREMonitor:
             self._http_events.popleft()
         while self._run_events and float(self._run_events[0].get("ts", 0.0)) < cutoff:
             self._run_events.popleft()
+        while self._generation_events and float(self._generation_events[0].get("ts", 0.0)) < cutoff:
+            self._generation_events.popleft()
 
     def _build_snapshot_unlocked(self) -> dict[str, Any]:
         request_events = list(self._http_events)
         run_events = list(self._run_events)
+        generation_events = list(self._generation_events)
 
         request_total = len(request_events)
         request_ok = sum(1 for item in request_events if int(item.get("status_code", 0)) < 500)
@@ -396,6 +457,22 @@ class SREMonitor:
         run_total = len(terminal_runs)
         run_success = sum(1 for item in terminal_runs if str(item.get("status") or "") == "succeeded")
         run_success_rate = (float(run_success) / float(run_total)) if run_total else 1.0
+
+        generation_total = len(generation_events)
+        generation_stream_total = sum(1 for item in generation_events if bool(item.get("stream", False)))
+        generation_fallback_total = sum(1 for item in generation_events if bool(item.get("fallback_used", False)))
+        generation_ttft_values = [float(item.get("ttft_ms", 0.0)) for item in generation_events]
+        generation_total_latency_values = [float(item.get("total_latency_ms", 0.0)) for item in generation_events]
+        generation_kv_pressure_events = sum(
+            1
+            for item in generation_events
+            if str(item.get("kv_pressure_state") or "").strip().lower() in {"high", "critical"}
+        )
+        generation_fallback_rate = (
+            float(generation_fallback_total) / float(generation_total)
+            if generation_total
+            else 0.0
+        )
 
         request_budget = self._budget_ratio(observed=availability, target=self.targets.request_availability_target)
         run_budget = self._budget_ratio(observed=run_success_rate, target=self.targets.run_success_target)
@@ -421,6 +498,15 @@ class SREMonitor:
                     "total": run_total,
                     "successful": run_success,
                     "success_rate": round(run_success_rate, 6),
+                },
+                "generation": {
+                    "total": generation_total,
+                    "stream_total": generation_stream_total,
+                    "fallback_total": generation_fallback_total,
+                    "fallback_rate": round(generation_fallback_rate, 6),
+                    "ttft_p95_ms": round(self._quantile(generation_ttft_values, 0.95), 3),
+                    "total_latency_p95_ms": round(self._quantile(generation_total_latency_values, 0.95), 3),
+                    "kv_pressure_events": generation_kv_pressure_events,
                 },
             },
             "error_budget": {

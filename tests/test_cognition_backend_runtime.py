@@ -79,6 +79,12 @@ class CognitionBackendRuntimeTests(unittest.TestCase):
         self.assertEqual(str(payload.get("model")), "deterministic-v1")
         content = str(((payload.get("choices") or [{}])[0].get("message", {}) or {}).get("content", ""))
         self.assertIn("hello runtime", content)
+        provenance = payload.get("provenance")
+        self.assertIsInstance(provenance, dict)
+        assert isinstance(provenance, dict)
+        self.assertEqual(str(provenance.get("version")), "provenance_v1")
+        self.assertIn("grounded", provenance)
+        self.assertIn("sources", provenance)
 
     def test_model_route_endpoint_uses_same_backend_contract(self) -> None:
         response = self.client.post(
@@ -95,6 +101,26 @@ class CognitionBackendRuntimeTests(unittest.TestCase):
         selected = payload.get("selected", {})
         self.assertEqual(str(selected.get("provider")), "deterministic")
         self.assertEqual(str(selected.get("model")), "deterministic-v1")
+
+    def test_generation_loop_contract_endpoint_returns_conformance_matrix(self) -> None:
+        response = self.client.get(
+            "/models/generation-loop/contract",
+            headers=self._auth("user-token"),
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(str(payload.get("contract_version")), "generation_loop_contract_v1")
+        self.assertIn("request_id", payload)
+
+        providers = payload.get("providers", {})
+        self.assertIsInstance(providers, dict)
+        assert isinstance(providers, dict)
+        self.assertIn("deterministic", providers)
+        deterministic = providers.get("deterministic", {})
+        self.assertIsInstance(deterministic, dict)
+        conformance = deterministic.get("conformance", {})
+        self.assertIsInstance(conformance, dict)
+        self.assertIn(str(conformance.get("status")), {"pass", "warn"})
 
     def test_service_health_reports_backend_provider(self) -> None:
         response = self.client.get("/service/health", headers=self._auth("service-token"))

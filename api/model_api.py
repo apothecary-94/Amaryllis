@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -13,6 +14,112 @@ router = APIRouter(tags=["models"])
 
 def _request_id(request: Request) -> str:
     return str(getattr(request.state, "request_id", ""))
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _generation_loop_contract_payload(request: Request) -> dict[str, Any]:
+    services = request.app.state.services
+    model_manager = services.model_manager
+    active_provider = str(getattr(model_manager, "active_provider", "") or "unknown")
+    active_model = str(getattr(model_manager, "active_model", "") or "unknown")
+
+    capabilities_getter = getattr(model_manager, "provider_capabilities", None)
+    raw_capabilities = capabilities_getter() if callable(capabilities_getter) else {}
+    capabilities = raw_capabilities if isinstance(raw_capabilities, dict) else {}
+
+    providers: dict[str, Any] = {}
+    passing = 0
+    warning = 0
+    for provider_name in sorted(capabilities.keys()):
+        cap_raw = capabilities.get(provider_name)
+        cap = cap_raw if isinstance(cap_raw, dict) else {}
+        supports_stream = bool(cap.get("supports_stream", False))
+        supports_tools = bool(cap.get("supports_tools", False))
+        supports_load = bool(cap.get("supports_load", False))
+
+        issues: list[str] = []
+        if not supports_stream:
+            issues.append("streaming_not_supported")
+        if not supports_load:
+            issues.append("load_model_not_supported")
+        status = "pass" if not issues else "warn"
+        if status == "pass":
+            passing += 1
+        else:
+            warning += 1
+
+        providers[str(provider_name)] = {
+            "capabilities": {
+                "local": bool(cap.get("local", False)),
+                "supports_download": bool(cap.get("supports_download", False)),
+                "supports_load": supports_load,
+                "supports_stream": supports_stream,
+                "supports_tools": supports_tools,
+                "requires_api_key": bool(cap.get("requires_api_key", False)),
+            },
+            "conformance": {
+                "status": status,
+                "issues": issues,
+                "checks": {
+                    "decode_streaming": supports_stream,
+                    "tool_calling_grammar_path": supports_tools,
+                    "runtime_load_switch": supports_load,
+                },
+            },
+        }
+
+    return {
+        "contract_version": "generation_loop_contract_v1",
+        "generated_at": _utc_now_iso(),
+        "active": {
+            "provider": active_provider,
+            "model": active_model,
+        },
+        "contract": {
+            "stages": [
+                "prefill",
+                "decode",
+                "finalize",
+            ],
+            "cache": {
+                "kv_cache": "required",
+                "cache_policy": "runtime_managed",
+                "pressure_signal_contract": "generation_loop_metrics.kv_cache.pressure_state",
+            },
+            "fallback": {
+                "deterministic_semantics": True,
+                "ordered_resolution": [
+                    "explicit_target",
+                    "routing_selected",
+                    "fallback_candidates",
+                ],
+            },
+            "streaming": {
+                "required_for_portability": True,
+                "event_channel": "sse_chunked",
+            },
+            "tool_calling": {
+                "grammar_contract": "provider_capability_gated",
+                "permission_boundary": "tool_policy_and_sandbox",
+            },
+        },
+        "modes": [
+            "balanced",
+            "local_first",
+            "quality_first",
+            "coding",
+            "reasoning",
+        ],
+        "providers": providers,
+        "summary": {
+            "providers_total": len(providers),
+            "providers_passing": passing,
+            "providers_warning": warning,
+        },
+    }
 
 
 def _sign_action(
@@ -145,6 +252,13 @@ def capability_matrix(
         include_suggested=include_suggested,
         limit_per_provider=max(1, min(limit_per_provider, 500)),
     )
+    payload["request_id"] = _request_id(request)
+    return payload
+
+
+@router.get("/models/generation-loop/contract")
+def generation_loop_contract(request: Request) -> dict[str, Any]:
+    payload = _generation_loop_contract_payload(request)
     payload["request_id"] = _request_id(request)
     return payload
 
