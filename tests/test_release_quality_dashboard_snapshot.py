@@ -43,6 +43,8 @@ class ReleaseQualityDashboardSnapshotTests(unittest.TestCase):
         distribution = base / "distribution.json"
         macos = base / "macos-desktop-parity.json"
         injection = base / "injection-containment.json"
+        model_admission = base / "model-artifact-admission.json"
+        environment_passport = base / "environment-passport.json"
 
         self._write_json(
             perf,
@@ -170,6 +172,39 @@ class ReleaseQualityDashboardSnapshotTests(unittest.TestCase):
                 },
             },
         )
+        self._write_json(
+            model_admission,
+            {
+                "suite": "model_artifact_admission_gate_v1",
+                "generated_at": "2026-03-21T00:00:00+00:00",
+                "summary": {
+                    "status": "pass",
+                    "scenario_count": 5,
+                    "passed_scenarios": 5,
+                    "failed_scenarios": 0,
+                    "admission_score_pct": 100.0,
+                    "min_admission_score_pct": 100.0,
+                    "max_failed_scenarios": 0,
+                },
+            },
+        )
+        self._write_json(
+            environment_passport,
+            {
+                "suite": "environment_passport_gate_v1",
+                "generated_at": "2026-03-21T00:00:00+00:00",
+                "summary": {
+                    "status": "pass",
+                    "required_fields_total": 14,
+                    "required_fields_present": 14,
+                    "missing_required_fields_count": 0,
+                    "missing_required_fields": [],
+                    "completeness_score_pct": 100.0,
+                    "min_completeness_score_pct": 100.0,
+                    "max_missing_required": 0,
+                },
+            },
+        )
 
         return {
             "perf": perf,
@@ -180,6 +215,8 @@ class ReleaseQualityDashboardSnapshotTests(unittest.TestCase):
             "distribution": distribution,
             "macos": macos,
             "injection": injection,
+            "model_admission": model_admission,
+            "environment_passport": environment_passport,
         }
 
     @staticmethod
@@ -210,6 +247,10 @@ class ReleaseQualityDashboardSnapshotTests(unittest.TestCase):
                 {"metric_id": "macos_desktop_parity.error_rate_pct", "value": 0.0},
                 {"metric_id": "injection_containment.containment_score_pct", "value": 100.0},
                 {"metric_id": "injection_containment.failed_scenarios", "value": 0.0},
+                {"metric_id": "model_artifact_admission.admission_score_pct", "value": 100.0},
+                {"metric_id": "model_artifact_admission.failed_scenarios", "value": 0.0},
+                {"metric_id": "environment_passport.completeness_score_pct", "value": 100.0},
+                {"metric_id": "environment_passport.missing_required_fields", "value": 0.0},
             ],
         }
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -383,6 +424,92 @@ class ReleaseQualityDashboardSnapshotTests(unittest.TestCase):
             }
             self.assertIn("injection_containment.containment_score_pct", metric_ids)
             self.assertIn("injection_containment.failed_scenarios", metric_ids)
+
+    def test_snapshot_and_trend_include_model_artifact_admission_when_report_provided(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amaryllis-quality-dashboard-") as tmp:
+            base = Path(tmp)
+            reports = self._write_reports(base=base)
+            baseline = base / "baseline.json"
+            snapshot = base / "dashboard.json"
+            trend = base / "trend.json"
+            self._write_baseline(baseline)
+
+            proc = self._run(
+                "--perf-report",
+                str(reports["perf"]),
+                "--fault-injection-report",
+                str(reports["fault"]),
+                "--mission-queue-report",
+                str(reports["mission"]),
+                "--runtime-lifecycle-report",
+                str(reports["runtime"]),
+                "--user-journey-report",
+                str(reports["journey"]),
+                "--model-artifact-admission-report",
+                str(reports["model_admission"]),
+                "--baseline",
+                str(baseline),
+                "--output",
+                str(snapshot),
+                "--trend-output",
+                str(trend),
+            )
+            self.assertEqual(proc.returncode, 0, msg=f"stdout={proc.stdout}\nstderr={proc.stderr}")
+            payload = json.loads(snapshot.read_text(encoding="utf-8"))
+            self.assertEqual(payload.get("summary", {}).get("status"), "pass")
+            self.assertEqual(int(payload.get("summary", {}).get("signals_total", 0)), 17)
+            trend_payload = json.loads(trend.read_text(encoding="utf-8"))
+            self.assertEqual(int(trend_payload.get("summary", {}).get("compared_metrics", 0)), 17)
+            metric_ids = {
+                str(item.get("metric_id"))
+                for item in payload.get("signals", [])
+                if isinstance(item, dict)
+            }
+            self.assertIn("model_artifact_admission.admission_score_pct", metric_ids)
+            self.assertIn("model_artifact_admission.failed_scenarios", metric_ids)
+
+    def test_snapshot_and_trend_include_environment_passport_when_report_provided(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amaryllis-quality-dashboard-") as tmp:
+            base = Path(tmp)
+            reports = self._write_reports(base=base)
+            baseline = base / "baseline.json"
+            snapshot = base / "dashboard.json"
+            trend = base / "trend.json"
+            self._write_baseline(baseline)
+
+            proc = self._run(
+                "--perf-report",
+                str(reports["perf"]),
+                "--fault-injection-report",
+                str(reports["fault"]),
+                "--mission-queue-report",
+                str(reports["mission"]),
+                "--runtime-lifecycle-report",
+                str(reports["runtime"]),
+                "--user-journey-report",
+                str(reports["journey"]),
+                "--environment-passport-report",
+                str(reports["environment_passport"]),
+                "--baseline",
+                str(baseline),
+                "--output",
+                str(snapshot),
+                "--trend-output",
+                str(trend),
+            )
+            self.assertEqual(proc.returncode, 0, msg=f"stdout={proc.stdout}\nstderr={proc.stderr}")
+            payload = json.loads(snapshot.read_text(encoding="utf-8"))
+            self.assertEqual(payload.get("summary", {}).get("status"), "pass")
+            self.assertEqual(int(payload.get("summary", {}).get("signals_total", 0)), 17)
+            trend_payload = json.loads(trend.read_text(encoding="utf-8"))
+            self.assertEqual(int(trend_payload.get("summary", {}).get("compared_metrics", 0)), 17)
+            metric_ids = {
+                str(item.get("metric_id"))
+                for item in payload.get("signals", [])
+                if isinstance(item, dict)
+            }
+            self.assertIn("environment_passport.completeness_score_pct", metric_ids)
+            self.assertIn("environment_passport.missing_required_fields", metric_ids)
 
     def test_snapshot_fails_when_quality_signal_breaches_threshold(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amaryllis-quality-dashboard-") as tmp:

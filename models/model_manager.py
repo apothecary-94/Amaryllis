@@ -5,12 +5,14 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import inspect
 import logging
+import os
 import random
 from threading import Lock, Thread
 import time
 from typing import Any, Iterator
 from uuid import uuid4
 
+from models.model_artifact_admission import validate_model_package_manifest
 from models.provider_errors import (
     ProviderErrorInfo,
     ProviderOperationError,
@@ -75,6 +77,11 @@ class _ModelDownloadJob:
             "updated_at": self.updated_at,
             "finished_at": self.finished_at,
         }
+
+
+def _parse_bool_env(value: Any) -> bool:
+    normalized = str(value or "").strip().lower()
+    return normalized in {"1", "true", "yes", "on"}
 
 
 class ModelManager:
@@ -434,6 +441,11 @@ class ModelManager:
             provider=selected,
             model_id=model_id,
             progress_callback=None,
+        )
+        result = self._enforce_model_artifact_admission(
+            provider_name=provider_name,
+            model_id=model_id,
+            result=result,
         )
         self._invalidate_provider_models_cache(provider_name)
         self._invalidate_suggested_cache()
@@ -1598,6 +1610,11 @@ class ModelManager:
                 model_id=model_id,
                 progress_callback=progress_callback,
             )
+            result = self._enforce_model_artifact_admission(
+                provider_name=provider_name,
+                model_id=model_id,
+                result=result,
+            )
             self._invalidate_provider_models_cache(provider_name)
             self._invalidate_suggested_cache()
             completed = self._to_int_or_none(result.get("size_bytes"))
@@ -1648,6 +1665,57 @@ class ModelManager:
         if not isinstance(result, dict):
             raise ValueError(f"Invalid download result from provider '{provider_name}'")
         return result
+
+    def admit_model_artifact(
+        self,
+        *,
+        manifest: dict[str, Any],
+        strict: bool = True,
+        artifact_root: str | None = None,
+    ) -> dict[str, Any]:
+        signing_key = str(os.getenv("AMARYLLIS_MODEL_PACKAGE_SIGNING_KEY", "")).strip() or None
+        require_signing_key = _parse_bool_env(
+            os.getenv("AMARYLLIS_MODEL_PACKAGE_REQUIRE_SIGNING_KEY", "false")
+        )
+        decision = validate_model_package_manifest(
+            manifest,
+            signing_key=signing_key,
+            require_signing_key=bool(require_signing_key and strict),
+            require_managed_trust=bool(strict),
+            artifact_root=artifact_root,
+        )
+        return {
+            **decision,
+            "admitted": bool(decision.get("ok")),
+            "mode": "strict" if strict else "advisory",
+        }
+
+    def _enforce_model_artifact_admission(
+        self,
+        *,
+        provider_name: str,
+        model_id: str,
+        result: dict[str, Any],
+    ) -> dict[str, Any]:
+        manifest = result.get("artifact_manifest")
+        if not isinstance(manifest, dict):
+            return result
+
+        artifact_root = str(result.get("path") or "").strip() or None
+        decision = self.admit_model_artifact(
+            manifest=manifest,
+            strict=True,
+            artifact_root=artifact_root,
+        )
+        output = dict(result)
+        output["artifact_admission"] = decision
+        if not bool(decision.get("admitted")):
+            reasons = ", ".join([str(item) for item in decision.get("errors", [])[:4]])
+            raise ValueError(
+                "Model artifact admission failed "
+                f"provider={provider_name} model={model_id} errors={reasons}"
+            )
+        return output
 
     def _set_download_job_failed(self, *, job_id: str, message: str) -> None:
         self._update_download_job(

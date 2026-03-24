@@ -65,6 +65,9 @@ jobs:
             tests.test_tool_plugin_signing \
             tests.test_tool_permission_manager \
             tests.test_injection_containment_gate \
+            tests.test_model_artifact_admission \
+            tests.test_model_artifact_admission_gate \
+            tests.test_environment_passport_gate \
             -v
 
       - name: Run security policy check

@@ -89,6 +89,21 @@ jobs:
             --max-failed-scenarios "${AMARYLLIS_NIGHTLY_INJECTION_MAX_FAILED_SCENARIOS:-0}" \
             --output "artifacts/nightly-injection-containment-report.json"
 
+      - name: Run nightly model artifact admission gate (blocking)
+        run: |
+          python scripts/release/model_artifact_admission_gate.py \
+            --min-admission-score-pct "${AMARYLLIS_NIGHTLY_MODEL_ADMISSION_MIN_SCORE_PCT:-100}" \
+            --max-failed-scenarios "${AMARYLLIS_NIGHTLY_MODEL_ADMISSION_MAX_FAILED_SCENARIOS:-0}" \
+            --output "artifacts/nightly-model-artifact-admission-report.json"
+
+      - name: Run nightly environment passport gate (blocking)
+        run: |
+          python scripts/release/environment_passport_gate.py \
+            --model-artifact-admission-report "artifacts/nightly-model-artifact-admission-report.json" \
+            --min-completeness-score-pct "${AMARYLLIS_NIGHTLY_ENV_PASSPORT_MIN_COMPLETENESS_PCT:-100}" \
+            --max-missing-required "${AMARYLLIS_NIGHTLY_ENV_PASSPORT_MAX_MISSING_REQUIRED:-0}" \
+            --output "artifacts/nightly-environment-passport-report.json"
+
       - name: Run macOS desktop parity smoke (staging, non-blocking)
         continue-on-error: true
         run: |
@@ -155,6 +170,22 @@ jobs:
         with:
           name: nightly-injection-containment-report
           path: artifacts/nightly-injection-containment-report.json
+          if-no-files-found: error
+
+      - name: Upload nightly model artifact admission report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-model-artifact-admission-report
+          path: artifacts/nightly-model-artifact-admission-report.json
+          if-no-files-found: error
+
+      - name: Upload nightly environment passport report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-environment-passport-report
+          path: artifacts/nightly-environment-passport-report.json
           if-no-files-found: error
 
       - name: Upload nightly macOS desktop parity smoke report

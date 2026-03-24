@@ -13,7 +13,7 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Build consolidated release quality dashboard snapshot from gate reports "
-            "(perf/fault/injection-containment/mission-queue/runtime-lifecycle/user-journey "
+            "(perf/fault/injection-containment/model-artifact-admission/environment-passport/mission-queue/runtime-lifecycle/user-journey "
             "with optional distribution resilience and macOS desktop parity staging)."
         )
     )
@@ -31,6 +31,16 @@ def _parse_args() -> argparse.Namespace:
         "--injection-containment-report",
         default="",
         help="Optional path to injection containment gate report JSON.",
+    )
+    parser.add_argument(
+        "--model-artifact-admission-report",
+        default="",
+        help="Optional path to model artifact admission gate report JSON.",
+    )
+    parser.add_argument(
+        "--environment-passport-report",
+        default="",
+        help="Optional path to environment passport gate report JSON.",
     )
     parser.add_argument(
         "--mission-queue-report",
@@ -212,6 +222,19 @@ def _build_snapshot(
     injection_summary = (
         injection.get("summary")
         if isinstance(injection, dict) and isinstance(injection.get("summary"), dict)
+        else {}
+    )
+    model_admission = reports.get("model_artifact_admission")
+    model_admission_summary = (
+        model_admission.get("summary")
+        if isinstance(model_admission, dict) and isinstance(model_admission.get("summary"), dict)
+        else {}
+    )
+    environment_passport = reports.get("environment_passport")
+    environment_passport_summary = (
+        environment_passport.get("summary")
+        if isinstance(environment_passport, dict)
+        and isinstance(environment_passport.get("summary"), dict)
         else {}
     )
 
@@ -456,6 +479,58 @@ def _build_snapshot(
                 ),
             ]
         )
+    if model_admission_summary:
+        signals.extend(
+            [
+                _metric_signal(
+                    metric_id="model_artifact_admission.admission_score_pct",
+                    source="model_artifact_admission",
+                    category="supply_chain",
+                    value=_safe_float(model_admission_summary.get("admission_score_pct")),
+                    threshold=_safe_float(model_admission_summary.get("min_admission_score_pct"), default=100.0),
+                    comparator="gte",
+                    unit="pct",
+                ),
+                _metric_signal(
+                    metric_id="model_artifact_admission.failed_scenarios",
+                    source="model_artifact_admission",
+                    category="supply_chain",
+                    value=_safe_float(model_admission_summary.get("failed_scenarios")),
+                    threshold=_safe_float(model_admission_summary.get("max_failed_scenarios"), default=0.0),
+                    comparator="lte",
+                    unit="count",
+                ),
+            ]
+        )
+    if environment_passport_summary:
+        signals.extend(
+            [
+                _metric_signal(
+                    metric_id="environment_passport.completeness_score_pct",
+                    source="environment_passport",
+                    category="reproducibility",
+                    value=_safe_float(environment_passport_summary.get("completeness_score_pct")),
+                    threshold=_safe_float(
+                        environment_passport_summary.get("min_completeness_score_pct"),
+                        default=100.0,
+                    ),
+                    comparator="gte",
+                    unit="pct",
+                ),
+                _metric_signal(
+                    metric_id="environment_passport.missing_required_fields",
+                    source="environment_passport",
+                    category="reproducibility",
+                    value=_safe_float(environment_passport_summary.get("missing_required_fields_count")),
+                    threshold=_safe_float(
+                        environment_passport_summary.get("max_missing_required"),
+                        default=0.0,
+                    ),
+                    comparator="lte",
+                    unit="count",
+                ),
+            ]
+        )
 
     total = len(signals)
     passed = sum(1 for item in signals if bool(item.get("passed")))
@@ -577,6 +652,12 @@ def main() -> int:
     macos_parity_path = _resolve_path(project_root, macos_parity_raw) if macos_parity_raw else None
     injection_raw = str(args.injection_containment_report or "").strip()
     injection_path = _resolve_path(project_root, injection_raw) if injection_raw else None
+    model_admission_raw = str(args.model_artifact_admission_report or "").strip()
+    model_admission_path = _resolve_path(project_root, model_admission_raw) if model_admission_raw else None
+    environment_passport_raw = str(args.environment_passport_report or "").strip()
+    environment_passport_path = (
+        _resolve_path(project_root, environment_passport_raw) if environment_passport_raw else None
+    )
 
     reports: dict[str, dict[str, Any]] = {}
     for key, path in report_paths.items():
@@ -621,6 +702,36 @@ def main() -> int:
         except Exception as exc:
             print(
                 f"[quality-dashboard] invalid report for injection_containment: {injection_path} error={exc}",
+                file=sys.stderr,
+            )
+            return 2
+    if model_admission_path is not None:
+        if not model_admission_path.exists():
+            print(
+                f"[quality-dashboard] missing report for model_artifact_admission: {model_admission_path}",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            reports["model_artifact_admission"] = _load_json_object(model_admission_path)
+        except Exception as exc:
+            print(
+                f"[quality-dashboard] invalid report for model_artifact_admission: {model_admission_path} error={exc}",
+                file=sys.stderr,
+            )
+            return 2
+    if environment_passport_path is not None:
+        if not environment_passport_path.exists():
+            print(
+                f"[quality-dashboard] missing report for environment_passport: {environment_passport_path}",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            reports["environment_passport"] = _load_json_object(environment_passport_path)
+        except Exception as exc:
+            print(
+                f"[quality-dashboard] invalid report for environment_passport: {environment_passport_path} error={exc}",
                 file=sys.stderr,
             )
             return 2

@@ -158,6 +158,12 @@ class LoadModelRequest(BaseModel):
     provider: str | None = None
 
 
+class ModelArtifactAdmissionRequest(BaseModel):
+    manifest: dict[str, Any] = Field(default_factory=dict)
+    strict: bool = True
+    artifact_root: str | None = None
+
+
 class ModelRouteRequest(BaseModel):
     mode: str = Field(default="balanced")
     provider: str | None = None
@@ -202,6 +208,16 @@ class ModelDownloadJobsListResponse(BaseModel):
     request_id: str
     items: list[ModelDownloadJob]
     count: int
+
+
+class ModelArtifactAdmissionResponse(BaseModel):
+    request_id: str
+    admitted: bool
+    mode: str
+    errors: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    summary: dict[str, Any] = Field(default_factory=dict)
+    action_receipt: dict[str, Any] = Field(default_factory=dict)
 
 
 @router.get("/models")
@@ -420,6 +436,56 @@ def list_model_downloads(
             request_id=_request_id(request),
             items=rows,
             count=int(payload.get("count", len(rows))),
+        )
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
+    except Exception as exc:
+        raise ProviderError(str(exc)) from exc
+
+
+@router.post("/models/artifacts/admit", response_model=ModelArtifactAdmissionResponse)
+def admit_model_artifact(
+    payload: ModelArtifactAdmissionRequest,
+    request: Request,
+) -> ModelArtifactAdmissionResponse:
+    services = request.app.state.services
+    auth = auth_context_from_request(request)
+    try:
+        decision = services.model_manager.admit_model_artifact(
+            manifest=payload.manifest,
+            strict=bool(payload.strict),
+            artifact_root=payload.artifact_root,
+        )
+        admitted = bool(decision.get("admitted"))
+        model_id = str(decision.get("summary", {}).get("model_id") or "").strip() or None
+        action_receipt = _sign_action(
+            request,
+            action="model_artifact_admission",
+            payload={
+                "strict": bool(payload.strict),
+                "artifact_root": payload.artifact_root,
+                "manifest": payload.manifest,
+            },
+            actor=auth.user_id,
+            status="succeeded" if admitted else "failed",
+            target_id=model_id,
+            details={
+                "admitted": admitted,
+                "checks_failed": int(decision.get("summary", {}).get("checks_failed", 0)),
+            },
+        )
+        return ModelArtifactAdmissionResponse(
+            request_id=_request_id(request),
+            admitted=admitted,
+            mode=str(decision.get("mode") or ("strict" if payload.strict else "advisory")),
+            errors=[str(item) for item in decision.get("errors", [])],
+            warnings=[str(item) for item in decision.get("warnings", [])],
+            summary=(
+                dict(decision.get("summary"))
+                if isinstance(decision.get("summary"), dict)
+                else {}
+            ),
+            action_receipt=action_receipt,
         )
     except ValueError as exc:
         raise ValidationError(str(exc)) from exc
