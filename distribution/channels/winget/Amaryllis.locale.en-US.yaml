@@ -1,0 +1,13 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+
+PackageIdentifier: Amaryllis.Amaryllis
+PackageVersion: {{VERSION}}
+PackageLocale: en-US
+Publisher: Amaryllis OSS
+PublisherUrl: https://github.com/bogdan/Amaryllis
+PackageName: Amaryllis
+ShortDescription: Local-first agent runtime and desktop AI workspace.
+Moniker: amaryllis
+License: Apache-2.0
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

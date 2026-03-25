@@ -1,0 +1,15 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+
+PackageIdentifier: Amaryllis.Amaryllis
+PackageVersion: {{VERSION}}
+InstallerType: zip
+InstallModes:
+  - silent
+Installers:
+  - Architecture: x64
+    InstallerUrl: {{WINDOWS_X64_URL}}
+    InstallerSha256: {{WINDOWS_X64_SHA256}}
+    Commands:
+      - amaryllis-runtime
+ManifestType: installer
+ManifestVersion: 1.6.0

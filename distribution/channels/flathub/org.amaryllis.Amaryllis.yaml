@@ -1,0 +1,18 @@
+app-id: org.amaryllis.Amaryllis
+runtime: org.freedesktop.Platform
+runtime-version: "24.08"
+sdk: org.freedesktop.Sdk
+command: amaryllis-runtime
+finish-args:
+  - --share=network
+  - --share=ipc
+  - --filesystem=home
+modules:
+  - name: amaryllis
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 amaryllis-runtime /app/bin/amaryllis-runtime
+    sources:
+      - type: archive
+        url: {{FLATHUB_ARCHIVE_URL}}
+        sha256: {{FLATHUB_ARCHIVE_SHA256}}

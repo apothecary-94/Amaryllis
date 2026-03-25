@@ -110,6 +110,11 @@ jobs:
             --max-missing-required "${AMARYLLIS_NIGHTLY_ENV_PASSPORT_MAX_MISSING_REQUIRED:-0}" \
             --output "artifacts/nightly-environment-passport-report.json"
 
+      - name: Run nightly distribution channel manifest gate (blocking)
+        run: |
+          python scripts/release/distribution_channel_manifest_gate.py \
+            --output "artifacts/nightly-distribution-channel-manifest-report.json"
+
       - name: Run macOS desktop parity smoke (staging, non-blocking)
         continue-on-error: true
         run: |
@@ -200,6 +205,14 @@ jobs:
         with:
           name: nightly-environment-passport-report
           path: artifacts/nightly-environment-passport-report.json
+          if-no-files-found: error
+
+      - name: Upload nightly distribution channel manifest report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-distribution-channel-manifest-report
+          path: artifacts/nightly-distribution-channel-manifest-report.json
           if-no-files-found: error
 
       - name: Upload nightly macOS desktop parity smoke report

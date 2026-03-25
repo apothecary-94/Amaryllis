@@ -127,6 +127,8 @@ jobs:
             tests.test_publish_mission_success_recovery_snapshot \
             tests.test_mission_success_recovery_report_pack \
             tests.test_distribution_resilience_report \
+            tests.test_distribution_channel_manifest_gate \
+            tests.test_render_distribution_channel_manifests \
             tests.test_user_journey_benchmark \
             tests.test_runtime_service_manifest_renderer \
             tests.test_runtime_service_lifecycle \
@@ -425,6 +427,18 @@ jobs:
           path: artifacts/distribution-resilience-report.json
           if-no-files-found: error
 
+      - name: Run distribution channel manifest readiness gate (blocking)
+        run: |
+          python scripts/release/distribution_channel_manifest_gate.py \
+            --output "artifacts/distribution-channel-manifest-report.json"
+
+      - name: Upload distribution channel manifest report
+        uses: actions/upload-artifact@v4
+        with:
+          name: distribution-channel-manifest-report
+          path: artifacts/distribution-channel-manifest-report.json
+          if-no-files-found: error
+
   release-kpi-pack:
     name: Release KPI Pack
     runs-on: ubuntu-latest
@@ -491,6 +505,12 @@ jobs:
         with:
           name: distribution-resilience-report
           path: artifacts/distribution
+
+      - name: Download distribution channel manifest report
+        uses: actions/download-artifact@v4
+        with:
+          name: distribution-channel-manifest-report
+          path: artifacts/distribution-channel-manifest
 
       - name: Download macOS desktop parity smoke report (staging, optional)
         continue-on-error: true
