@@ -125,6 +125,9 @@ class CognitionBackendContract(Protocol):
     ) -> dict[str, Any]:
         ...
 
+    def recommend_onboarding_profile(self) -> dict[str, Any]:
+        ...
+
     def choose_route(
         self,
         *,

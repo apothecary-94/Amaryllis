@@ -85,6 +85,20 @@ class _FakeModelManager:
         )
         return {"active": {"provider": self.active_provider, "model": self.active_model}, "items": []}
 
+    def recommend_onboarding_profile(self) -> dict[str, Any]:
+        self.calls.append(("recommend_onboarding_profile", {}))
+        return {
+            "recommended_profile": "balanced",
+            "profiles": {
+                "balanced": {
+                    "selected": {
+                        "provider": self.active_provider,
+                        "model": self.active_model,
+                    }
+                }
+            },
+        }
+
     def choose_route(self, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(("choose_route", dict(kwargs)))
         return {
@@ -156,6 +170,10 @@ class CognitionBackendsTests(unittest.TestCase):
 
         matrix = backend.model_capability_matrix(include_suggested=True, limit_per_provider=8)
         self.assertIn("active", matrix)
+
+        onboarding = backend.recommend_onboarding_profile()
+        self.assertIn("recommended_profile", onboarding)
+        self.assertIn("profiles", onboarding)
 
         route = backend.choose_route(mode="balanced", require_stream=True)
         selected = route.get("selected")

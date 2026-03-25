@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import inspect
 import logging
 import os
+import platform
 import random
 from threading import Lock, Thread
 import time
@@ -331,6 +332,60 @@ class ModelManager:
             "count": len(items),
             "items": sorted(items, key=lambda row: (str(row["provider"]), str(row["model"]))),
             "by_provider": by_provider,
+        }
+
+    def recommend_onboarding_profile(self) -> dict[str, Any]:
+        active_provider, active_model = self._active_target()
+        provider_caps = self.provider_capabilities()
+        candidates = self._build_model_candidates(
+            provider_capabilities=provider_caps,
+            include_suggested=True,
+            limit_per_provider=120,
+        )
+        hardware = self._onboarding_hardware_snapshot(provider_capabilities=provider_caps)
+        recommended_profile, reason_codes = self._onboarding_profile_from_hardware(hardware)
+        profile_specs = self._onboarding_profile_specs(hardware.get("memory_gb"))
+
+        profiles: dict[str, Any] = {}
+        for profile_id, spec in profile_specs.items():
+            constraints = RoutingConstraints(
+                mode=str(spec["route_mode"]),
+                require_stream=True,
+                require_tools=False,
+                prefer_local=spec.get("prefer_local"),
+                min_params_b=spec.get("min_params_b"),
+                max_params_b=spec.get("max_params_b"),
+            )
+            selected, fallbacks, considered_count = self._select_onboarding_route(
+                candidates=candidates,
+                constraints=constraints,
+                active_provider=active_provider,
+                active_model=active_model,
+            )
+            profiles[profile_id] = {
+                "id": profile_id,
+                "route_mode": str(spec["route_mode"]),
+                "intent": str(spec["intent"]),
+                "constraints": self._route_constraints_dict(constraints),
+                "selected": selected,
+                "fallbacks": fallbacks,
+                "considered_count": considered_count,
+            }
+
+        if recommended_profile not in profiles:
+            recommended_profile = "balanced"
+            reason_codes.append("fallback_balanced_profile")
+
+        return {
+            "generated_at": self._utc_now_iso(),
+            "active": {
+                "provider": active_provider,
+                "model": active_model,
+            },
+            "hardware": hardware,
+            "recommended_profile": recommended_profile,
+            "reason_codes": reason_codes,
+            "profiles": profiles,
         }
 
     def choose_route(
@@ -1437,6 +1492,180 @@ class ModelManager:
                 )
 
         return rows
+
+    def _select_onboarding_route(
+        self,
+        *,
+        candidates: list[ModelCandidate],
+        constraints: RoutingConstraints,
+        active_provider: str,
+        active_model: str,
+    ) -> tuple[dict[str, Any], list[dict[str, Any]], int]:
+        scored: list[tuple[float, ModelCandidate]] = []
+        for candidate in candidates:
+            score = score_candidate(candidate, constraints)
+            if score is None:
+                continue
+            penalty = self._provider_guardrail_penalty(candidate.provider)
+            scored.append((score - penalty, candidate))
+
+        if not scored:
+            return (
+                {
+                    "provider": active_provider,
+                    "model": active_model,
+                    "reason": "fallback_active_model",
+                },
+                [],
+                0,
+            )
+
+        scored.sort(
+            key=lambda pair: (
+                pair[0],
+                1 if pair[1].active else 0,
+                1 if pair[1].installed else 0,
+            ),
+            reverse=True,
+        )
+
+        selected_score, selected_candidate = scored[0]
+        selected = selected_candidate.to_dict()
+        selected["score"] = selected_score
+        selected["guardrail_penalty"] = self._provider_guardrail_penalty(selected_candidate.provider)
+        selected["reason"] = "onboarding_profile_route"
+
+        fallbacks: list[dict[str, Any]] = []
+        seen = {f"{selected_candidate.provider}:{selected_candidate.model}"}
+        for score, candidate in scored[1:]:
+            key = f"{candidate.provider}:{candidate.model}"
+            if key in seen:
+                continue
+            seen.add(key)
+            payload = candidate.to_dict()
+            payload["score"] = score
+            payload["guardrail_penalty"] = self._provider_guardrail_penalty(candidate.provider)
+            fallbacks.append(payload)
+            if len(fallbacks) >= 4:
+                break
+        return selected, fallbacks, len(scored)
+
+    @staticmethod
+    def _onboarding_profile_specs(memory_gb: Any) -> dict[str, dict[str, Any]]:
+        normalized_memory: float | None
+        try:
+            normalized_memory = float(memory_gb) if memory_gb is not None else None
+        except Exception:
+            normalized_memory = None
+
+        fast_max_params = 8.0
+        if normalized_memory is not None and normalized_memory <= 8.0:
+            fast_max_params = 4.0
+
+        balanced_max_params: float | None = None
+        if normalized_memory is not None and normalized_memory < 16.0:
+            balanced_max_params = 12.0
+
+        return {
+            "fast": {
+                "route_mode": "local_first",
+                "prefer_local": True,
+                "min_params_b": None,
+                "max_params_b": fast_max_params,
+                "intent": "Lowest latency and memory usage for first response.",
+            },
+            "balanced": {
+                "route_mode": "balanced",
+                "prefer_local": True,
+                "min_params_b": None,
+                "max_params_b": balanced_max_params,
+                "intent": "Default quality/latency trade-off for daily usage.",
+            },
+            "quality": {
+                "route_mode": "quality_first",
+                "prefer_local": None,
+                "min_params_b": 8.0,
+                "max_params_b": None,
+                "intent": "Best answer quality, may use more compute or remote providers.",
+            },
+        }
+
+    @staticmethod
+    def _onboarding_profile_from_hardware(hardware: dict[str, Any]) -> tuple[str, list[str]]:
+        memory_gb: float | None = None
+        cpu_count: int | None = None
+        try:
+            raw_memory = hardware.get("memory_gb")
+            memory_gb = float(raw_memory) if raw_memory is not None else None
+        except Exception:
+            memory_gb = None
+        try:
+            raw_cpu = hardware.get("cpu_count_logical")
+            cpu_count = int(raw_cpu) if raw_cpu is not None else None
+        except Exception:
+            cpu_count = None
+
+        has_cloud = bool(hardware.get("cloud_provider_available", False))
+        reasons: list[str] = []
+        if memory_gb is not None and memory_gb < 12.0:
+            reasons.append("low_memory")
+        if cpu_count is not None and cpu_count <= 4:
+            reasons.append("low_cpu")
+        if reasons:
+            return "fast", reasons
+
+        high_compute = False
+        if memory_gb is not None and cpu_count is not None and memory_gb >= 28.0 and cpu_count >= 10:
+            high_compute = True
+        elif memory_gb is not None and cpu_count is not None and memory_gb >= 20.0 and cpu_count >= 8 and has_cloud:
+            high_compute = True
+        if high_compute:
+            return "quality", ["high_compute_headroom"]
+
+        return "balanced", ["default_balanced_start"]
+
+    def _onboarding_hardware_snapshot(
+        self,
+        *,
+        provider_capabilities: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        cpu_count = os.cpu_count() or 0
+        memory_bytes = self._detect_system_memory_bytes()
+        memory_gb: float | None = None
+        if memory_bytes is not None and memory_bytes > 0:
+            memory_gb = round(float(memory_bytes) / float(1024**3), 2)
+
+        caps = provider_capabilities if isinstance(provider_capabilities, dict) else self.provider_capabilities()
+        local_available = False
+        cloud_available = False
+        for item in caps.values():
+            payload = item if isinstance(item, dict) else {}
+            if bool(payload.get("local", False)):
+                local_available = True
+            else:
+                cloud_available = True
+
+        return {
+            "platform": platform.system().lower(),
+            "machine": platform.machine().lower(),
+            "cpu_count_logical": int(cpu_count),
+            "memory_bytes": memory_bytes,
+            "memory_gb": memory_gb,
+            "provider_count": len(caps),
+            "local_provider_available": local_available,
+            "cloud_provider_available": cloud_available,
+        }
+
+    @staticmethod
+    def _detect_system_memory_bytes() -> int | None:
+        try:
+            page_size = os.sysconf("SC_PAGE_SIZE")
+            page_count = os.sysconf("SC_PHYS_PAGES")
+            if int(page_size) > 0 and int(page_count) > 0:
+                return int(page_size) * int(page_count)
+        except Exception:
+            return None
+        return None
 
     def _candidate_from_model_id(
         self,

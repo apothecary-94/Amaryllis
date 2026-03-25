@@ -102,6 +102,19 @@ class CognitionBackendRuntimeTests(unittest.TestCase):
         self.assertEqual(str(selected.get("provider")), "deterministic")
         self.assertEqual(str(selected.get("model")), "deterministic-v1")
 
+    def test_onboarding_profile_endpoint_uses_backend_contract(self) -> None:
+        response = self.client.get(
+            "/models/onboarding/profile",
+            headers=self._auth("user-token"),
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(str(payload.get("recommended_profile")), "balanced")
+        profiles = payload.get("profiles", {})
+        self.assertIsInstance(profiles, dict)
+        self.assertIn("balanced", profiles)
+        self.assertIn("request_id", payload)
+
     def test_generation_loop_contract_endpoint_returns_conformance_matrix(self) -> None:
         response = self.client.get(
             "/models/generation-loop/contract",

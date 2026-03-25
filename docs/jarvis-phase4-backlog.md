@@ -88,7 +88,7 @@ Move from OSS platform readiness to daily-driver "Jarvis on PC": unified multimo
 
 | ID | Status | Task | Deliverable | Definition of Done |
 |---|---|---|---|---|
-| P4-H01 | todo | Add first-run onboarding profiles with hardware autodetect (`fast/balanced/quality`) | onboarding wizard + profile selector + tests | New user reaches first successful response with recommended profile and no manual quant tuning |
+| P4-H01 | in_progress | Add first-run onboarding profiles with hardware autodetect (`fast/balanced/quality`) | onboarding wizard + profile selector + tests | New user reaches first successful response with recommended profile and no manual quant tuning |
 | P4-H02 | todo | Ship model catalog as package UX (requirements + one-click install) | model package registry + UI/API contract | Users select models by capability/system requirements instead of raw artifact filenames |
 | P4-H03 | todo | Implement privacy/offline transparency contract | offline indicator + network intent panel + policy docs | User can see when network is required; telemetry remains opt-in by default |
 | P4-H04 | todo | Expand distribution channels for mass discovery | WinGet/Homebrew/Flathub pipeline + channel docs | Stable channel artifacts are published and verifiable for Windows/macOS/Linux discovery paths |
@@ -130,7 +130,7 @@ Move from OSS platform readiness to daily-driver "Jarvis on PC": unified multimo
 
 | ID | Status | Scope |
 |---|---|---|
-| P4-H01 | todo | first-run onboarding wizard + hardware profile recommendation contract |
+| P4-H01 | in_progress | first-run onboarding wizard + hardware profile recommendation contract |
 | P4-H02 | todo | model package catalog and system-requirement-aware install flow |
 | P4-H03 | todo | offline/privacy transparency controls in runtime + UX |
 | P4-H04 | todo | channel packaging pipeline for WinGet/Homebrew/Flathub |

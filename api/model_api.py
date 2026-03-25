@@ -279,6 +279,19 @@ def generation_loop_contract(request: Request) -> dict[str, Any]:
     return payload
 
 
+@router.get("/models/onboarding/profile")
+def onboarding_profile(request: Request) -> dict[str, Any]:
+    services = request.app.state.services
+    try:
+        payload = services.model_manager.recommend_onboarding_profile()
+        payload["request_id"] = _request_id(request)
+        return payload
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
+    except Exception as exc:
+        raise ProviderError(str(exc)) from exc
+
+
 @router.post("/models/route")
 def model_route(payload: ModelRouteRequest, request: Request) -> dict[str, Any]:
     services = request.app.state.services

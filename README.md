@@ -438,6 +438,14 @@ curl http://localhost:8000/models/capabilities
 curl "http://localhost:8000/models/capability-matrix?include_suggested=true&limit_per_provider=120"
 ```
 
+### First-run onboarding profile recommendation
+
+```bash
+curl "http://localhost:8000/models/onboarding/profile"
+```
+
+Response includes hardware snapshot + recommended profile (`fast`, `balanced`, `quality`) and per-profile route targets.
+
 ### Resolve best route for request policy
 
 ```bash

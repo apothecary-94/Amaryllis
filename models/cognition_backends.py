@@ -76,6 +76,9 @@ class ModelManagerCognitionBackend:
             limit_per_provider=limit_per_provider,
         )
 
+    def recommend_onboarding_profile(self) -> dict[str, Any]:
+        return self._manager.recommend_onboarding_profile()
+
     def choose_route(
         self,
         *,
@@ -311,6 +314,55 @@ class DeterministicCognitionBackend:
             "count": 1,
             "items": [item],
             "by_provider": {"deterministic": [item]},
+        }
+
+    def recommend_onboarding_profile(self) -> dict[str, Any]:
+        model_name = str(self.active_model or "deterministic-v1")
+        profiles: dict[str, Any] = {}
+        for profile_id, route_mode in (
+            ("fast", "local_first"),
+            ("balanced", "balanced"),
+            ("quality", "quality_first"),
+        ):
+            profiles[profile_id] = {
+                "id": profile_id,
+                "route_mode": route_mode,
+                "intent": "deterministic onboarding profile",
+                "constraints": {
+                    "mode": route_mode,
+                    "require_stream": True,
+                    "require_tools": False,
+                    "prefer_local": True,
+                    "min_params_b": None,
+                    "max_params_b": None,
+                },
+                "selected": {
+                    "provider": "deterministic",
+                    "model": model_name,
+                    "reason": "deterministic_route",
+                },
+                "fallbacks": [],
+                "considered_count": 1,
+            }
+        return {
+            "generated_at": self._utc_now_iso(),
+            "active": {
+                "provider": "deterministic",
+                "model": model_name,
+            },
+            "hardware": {
+                "platform": "deterministic",
+                "machine": "synthetic",
+                "cpu_count_logical": 8,
+                "memory_bytes": 16 * 1024 * 1024 * 1024,
+                "memory_gb": 16.0,
+                "provider_count": 1,
+                "local_provider_available": True,
+                "cloud_provider_available": False,
+            },
+            "recommended_profile": "balanced",
+            "reason_codes": ["deterministic_backend_default"],
+            "profiles": profiles,
         }
 
     def choose_route(

@@ -35,6 +35,19 @@ class _FakeCognitionManager:
     def model_capability_matrix(self, **_: object) -> dict[str, object]:
         return {"active": {"provider": self.active_provider, "model": self.active_model}, "items": []}
 
+    def recommend_onboarding_profile(self) -> dict[str, object]:
+        return {
+            "recommended_profile": "balanced",
+            "profiles": {
+                "balanced": {
+                    "selected": {
+                        "provider": self.active_provider,
+                        "model": self.active_model,
+                    }
+                }
+            },
+        }
+
     def choose_route(self, **_: object) -> dict[str, object]:
         return {"selected": {"provider": self.active_provider, "model": self.active_model}, "fallbacks": []}
 
@@ -127,6 +140,8 @@ class KernelContractsTests(unittest.TestCase):
             self.assertIsInstance(first_chunk, str)
             self.assertTrue(str(provider).strip())
             self.assertTrue(str(model).strip())
+            onboarding = backend.recommend_onboarding_profile()
+            self.assertIn("recommended_profile", onboarding)
 
 
 if __name__ == "__main__":
