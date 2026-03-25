@@ -20,6 +20,13 @@ Research integration focus:
 - provenance-first RAG and zero-trust tool execution
 - secure model supply chain, reproducibility, and license admission
 
+Mass-adoption integration focus:
+- zero-friction first-run onboarding and model package UX
+- privacy/offline transparency and trust-preserving defaults
+- mainstream desktop distribution channels (WinGet/Homebrew/Flathub)
+- developer adoption path (OpenAI-compatible local API + quickstarts)
+- localization/governance discipline and KPI-driven growth loop
+
 ## Work Packages (WP)
 
 | WP | Backlog IDs | Priority | Goal | Primary Code Areas | Blocking Gate |
@@ -34,6 +41,12 @@ Research integration focus:
 | WP-08 | P4-G01 | P1 | Runtime environment passport in release/nightly artifacts | `scripts/release/build_quality_dashboard_snapshot.py`, `scripts/release/publish_release_quality_snapshot.py`, `runtime/profile_loader.py` | every release artifact has env passport |
 | WP-09 | P4-G02 | P1 | License admission policy for model/adapter/index onboarding | `api/model_api.py`, `runtime/compliance.py`, `policies/` | onboarding blocked on incompatible license policy |
 | WP-10 | P4-G03 | P2 | Adapter-based personalization path with rollback/signature checks | `memory/`, `models/`, `storage/`, `api/` | reversible adapter stack with tests |
+| WP-11 | P4-H01 + P4-H02 | P1 | First-run activation and model package UX | `api/model_api.py`, `models/model_manager.py`, `runtime/config.py`, `docs/` | first-run profile recommendation and package-based model install flow pass activation checks |
+| WP-12 | P4-H03 | P1 | Offline/privacy transparency contract | `runtime/server.py`, `runtime/observability.py`, `api/`, `docs/` | offline indicator and network intent surface are testable and policy-consistent |
+| WP-13 | P4-H04 | P1 | Mass distribution channel pipeline | `.github/workflows/`, `scripts/release/`, `docs/release-playbook.md` | release artifacts and manifests are publish-ready for WinGet/Homebrew/Flathub |
+| WP-14 | P4-H05 | P1 | Developer adoption starter pack | `api/`, `sdk/`, `examples/`, `docs/` | local OpenAI-compatible quickstart completes in <15 minutes with contract tests |
+| WP-15 | P4-H06 + P4-H07 | P2 | RU/EN localization and OSS governance package | `docs/`, `policies/`, `.github/` | localization baseline and contributor/legal governance docs are release-gated |
+| WP-16 | P4-H08 | P1 | Adoption KPI funnel and growth dashboards | `runtime/observability.py`, `scripts/release/`, `observability/` | install/activation/retention/adoption KPI contracts publishable without breaking privacy policy |
 
 ## Critical Path
 1. `WP-01` -> baseline contract required before portability and QoS enforcement.
@@ -42,6 +55,7 @@ Research integration focus:
 4. `WP-05` + `WP-06` -> required before safety profile can be called Tier-1.
 5. `WP-07` -> required before `WP-08` and `WP-09` can be end-to-end enforceable.
 6. `WP-10` starts after `WP-07` and `WP-09` to avoid unsafe personalization pipeline.
+7. `WP-11`..`WP-16` run as parallel mass-adoption lane after `WP-08` baseline evidence is live.
 
 ## Sprint Plan (Execution Sequence)
 
@@ -106,6 +120,23 @@ Definition of done:
 - adapters are reversible and versioned with signed metadata
 - personalization pipeline is policy-gated and observable
 
+### Parallel Lane (Weeks 3-8) - Adoption and Distribution
+Goal: convert technical readiness into mass user adoption and ecosystem growth.
+
+In-lane scope:
+- `WP-11` first-run onboarding profiles + package-based model install UX
+- `WP-12` privacy/offline transparency contract and user-visible network intent
+- `WP-13` channel pipeline hardening (WinGet/Homebrew/Flathub release readiness)
+- `WP-14` developer quickstart and integration samples for OpenAI-compatible local API
+- `WP-15` RU/EN localization and OSS governance baseline (license/trademark/DCO/CoC)
+- `WP-16` adoption KPI funnel contract and dashboard publication path
+
+Definition of done:
+- install-to-first-answer journey is measurable and repeatable across channel builds
+- users can verify offline behavior and network requirements from product UI/docs
+- developer integration quickstart and API compatibility checks are release-gated
+- growth KPIs are available in privacy-preserving mode (opt-in or local-only export)
+
 ## Start-Now PR Slices (First 10 Working Days)
 
 | PR | Window | Scope | Suggested Files | Exit Check |
@@ -118,6 +149,15 @@ Definition of done:
 | PR-6 | Day 6-7 | environment passport artifact generation | `scripts/release/build_quality_dashboard_snapshot.py` | artifact emitted in quality snapshot |
 | PR-7 | Day 7-8 | license admission schema + checker baseline | `runtime/compliance.py`, `api/model_api.py`, `policies/` | onboarding blocks incompatible license |
 | PR-8 | Day 8-10 | QoS governor baseline mode transitions | `runtime/config.py`, `runtime/server.py`, `scripts/release/user_journey_benchmark.py` | TTFT/stability checks wired |
+
+Adoption lane slices (next 10 working days after PR-1..PR-8):
+
+| PR | Window | Scope | Suggested Files | Exit Check |
+|---|---|---|---|---|
+| PR-9 | Day 11-12 | first-run hardware profile recommendation and onboarding contract | `runtime/config.py`, `api/`, `docs/` | activation smoke (`install -> first response`) passes |
+| PR-10 | Day 12-14 | model package catalog UX and install metadata contract | `models/model_manager.py`, `api/model_api.py`, `docs/` | package-based model selection/install tests pass |
+| PR-11 | Day 14-16 | offline/privacy transparency surface + network intent report | `runtime/server.py`, `runtime/observability.py`, `docs/` | offline contract gate passes with explicit network declarations |
+| PR-12 | Day 16-20 | distribution/developer adoption pack (channel manifests + quickstarts) | `.github/workflows/`, `scripts/release/`, `docs/`, `examples/` | channel manifest checks and API quickstart contract tests pass |
 
 ## Gate Matrix (Must Be Green Before Next Phase)
 
@@ -139,6 +179,11 @@ Additional Phase 4 gates to add in this plan:
 - model package + quant passport admission gate
 - environment passport completeness gate
 - license admission gate
+- first-run activation journey gate
+- offline transparency/network intent gate
+- distribution channel manifest readiness gate
+- API quickstart compatibility gate
+- adoption KPI schema gate
 
 ## Ownership Boundaries
 
@@ -149,6 +194,8 @@ Additional Phase 4 gates to add in this plan:
 | tool security + injection containment | `tools/` + `api/tool_api.py` | no edits to model routing logic |
 | release gates + artifacts | `scripts/release/` + `eval/` | no runtime behavior change without dedicated PR |
 | compliance/license/admission | `runtime/compliance.py` + `policies/` | no bypass path in API handlers |
+| product onboarding + UX contract | `api/` + `docs/` + `runtime/config.py` | no hidden default changes without activation KPI impact note |
+| growth/distribution | `.github/workflows/` + `scripts/release/` + `observability/` | channel automation changes must include rollback and manifest validation path |
 
 ## Risk Register
 
@@ -159,6 +206,9 @@ Additional Phase 4 gates to add in this plan:
 | Provenance payload inflation increases latency | QoS regression | compact provenance schema + lazy expansion in UI |
 | License metadata inconsistency across sources | onboarding instability | canonical license map + explicit unknown-license deny policy |
 | Quant passport drift across converters | reproducibility loss | strict converter/version capture and hash attestation |
+| Install friction across channels | adoption stall | channel-first packaging with install-to-first-answer KPI gate |
+| Privacy messaging mismatch with runtime behavior | trust erosion | explicit offline/network intent contract and docs parity checks |
+| Weak developer onboarding | low ecosystem growth | maintain OpenAI-compatible quickstart and integration test fixtures |
 
 ## Kickoff Checklist
 1. Freeze P4-S1 scope to PR-1..PR-8 only.
@@ -166,3 +216,5 @@ Additional Phase 4 gates to add in this plan:
 3. Enable daily artifact publishing for conformance/provenance/passport reports.
 4. Review threshold values after first 3 nightly runs before making new gates blocking.
 5. Hold weekly checkpoint: gate health, rollback drills, unresolved risk decisions.
+6. Add adoption checkpoint: installs, activation, D7 retention, and feature adoption by channel.
+7. Treat privacy/offline contract and distribution manifest checks as release-blocking once stable.

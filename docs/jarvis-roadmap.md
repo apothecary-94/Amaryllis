@@ -91,6 +91,25 @@ Execution-ready breakdown:
 - Introduce privacy-aware personalization lanes (adapter composition first, DP-aware paths as advanced tier).
 - Evolve benchmark strategy from single-task metrics to end-to-end user-flow resilience and safety under distribution shift.
 
+## Adoption Delta (March 2026)
+Derived from `deep-research-report-3` (practical track, product/distribution focused) and integrated into Phase 4 mass-adoption lane.
+
+Execution-ready breakdown:
+- `/Users/bogdan/Amaryllis/docs/jarvis-phase4-backlog.md` (Epic H)
+- `/Users/bogdan/Amaryllis/docs/jarvis-phase4-execution-plan.md` (WP-11..WP-16)
+
+### 3-9 Month Priorities
+- Optimize for install-to-first-value experience: hardware autodetect + ready profiles + model packages.
+- Ship mainstream discovery/distribution channels (GitHub Releases + WinGet + Homebrew + Flathub).
+- Make privacy/offline behavior explicit and user-visible (offline indicator + network intent disclosure).
+- Productize developer path: OpenAI-compatible local API quickstarts and integration samples.
+- Establish RU/EN localization and contributor governance baseline for sustainable OSS growth.
+
+### 9-24 Month Priorities
+- Evolve from feature delivery to adoption flywheel: activation, retention, and ecosystem plugin growth loops.
+- Add partner-ready channel artifacts and reproducible distribution posture for OEM/self-hosted integrators.
+- Maintain trust as scale grows: opt-in telemetry discipline, clear legal/licensing boundaries, and public KPI transparency.
+
 ## North-Star Metrics
 - Golden task completion rate.
 - Time-to-first-useful-action.

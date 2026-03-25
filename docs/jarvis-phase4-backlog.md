@@ -18,6 +18,11 @@ Move from OSS platform readiness to daily-driver "Jarvis on PC": unified multimo
 - Generation loop behavior is portable across CPU/GPU/NPU profiles with deterministic fallback semantics.
 - RAG/tooling stack is provenance-first and zero-trust by default (injection containment and sandbox guarantees).
 - Quantized model delivery is reproducible and attestable (quant passport, signatures, and environment passport).
+- First-run activation path is low-friction (hardware autodetect + ready profiles + model package UX) with target time-to-first-answer under 10 minutes.
+- Distribution channels cover mainstream desktop discovery paths (GitHub Releases + WinGet + Homebrew + Flathub) with signed artifacts.
+- Privacy contract is explicit and user-visible: offline-by-default behavior, clear network intent, and opt-in telemetry only.
+- Developer adoption path is productized: OpenAI-compatible local API, stable SDK quickstarts, and integration samples.
+- RU/EN localization, governance, and contributor workflow are mature enough for sustained OSS ecosystem growth.
 
 ## Epics and Tasks
 
@@ -79,6 +84,19 @@ Move from OSS platform readiness to daily-driver "Jarvis on PC": unified multimo
 | P4-G02 | todo | Add license admission policy for models/adapters/index packs | license policy engine + report | Artifact onboarding is blocked on incompatible licensing constraints |
 | P4-G03 | todo | Add adapter-based personalization lane with rollback and signature checks | personalization workflow + adapter registry | Personalization uses reversible adapter stacks; base weights remain immutable in default path |
 
+### Epic H - Mass Adoption, Distribution, and Ecosystem
+
+| ID | Status | Task | Deliverable | Definition of Done |
+|---|---|---|---|---|
+| P4-H01 | todo | Add first-run onboarding profiles with hardware autodetect (`fast/balanced/quality`) | onboarding wizard + profile selector + tests | New user reaches first successful response with recommended profile and no manual quant tuning |
+| P4-H02 | todo | Ship model catalog as package UX (requirements + one-click install) | model package registry + UI/API contract | Users select models by capability/system requirements instead of raw artifact filenames |
+| P4-H03 | todo | Implement privacy/offline transparency contract | offline indicator + network intent panel + policy docs | User can see when network is required; telemetry remains opt-in by default |
+| P4-H04 | todo | Expand distribution channels for mass discovery | WinGet/Homebrew/Flathub pipeline + channel docs | Stable channel artifacts are published and verifiable for Windows/macOS/Linux discovery paths |
+| P4-H05 | todo | Productize developer adoption path | OpenAI-compatible API starter pack + SDK quickstarts + integration examples | Dev can run local API and complete first integration in under 15 minutes |
+| P4-H06 | todo | Add RU/EN localization and template packs | i18n baseline + localized docs + starter prompts/workflows | RU and EN users have first-class UI/docs/templates with release-level coverage checks |
+| P4-H07 | todo | Harden OSS governance and contribution policy | licensing/trademark policy + DCO/CoC + maintainer map + release discipline | External contributors onboard without legal ambiguity and release governance is explicit |
+| P4-H08 | todo | Add adoption KPI funnel and growth dashboards | install/activation/retention/feature-adoption metrics + dashboard | Team can trace product changes to adoption impact while preserving privacy constraints |
+
 ## Current Sprint (P4-S0)
 
 | ID | Status | Scope |
@@ -108,6 +126,19 @@ Move from OSS platform readiness to daily-driver "Jarvis on PC": unified multimo
 | P4-G01 | in_progress | environment passport collector in release/nightly artifacts |
 | P4-G02 | todo | license admission checker for model/adapters onboarding |
 
+## Planned Sprint (P4-S2, Mass Adoption Foundation)
+
+| ID | Status | Scope |
+|---|---|---|
+| P4-H01 | todo | first-run onboarding wizard + hardware profile recommendation contract |
+| P4-H02 | todo | model package catalog and system-requirement-aware install flow |
+| P4-H03 | todo | offline/privacy transparency controls in runtime + UX |
+| P4-H04 | todo | channel packaging pipeline for WinGet/Homebrew/Flathub |
+| P4-H05 | todo | developer quickstart pack for OpenAI-compatible API integration |
+| P4-H06 | todo | RU/EN localization baseline and template starter packs |
+| P4-H07 | todo | governance baseline (license/trademark/DCO/CoC/release conventions) |
+| P4-H08 | todo | adoption KPI funnel and privacy-safe analytics surface |
+
 ## Execution Playbook (Start-Now)
 - Detailed implementation-ready program: `/Users/bogdan/Amaryllis/docs/jarvis-phase4-execution-plan.md`
 - Sprint order: `P4-S1` (contracts/baselines) -> `P4-S2` (enforcement/gates) -> `P4-S3` (hardening/parity) -> `P4-S4` (safe personalization lane)
@@ -124,6 +155,16 @@ Move from OSS platform readiness to daily-driver "Jarvis on PC": unified multimo
 9. `P4-G01` environment passport in release/nightly artifacts
 10. `P4-G02` license admission policy for onboarding
 11. `P4-G03` adapter-based personalization with rollback/signature checks
+
+### Mass Adoption Path (Parallel After Core P0 Gates)
+1. `P4-H01` first-run onboarding profiles with hardware autodetect
+2. `P4-H02` model catalog packages and one-click install
+3. `P4-H03` offline/privacy transparency and opt-in telemetry contract
+4. `P4-H04` WinGet/Homebrew/Flathub channel publishing
+5. `P4-H05` developer API starter pack and integration examples
+6. `P4-H06` RU/EN localization and template packs
+7. `P4-H07` OSS governance and licensing clarity package
+8. `P4-H08` adoption KPI funnel and growth dashboards
 
 ### Start Conditions
 - No P0 task may be skipped out of critical-path order unless dependency is explicitly removed in this backlog.
