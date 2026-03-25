@@ -26,9 +26,19 @@ class _FakeProvider:
         self._model_ids = list(model_ids)
         self._local = bool(local)
         self._requires_api_key = bool(requires_api_key)
+        self._loaded_model: str | None = None
 
     def list_models(self) -> list[dict[str, Any]]:
-        return [{"id": model_id, "metadata": {"source": "fixture"}} for model_id in self._model_ids]
+        rows = []
+        for model_id in self._model_ids:
+            rows.append(
+                {
+                    "id": model_id,
+                    "metadata": {"source": "fixture"},
+                    "active": model_id == self._loaded_model,
+                }
+            )
+        return rows
 
     def suggested_models(self, limit: int = 100) -> list[dict[str, Any]]:
         return [{"id": model_id, "label": model_id} for model_id in self._model_ids[: max(1, limit)]]
@@ -42,6 +52,29 @@ class _FakeProvider:
             "supports_tools": False,
             "requires_api_key": self._requires_api_key,
         }
+
+    def download_model(self, model_id: str) -> dict[str, Any]:
+        _ = model_id
+        return {"status": "downloaded", "provider": "fixture", "model": model_id}
+
+    def load_model(self, model_id: str) -> dict[str, Any]:
+        self._loaded_model = model_id
+        return {"status": "loaded", "provider": "fixture", "model": model_id}
+
+    def chat(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        temperature: float = 0.7,
+        max_tokens: int = 512,
+    ) -> str:
+        _ = (temperature, max_tokens)
+        prompt = ""
+        for item in messages:
+            if str(item.get("role")) == "user":
+                prompt = str(item.get("content", "")).strip()
+                break
+        return f"fixture-ready:{model}:{prompt[:48]}"
 
 
 @unittest.skipIf(TestClient is None, "fastapi dependency is not available")
@@ -194,6 +227,57 @@ class ModelOnboardingProfileAPITests(unittest.TestCase):
         payload = response.json()
         self.assertFalse(bool(payload.get("ready_to_install")))
         self.assertEqual(str(payload.get("next_action")), "resolve_blockers")
+        blockers = [str(item) for item in payload.get("blockers", [])]
+        self.assertIn("license.spdx_denied", blockers)
+
+    def test_onboarding_activate_endpoint_returns_activation_payload(self) -> None:
+        response = self.client.post(
+            "/models/onboarding/activate",
+            headers=self._auth(),
+            json={
+                "profile": "balanced",
+                "include_remote_providers": True,
+                "limit": 20,
+                "require_metadata": False,
+                "activate": True,
+                "run_smoke_test": True,
+                "smoke_prompt": "ping",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(str(payload.get("activation_version")), "onboarding_activate_v1")
+        self.assertIn(str(payload.get("status")), {"activated", "activated_with_smoke_warning"})
+        self.assertIn("selected_package_id", payload)
+        self.assertIn("action_receipt", payload)
+        self.assertTrue(bool((payload.get("action_receipt") or {}).get("signature")))
+        self.assertIn("request_id", payload)
+
+    def test_onboarding_activate_endpoint_returns_blocked_status_when_plan_is_blocked(self) -> None:
+        backend = self.server_module.app.state.services.model_manager
+        manager = getattr(backend, "manager", backend)
+        blocked_plan = {
+            "plan_version": "onboarding_activation_plan_v1",
+            "selected_profile": "balanced",
+            "selected_package_id": "mlx::blocked-model",
+            "ready_to_install": False,
+            "blockers": ["license.spdx_denied"],
+            "active": {"provider": "mlx", "model": "mlx-community/Qwen2.5-1.5B-Instruct-4bit"},
+        }
+        with patch.object(manager, "onboarding_activation_plan", return_value=blocked_plan):
+            response = self.client.post(
+                "/models/onboarding/activate",
+                headers=self._auth(),
+                json={
+                    "profile": "balanced",
+                    "activate": True,
+                    "run_smoke_test": True,
+                },
+            )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(str(payload.get("status")), "blocked")
+        self.assertFalse(bool(payload.get("ready")))
         blockers = [str(item) for item in payload.get("blockers", [])]
         self.assertIn("license.spdx_denied", blockers)
 

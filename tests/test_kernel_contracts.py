@@ -63,6 +63,21 @@ class _FakeCognitionManager:
             "install": {"endpoint": "/models/packages/install"},
         }
 
+    def onboarding_activate(self, **_: object) -> dict[str, object]:
+        package_id = f"{self.active_provider}::{self.active_model}"
+        return {
+            "activation_version": "onboarding_activate_v1",
+            "status": "activated",
+            "ready": True,
+            "selected_profile": "balanced",
+            "selected_package_id": package_id,
+            "blockers": [],
+            "activation_plan": {"plan_version": "onboarding_activation_plan_v1"},
+            "install": {"package_id": package_id},
+            "smoke_test": {"requested": True, "status": "passed"},
+            "active": {"provider": self.active_provider, "model": self.active_model},
+        }
+
     def model_package_catalog(self, **_: object) -> dict[str, object]:
         package_id = f"{self.active_provider}::{self.active_model}"
         return {
@@ -186,6 +201,8 @@ class KernelContractsTests(unittest.TestCase):
             self.assertIn("recommended_profile", onboarding)
             activation = backend.onboarding_activation_plan(profile="balanced")
             self.assertEqual(str(activation.get("plan_version")), "onboarding_activation_plan_v1")
+            activated = backend.onboarding_activate(profile="balanced")
+            self.assertEqual(str(activated.get("activation_version")), "onboarding_activate_v1")
             catalog = backend.model_package_catalog(profile="balanced")
             self.assertIn("packages", catalog)
             installed = backend.install_model_package(package_id=f"{provider}::{model}", activate=True)

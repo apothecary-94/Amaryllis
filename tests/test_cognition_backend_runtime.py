@@ -128,6 +128,26 @@ class CognitionBackendRuntimeTests(unittest.TestCase):
         self.assertIn("install", payload)
         self.assertIn("request_id", payload)
 
+    def test_onboarding_activate_endpoint_uses_backend_contract(self) -> None:
+        response = self.client.post(
+            "/models/onboarding/activate",
+            headers=self._auth("user-token"),
+            json={
+                "profile": "balanced",
+                "include_remote_providers": True,
+                "limit": 20,
+                "require_metadata": False,
+                "activate": True,
+                "run_smoke_test": True,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(str(payload.get("activation_version")), "onboarding_activate_v1")
+        self.assertIn(str(payload.get("status")), {"activated", "activated_with_smoke_warning"})
+        self.assertIn("request_id", payload)
+        self.assertTrue(bool(payload.get("action_receipt", {}).get("signature")))
+
     def test_model_package_catalog_and_install_endpoints_use_backend_contract(self) -> None:
         catalog_response = self.client.get(
             "/models/packages?profile=balanced&include_remote_providers=true&limit=20",

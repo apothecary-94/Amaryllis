@@ -132,6 +132,45 @@ class _FakeModelManager:
             "install": {"endpoint": "/models/packages/install"},
         }
 
+    def onboarding_activate(
+        self,
+        *,
+        profile: str | None = None,
+        include_remote_providers: bool = True,
+        limit: int = 120,
+        require_metadata: bool | None = None,
+        activate: bool = True,
+        run_smoke_test: bool = True,
+        smoke_prompt: str | None = None,
+    ) -> dict[str, Any]:
+        self.calls.append(
+            (
+                "onboarding_activate",
+                {
+                    "profile": profile,
+                    "include_remote_providers": include_remote_providers,
+                    "limit": limit,
+                    "require_metadata": require_metadata,
+                    "activate": activate,
+                    "run_smoke_test": run_smoke_test,
+                    "smoke_prompt": smoke_prompt,
+                },
+            )
+        )
+        package_id = f"{self.active_provider}::{self.active_model}"
+        return {
+            "activation_version": "onboarding_activate_v1",
+            "status": "activated",
+            "ready": True,
+            "selected_profile": str(profile or "balanced"),
+            "selected_package_id": package_id,
+            "blockers": [],
+            "activation_plan": {"plan_version": "onboarding_activation_plan_v1"},
+            "install": {"package_id": package_id, "active": {"provider": self.active_provider, "model": self.active_model}},
+            "smoke_test": {"requested": bool(run_smoke_test), "status": "passed"},
+            "active": {"provider": self.active_provider, "model": self.active_model},
+        }
+
     def model_package_catalog(
         self,
         *,
@@ -273,6 +312,10 @@ class CognitionBackendsTests(unittest.TestCase):
         self.assertEqual(str(activation.get("plan_version")), "onboarding_activation_plan_v1")
         self.assertTrue(str(activation.get("selected_package_id", "")).strip())
         self.assertIn("install", activation)
+        activated = backend.onboarding_activate(profile="balanced", include_remote_providers=True, limit=10)
+        self.assertEqual(str(activated.get("activation_version")), "onboarding_activate_v1")
+        self.assertEqual(str(activated.get("status")), "activated")
+        self.assertTrue(bool(activated.get("ready")))
 
         catalog = backend.model_package_catalog(profile="balanced", include_remote_providers=True, limit=10)
         self.assertIn("packages", catalog)

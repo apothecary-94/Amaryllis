@@ -94,6 +94,27 @@ class ModelManagerCognitionBackend:
             require_metadata=require_metadata,
         )
 
+    def onboarding_activate(
+        self,
+        *,
+        profile: str | None = None,
+        include_remote_providers: bool = True,
+        limit: int = 120,
+        require_metadata: bool | None = None,
+        activate: bool = True,
+        run_smoke_test: bool = True,
+        smoke_prompt: str | None = None,
+    ) -> dict[str, Any]:
+        return self._manager.onboarding_activate(
+            profile=profile,
+            include_remote_providers=include_remote_providers,
+            limit=limit,
+            require_metadata=require_metadata,
+            activate=activate,
+            run_smoke_test=run_smoke_test,
+            smoke_prompt=smoke_prompt,
+        )
+
     def model_package_catalog(
         self,
         *,
@@ -483,6 +504,90 @@ class DeterministicCognitionBackend:
             "blockers": blockers,
             "next_action": "install_package" if bool(license_admission.get("admitted")) else "resolve_blockers",
             "install": dict(package.get("install") or {}) if isinstance(package, dict) else {},
+        }
+
+    def onboarding_activate(
+        self,
+        *,
+        profile: str | None = None,
+        include_remote_providers: bool = True,
+        limit: int = 120,
+        require_metadata: bool | None = None,
+        activate: bool = True,
+        run_smoke_test: bool = True,
+        smoke_prompt: str | None = None,
+    ) -> dict[str, Any]:
+        plan = self.onboarding_activation_plan(
+            profile=profile,
+            include_remote_providers=include_remote_providers,
+            limit=limit,
+            require_metadata=require_metadata,
+        )
+        package_id = str(plan.get("selected_package_id", "")).strip()
+        blockers = [str(item) for item in plan.get("blockers", []) if str(item).strip()]
+        if not package_id or not bool(plan.get("ready_to_install")):
+            if not blockers:
+                blockers = ["activation_plan_not_ready"]
+            return {
+                "activation_version": "onboarding_activate_v1",
+                "generated_at": self._utc_now_iso(),
+                "status": "blocked",
+                "ready": False,
+                "selected_profile": str(plan.get("selected_profile", "")),
+                "selected_package_id": package_id,
+                "blockers": blockers,
+                "activation_plan": plan,
+                "install": {},
+                "smoke_test": {
+                    "requested": bool(run_smoke_test),
+                    "status": "skipped",
+                    "reason": "activation_blocked",
+                },
+                "active": plan.get("active") if isinstance(plan.get("active"), dict) else {},
+            }
+
+        install_result = self.install_model_package(package_id=package_id, activate=activate)
+        smoke_result: dict[str, Any] = {
+            "requested": bool(run_smoke_test),
+            "status": "skipped",
+        }
+        status = "activated"
+        if run_smoke_test:
+            if activate:
+                prompt = str(smoke_prompt or "").strip() or "Reply with a short readiness confirmation."
+                smoke_response = self.chat(messages=[{"role": "user", "content": prompt}])
+                content = str(smoke_response.get("content", "")).strip()
+                smoke_result = {
+                    "requested": True,
+                    "status": "passed",
+                    "prompt": prompt,
+                    "response_preview": content[:240],
+                    "provider": str(smoke_response.get("provider", "")).strip(),
+                    "model": str(smoke_response.get("model", "")).strip(),
+                }
+            else:
+                smoke_result = {
+                    "requested": True,
+                    "status": "skipped",
+                    "reason": "activate_disabled",
+                }
+
+        return {
+            "activation_version": "onboarding_activate_v1",
+            "generated_at": self._utc_now_iso(),
+            "status": status,
+            "ready": status == "activated",
+            "selected_profile": str(plan.get("selected_profile", "")),
+            "selected_package_id": package_id,
+            "blockers": [],
+            "activation_plan": plan,
+            "install": install_result,
+            "smoke_test": smoke_result,
+            "active": (
+                install_result.get("active")
+                if isinstance(install_result.get("active"), dict)
+                else (plan.get("active") if isinstance(plan.get("active"), dict) else {})
+            ),
         }
 
     def model_package_catalog(

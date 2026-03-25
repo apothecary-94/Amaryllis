@@ -4,6 +4,8 @@
 `GET /models/onboarding/profile` provides first-run profile recommendation for model routing.
 `GET /models/onboarding/activation-plan` provides one-shot activation intent:
 recommended profile + package choice + license preflight + install contract.
+`POST /models/onboarding/activate` executes activation atomically:
+activation plan + install + optional first-response smoke check.
 
 The goal is to get a new user to the first successful response without manual model tuning.
 
@@ -30,6 +32,14 @@ Activation plan additional fields:
 - `ready_to_install`: `true` when preflight passes.
 - `blockers`: machine-readable reasons when activation is blocked.
 - `next_action`: `install_package` or `resolve_blockers`.
+
+Activation execution fields (`POST /models/onboarding/activate`):
+- `activation_version`: currently `onboarding_activate_v1`.
+- `status`: `activated`, `activated_with_smoke_warning`, or `blocked`.
+- `ready`: `true` only for `activated`.
+- `activation_plan`: embedded plan snapshot used by executor.
+- `install`: result payload from package install flow.
+- `smoke_test`: optional first-response check (`passed`, `failed`, or `skipped`).
 
 ## Recommendation Logic (MVP)
 - `fast`: selected for low-memory/low-CPU machines.

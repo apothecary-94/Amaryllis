@@ -182,6 +182,16 @@ class InstallModelPackageRequest(BaseModel):
     activate: bool = True
 
 
+class OnboardingActivateRequest(BaseModel):
+    profile: str | None = None
+    include_remote_providers: bool = True
+    limit: int = Field(default=120, ge=1, le=500)
+    require_metadata: bool | None = None
+    activate: bool = True
+    run_smoke_test: bool = True
+    smoke_prompt: str | None = Field(default=None, max_length=2000)
+
+
 class ModelFailoverDebugResponse(BaseModel):
     request_id: str
     diagnostics: dict[str, Any]
@@ -318,6 +328,66 @@ def onboarding_activation_plan(
     except ValueError as exc:
         raise ValidationError(str(exc)) from exc
     except Exception as exc:
+        raise ProviderError(str(exc)) from exc
+
+
+@router.post("/models/onboarding/activate")
+def onboarding_activate(payload: OnboardingActivateRequest, request: Request) -> dict[str, Any]:
+    services = request.app.state.services
+    auth = auth_context_from_request(request)
+    try:
+        result = services.model_manager.onboarding_activate(
+            profile=payload.profile,
+            include_remote_providers=bool(payload.include_remote_providers),
+            limit=max(1, min(payload.limit, 500)),
+            require_metadata=payload.require_metadata,
+            activate=bool(payload.activate),
+            run_smoke_test=bool(payload.run_smoke_test),
+            smoke_prompt=payload.smoke_prompt,
+        )
+        target_id = (
+            str(result.get("selected_package_id", "")).strip()
+            or str(((result.get("install") or {}).get("package_id") or "")).strip()
+            or str(payload.profile or "").strip()
+            or "onboarding"
+        )
+        status = "succeeded" if str(result.get("status", "")).strip() in {"activated", "activated_with_smoke_warning"} else "failed"
+        result["action_receipt"] = _sign_action(
+            request,
+            action="model_onboarding_activate",
+            payload=payload.model_dump(),
+            actor=auth.user_id,
+            target_id=target_id,
+            status=status,
+            details={
+                "status": str(result.get("status", "")),
+                "ready": bool(result.get("ready", False)),
+                "blockers": [str(item) for item in result.get("blockers", []) if str(item).strip()],
+            },
+        )
+        result["request_id"] = _request_id(request)
+        return result
+    except ValueError as exc:
+        _sign_action(
+            request,
+            action="model_onboarding_activate",
+            payload=payload.model_dump(),
+            actor=auth.user_id,
+            target_id=str(payload.profile or "").strip() or "onboarding",
+            status="failed",
+            details={"error": str(exc)},
+        )
+        raise ValidationError(str(exc)) from exc
+    except Exception as exc:
+        _sign_action(
+            request,
+            action="model_onboarding_activate",
+            payload=payload.model_dump(),
+            actor=auth.user_id,
+            target_id=str(payload.profile or "").strip() or "onboarding",
+            status="failed",
+            details={"error": str(exc)},
+        )
         raise ProviderError(str(exc)) from exc
 
 

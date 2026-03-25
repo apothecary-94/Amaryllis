@@ -221,6 +221,65 @@ class ModelOnboardingProfileTests(unittest.TestCase):
         blockers = [str(item) for item in payload.get("blockers", [])]
         self.assertIn("license.spdx_denied", blockers)
 
+    def test_onboarding_activate_runs_install_and_smoke(self) -> None:
+        plan = {
+            "plan_version": "onboarding_activation_plan_v1",
+            "selected_profile": "balanced",
+            "selected_package_id": "mlx::mlx-community/Qwen2.5-1.5B-Instruct-4bit",
+            "ready_to_install": True,
+            "blockers": [],
+            "active": {"provider": "mlx", "model": "mlx-community/Qwen2.5-1.5B-Instruct-4bit"},
+        }
+        install_result = {
+            "package_id": "mlx::mlx-community/Qwen2.5-1.5B-Instruct-4bit",
+            "provider": "mlx",
+            "model": "mlx-community/Qwen2.5-1.5B-Instruct-4bit",
+            "active": {"provider": "mlx", "model": "mlx-community/Qwen2.5-1.5B-Instruct-4bit"},
+        }
+        with patch.object(self.manager, "onboarding_activation_plan", return_value=plan), patch.object(
+            self.manager,
+            "install_model_package",
+            return_value=install_result,
+        ) as install_mock, patch.object(
+            self.manager,
+            "chat",
+            return_value={
+                "content": "ready",
+                "provider": "mlx",
+                "model": "mlx-community/Qwen2.5-1.5B-Instruct-4bit",
+            },
+        ) as chat_mock:
+            payload = self.manager.onboarding_activate(profile="balanced", activate=True, run_smoke_test=True)
+
+        install_mock.assert_called_once()
+        chat_mock.assert_called_once()
+        self.assertEqual(str(payload.get("activation_version")), "onboarding_activate_v1")
+        self.assertEqual(str(payload.get("status")), "activated")
+        self.assertTrue(bool(payload.get("ready")))
+        smoke = payload.get("smoke_test", {})
+        self.assertEqual(str(smoke.get("status")), "passed")
+
+    def test_onboarding_activate_returns_blocked_when_plan_is_not_ready(self) -> None:
+        plan = {
+            "plan_version": "onboarding_activation_plan_v1",
+            "selected_profile": "balanced",
+            "selected_package_id": "mlx::blocked-model",
+            "ready_to_install": False,
+            "blockers": ["license.spdx_denied"],
+            "active": {"provider": "mlx", "model": "mlx-community/Qwen2.5-1.5B-Instruct-4bit"},
+        }
+        with patch.object(self.manager, "onboarding_activation_plan", return_value=plan), patch.object(
+            self.manager,
+            "install_model_package",
+        ) as install_mock:
+            payload = self.manager.onboarding_activate(profile="balanced", activate=True, run_smoke_test=True)
+
+        install_mock.assert_not_called()
+        self.assertEqual(str(payload.get("status")), "blocked")
+        self.assertFalse(bool(payload.get("ready")))
+        blockers = [str(item) for item in payload.get("blockers", [])]
+        self.assertIn("license.spdx_denied", blockers)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -138,6 +138,19 @@ class CognitionBackendContract(Protocol):
     ) -> dict[str, Any]:
         ...
 
+    def onboarding_activate(
+        self,
+        *,
+        profile: str | None = None,
+        include_remote_providers: bool = True,
+        limit: int = 120,
+        require_metadata: bool | None = None,
+        activate: bool = True,
+        run_smoke_test: bool = True,
+        smoke_prompt: str | None = None,
+    ) -> dict[str, Any]:
+        ...
+
     def model_package_catalog(
         self,
         *,
