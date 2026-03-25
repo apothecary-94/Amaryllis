@@ -48,6 +48,18 @@ Mass-adoption integration focus:
 | WP-15 | P4-H06 + P4-H07 | P2 | RU/EN localization and OSS governance package | `docs/`, `policies/`, `.github/` | localization baseline and contributor/legal governance docs are release-gated |
 | WP-16 | P4-H08 | P1 | Adoption KPI funnel and growth dashboards | `runtime/observability.py`, `scripts/release/`, `observability/` | install/activation/retention/adoption KPI contracts publishable without breaking privacy policy |
 
+## Completion Snapshot (Latest)
+
+`WP-16` (`P4-H08`) is closed as implemented and release/nightly-gated.
+
+Evidence:
+- blocking release/nightly chain is live: `adoption_kpi_schema_gate.py` -> `build_adoption_kpi_snapshot.py` -> `adoption_kpi_trend_gate.py` -> `publish_adoption_kpi_snapshot.py`;
+- adoption trend output is integrated into mission KPI pack (`build_mission_success_recovery_report.py`) with `adoption_growth` class signals;
+- runtime observability exports adoption snapshot and nightly adoption trend metrics in Prometheus (`runtime/observability.py`);
+- dashboard/alert surface includes adoption trend guardrail (`observability/grafana/dashboard-amaryllis.json`, `observability/alerts/prometheus-rules.yml`);
+- release and nightly workflows run this chain as blocking steps (`.github/workflows/release-gate.yml`, `.github/workflows/nightly-reliability.yml`);
+- contract tests covering schema/snapshot/trend/publish/mission/observability pass in CI-local runs.
+
 ## Critical Path
 1. `WP-01` -> baseline contract required before portability and QoS enforcement.
 2. `WP-02` -> required before `WP-03` mode switching can be policy driven.
