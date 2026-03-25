@@ -35,12 +35,19 @@ Report payload includes:
 - extracted `kpis`,
 - `summary` (`checks_total`, `checks_failed`, `status`).
 
+Companion publication artifact:
+- `docs/adoption-kpi-snapshot.md`
+- `scripts/release/build_adoption_kpi_snapshot.py`
+- `scripts/release/publish_adoption_kpi_snapshot.py`
+
 ## CI Integration
 
 - `release-gate.yml` (`Release KPI Pack` job):
   - runs blocking adoption KPI schema gate against release artifacts,
-  - uploads `artifacts/adoption-kpi-schema-gate-report.json`.
+  - uploads `artifacts/adoption-kpi-schema-gate-report.json`,
+  - then builds and publishes adoption KPI snapshot artifacts.
 
 - `nightly-reliability.yml`:
   - runs blocking adoption KPI schema gate against nightly artifacts,
-  - uploads `artifacts/nightly-adoption-kpi-schema-gate-report.json`.
+  - uploads `artifacts/nightly-adoption-kpi-schema-gate-report.json`,
+  - then builds and publishes nightly adoption KPI snapshot artifacts.

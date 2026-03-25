@@ -64,6 +64,15 @@ groups:
           summary: "Amaryllis release QoS gate failed"
           description: "QoS governor gate signal is failing in latest release quality snapshot."
 
+      - alert: AmaryllisAdoptionSnapshotFailed
+        expr: (amaryllis_adoption_snapshot_loaded == 1) and (amaryllis_adoption_status < 1)
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Amaryllis adoption snapshot reports fail"
+          description: "Latest adoption KPI snapshot status is fail while adoption export is enabled."
+
       - alert: AmaryllisNightlyMissionFailed
         expr: (amaryllis_nightly_mission_snapshot_loaded == 1) and (amaryllis_nightly_mission_status < 1)
         for: 10m

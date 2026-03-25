@@ -60,6 +60,26 @@ python3 scripts/release/adoption_kpi_schema_gate.py \
   --output artifacts/nightly-adoption-kpi-schema-gate-report.json
 ```
 
+Nightly adoption KPI snapshot build + publish:
+
+```bash
+python3 scripts/release/build_adoption_kpi_snapshot.py \
+  --schema-gate-report artifacts/nightly-adoption-kpi-schema-gate-report.json \
+  --user-journey-report artifacts/nightly-user-journey-benchmark-report.json \
+  --api-quickstart-report artifacts/nightly-api-quickstart-compat-report.json \
+  --distribution-channel-manifest-report artifacts/nightly-distribution-channel-manifest-report.json \
+  --output artifacts/nightly-adoption-kpi-snapshot-report.json \
+  --release-id "nightly-<sha>" \
+  --release-channel nightly \
+  --commit-sha "<sha>"
+
+python3 scripts/release/publish_adoption_kpi_snapshot.py \
+  --snapshot-report artifacts/nightly-adoption-kpi-snapshot-report.json \
+  --channel nightly \
+  --expect-release-channel nightly \
+  --output artifacts/nightly-adoption-kpi-snapshot-runtime-export.json
+```
+
 ## Report
 
 Default output path:
@@ -90,6 +110,13 @@ Nightly adoption KPI schema gate artifact:
 
 ```text
 artifacts/nightly-adoption-kpi-schema-gate-report.json
+```
+
+Nightly adoption KPI snapshot artifacts:
+
+```text
+artifacts/nightly-adoption-kpi-snapshot-report.json
+artifacts/nightly-adoption-kpi-snapshot-runtime-export.json
 ```
 
 Mission success/recovery report pack artifact:

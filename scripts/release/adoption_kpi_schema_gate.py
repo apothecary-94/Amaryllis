@@ -396,6 +396,14 @@ def main() -> int:
             "quality_dashboard": str(quality_dashboard_path) if quality_dashboard_path is not None else "",
         },
         "kpis": {
+            "journey_activation_success_rate_pct": round(
+                _safe_float(journey_summary.get("activation_success_rate_pct")),
+                4,
+            ),
+            "journey_activation_blocked_rate_pct": round(
+                _safe_float(journey_summary.get("activation_blocked_rate_pct")),
+                4,
+            ),
             "journey_install_success_rate_pct": round(
                 _safe_float(journey_summary.get("install_success_rate_pct")),
                 4,

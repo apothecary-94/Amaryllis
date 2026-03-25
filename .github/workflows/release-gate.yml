@@ -132,6 +132,8 @@ jobs:
             tests.test_render_distribution_channel_manifests \
             tests.test_user_journey_benchmark \
             tests.test_adoption_kpi_schema_gate \
+            tests.test_adoption_kpi_snapshot_builder \
+            tests.test_publish_adoption_kpi_snapshot \
             tests.test_runtime_service_manifest_renderer \
             tests.test_runtime_service_lifecycle \
             tests.test_runtime_lifecycle_smoke_gate \
@@ -687,6 +689,41 @@ jobs:
         with:
           name: adoption-kpi-schema-gate-report
           path: artifacts/adoption-kpi-schema-gate-report.json
+          if-no-files-found: error
+
+      - name: Build adoption KPI snapshot (blocking)
+        run: |
+          RELEASE_CHANNEL="branch"
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            RELEASE_CHANNEL="stable"
+          fi
+
+          python scripts/release/build_adoption_kpi_snapshot.py \
+            --schema-gate-report "artifacts/adoption-kpi-schema-gate-report.json" \
+            --user-journey-report "artifacts/user-journey/user-journey-benchmark-report.json" \
+            --api-quickstart-report "artifacts/api-quickstart/api-quickstart-compat-report.json" \
+            --distribution-channel-manifest-report "artifacts/distribution-channel-manifest/distribution-channel-manifest-report.json" \
+            --quality-dashboard-report "artifacts/release-quality-dashboard-final.json" \
+            --output "artifacts/adoption-kpi-snapshot-final.json" \
+            --release-id "${GITHUB_REF_NAME:-${GITHUB_SHA}}" \
+            --release-channel "${RELEASE_CHANNEL}" \
+            --commit-sha "${GITHUB_SHA}"
+
+      - name: Publish adoption KPI snapshot for runtime export
+        run: |
+          python scripts/release/publish_adoption_kpi_snapshot.py \
+            --snapshot-report "artifacts/adoption-kpi-snapshot-final.json" \
+            --channel "release" \
+            --expect-release-channel "auto" \
+            --output "artifacts/adoption-kpi-snapshot-runtime-export.json"
+
+      - name: Upload adoption KPI snapshot artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: adoption-kpi-snapshot-final
+          path: |
+            artifacts/adoption-kpi-snapshot-final.json
+            artifacts/adoption-kpi-snapshot-runtime-export.json
           if-no-files-found: error
 
       - name: Publish release quality snapshot for runtime export

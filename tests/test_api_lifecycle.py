@@ -151,6 +151,8 @@ class APILifecycleTests(unittest.TestCase):
         self.assertEqual(metrics.status_code, 200)
         self.assertIn("amaryllis_request_availability_ratio", metrics.text)
         self.assertIn("amaryllis_release_quality_snapshot_loaded", metrics.text)
+        self.assertIn("amaryllis_adoption_snapshot_loaded", metrics.text)
+        self.assertIn("amaryllis_adoption_status", metrics.text)
         self.assertIn("amaryllis_nightly_mission_snapshot_loaded", metrics.text)
 
 

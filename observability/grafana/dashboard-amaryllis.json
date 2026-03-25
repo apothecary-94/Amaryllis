@@ -163,6 +163,42 @@
     },
     {
       "type": "stat",
+      "title": "Adoption Snapshot Loaded",
+      "targets": [
+        {
+          "expr": "amaryllis_adoption_snapshot_loaded"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Adoption Status",
+      "targets": [
+        {
+          "expr": "amaryllis_adoption_status"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Adoption Activation Success (%)",
+      "targets": [
+        {
+          "expr": "amaryllis_adoption_activation_success_rate_pct"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Adoption Activation Blocked (%)",
+      "targets": [
+        {
+          "expr": "amaryllis_adoption_activation_blocked_rate_pct"
+        }
+      ]
+    },
+    {
+      "type": "stat",
       "title": "Nightly Snapshot Loaded",
       "targets": [
         {

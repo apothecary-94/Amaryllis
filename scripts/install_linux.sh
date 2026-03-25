@@ -21,6 +21,7 @@ Environment:
   AMARYLLIS_KEEP_RELEASES           Number of releases to keep (default: 3)
   AMARYLLIS_LINUX_RELEASE_CHANNEL   Default channel when --channel is omitted (stable|canary)
   AMARYLLIS_RELEASE_QUALITY_DASHBOARD_PATH  Runtime export path for release quality snapshot
+  AMARYLLIS_ADOPTION_KPI_SNAPSHOT_PATH      Runtime export path for adoption KPI snapshot
   AMARYLLIS_NIGHTLY_MISSION_REPORT_PATH     Runtime export path for nightly mission report snapshot
 USAGE
 }
@@ -149,6 +150,9 @@ RELEASE_QUALITY_SNAPSHOT_SOURCE="${ROOT_DIR}/artifacts/release-quality-dashboard
 RELEASE_QUALITY_TREND_SOURCE="${ROOT_DIR}/artifacts/release-quality-dashboard-trend-final.json"
 RELEASE_QUALITY_RUNTIME_PATH="${INSTALL_ROOT}/observability/release-quality-dashboard-latest.json"
 RELEASE_QUALITY_PUBLISHER="${ROOT_DIR}/scripts/release/publish_release_quality_snapshot.py"
+ADOPTION_KPI_SNAPSHOT_SOURCE="${ROOT_DIR}/artifacts/adoption-kpi-snapshot-final.json"
+ADOPTION_KPI_RUNTIME_PATH="${INSTALL_ROOT}/observability/adoption-kpi-snapshot-latest.json"
+ADOPTION_KPI_PUBLISHER="${ROOT_DIR}/scripts/release/publish_adoption_kpi_snapshot.py"
 NIGHTLY_MISSION_REPORT_SOURCE="${ROOT_DIR}/artifacts/nightly-mission-success-recovery-report.json"
 NIGHTLY_MISSION_RUNTIME_PATH="${INSTALL_ROOT}/observability/nightly-mission-success-recovery-latest.json"
 NIGHTLY_MISSION_PUBLISHER="${ROOT_DIR}/scripts/release/publish_mission_success_recovery_snapshot.py"
@@ -227,6 +231,8 @@ HOST="${AMARYLLIS_HOST:-127.0.0.1}"
 PORT="${AMARYLLIS_PORT:-8000}"
 RELEASE_QUALITY_DASHBOARD_PATH="${AMARYLLIS_RELEASE_QUALITY_DASHBOARD_PATH:-${INSTALL_ROOT}/observability/release-quality-dashboard-latest.json}"
 export AMARYLLIS_RELEASE_QUALITY_DASHBOARD_PATH="${RELEASE_QUALITY_DASHBOARD_PATH}"
+ADOPTION_KPI_SNAPSHOT_PATH="${AMARYLLIS_ADOPTION_KPI_SNAPSHOT_PATH:-${INSTALL_ROOT}/observability/adoption-kpi-snapshot-latest.json}"
+export AMARYLLIS_ADOPTION_KPI_SNAPSHOT_PATH="${ADOPTION_KPI_SNAPSHOT_PATH}"
 NIGHTLY_MISSION_REPORT_PATH="${AMARYLLIS_NIGHTLY_MISSION_REPORT_PATH:-${INSTALL_ROOT}/observability/nightly-mission-success-recovery-latest.json}"
 export AMARYLLIS_NIGHTLY_MISSION_REPORT_PATH="${NIGHTLY_MISSION_REPORT_PATH}"
 
@@ -308,6 +314,22 @@ else
   echo "[linux-installer] release quality snapshot not found: ${RELEASE_QUALITY_SNAPSHOT_SOURCE} (skip publish)"
 fi
 
+if [[ -f "${ADOPTION_KPI_SNAPSHOT_SOURCE}" ]]; then
+  adoption_publish_cmd=(
+    "${PYTHON_BIN}"
+    "${ADOPTION_KPI_PUBLISHER}"
+    "--snapshot-report"
+    "${ADOPTION_KPI_SNAPSHOT_SOURCE}"
+    "--channel"
+    "release"
+    "--install-root"
+    "${INSTALL_ROOT}"
+  )
+  run_cmd "${adoption_publish_cmd[@]}"
+else
+  echo "[linux-installer] adoption KPI snapshot not found: ${ADOPTION_KPI_SNAPSHOT_SOURCE} (skip publish)"
+fi
+
 if [[ -f "${NIGHTLY_MISSION_REPORT_SOURCE}" ]]; then
   nightly_publish_cmd=(
     "${PYTHON_BIN}"
@@ -337,5 +359,6 @@ else
   echo "[linux-installer] current release link not set"
 fi
 echo "[linux-installer] release quality runtime path: ${RELEASE_QUALITY_RUNTIME_PATH}"
+echo "[linux-installer] adoption KPI runtime path: ${ADOPTION_KPI_RUNTIME_PATH}"
 echo "[linux-installer] nightly mission runtime path: ${NIGHTLY_MISSION_RUNTIME_PATH}"
 echo "[linux-installer] start runtime: ${LAUNCHER}"

@@ -33,6 +33,24 @@ Optional release-quality metric export:
   - `amaryllis_release_adoption_channel_manifest_coverage_pct`
   - `amaryllis_release_adoption_api_quickstart_pass_rate_pct`
 
+Optional adoption KPI snapshot metric export:
+
+- set `AMARYLLIS_ADOPTION_KPI_SNAPSHOT_PATH=/abs/path/adoption-kpi-snapshot-latest.json`,
+- Linux installer/service manifest default path is
+  `~/.local/share/amaryllis/observability/adoption-kpi-snapshot-latest.json`,
+- `/service/observability/metrics` additionally exports adoption gauges:
+  - `amaryllis_adoption_snapshot_loaded` (`0|1`)
+  - `amaryllis_adoption_status` (`1=pass`, `0=fail`)
+  - `amaryllis_adoption_score_pct`
+  - `amaryllis_adoption_schema_checks_failed`
+  - `amaryllis_adoption_activation_success_rate_pct`
+  - `amaryllis_adoption_activation_blocked_rate_pct`
+  - `amaryllis_adoption_install_success_rate_pct`
+  - `amaryllis_adoption_retention_proxy_success_rate_pct`
+  - `amaryllis_adoption_feature_adoption_rate_pct`
+  - `amaryllis_adoption_channel_manifest_coverage_pct`
+  - `amaryllis_adoption_api_quickstart_pass_rate_pct`
+
 Optional nightly mission metric export:
 
 - set `AMARYLLIS_NIGHTLY_MISSION_REPORT_PATH=/abs/path/nightly-mission-success-recovery-latest.json`,

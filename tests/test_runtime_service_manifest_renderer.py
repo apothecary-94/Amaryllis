@@ -58,6 +58,10 @@ class RuntimeServiceManifestRendererTests(unittest.TestCase):
             text,
         )
         self.assertIn(
+            'Environment="AMARYLLIS_ADOPTION_KPI_SNAPSHOT_PATH=/tmp/amaryllis/observability/adoption-kpi-snapshot-latest.json"',
+            text,
+        )
+        self.assertIn(
             'Environment="AMARYLLIS_NIGHTLY_MISSION_REPORT_PATH=/tmp/amaryllis/observability/nightly-mission-success-recovery-latest.json"',
             text,
         )
@@ -97,6 +101,10 @@ class RuntimeServiceManifestRendererTests(unittest.TestCase):
             self.assertEqual(
                 env.get("AMARYLLIS_RELEASE_QUALITY_DASHBOARD_PATH"),
                 "/tmp/amaryllis/observability/release-quality-dashboard-latest.json",
+            )
+            self.assertEqual(
+                env.get("AMARYLLIS_ADOPTION_KPI_SNAPSHOT_PATH"),
+                "/tmp/amaryllis/observability/adoption-kpi-snapshot-latest.json",
             )
             self.assertEqual(
                 env.get("AMARYLLIS_NIGHTLY_MISSION_REPORT_PATH"),

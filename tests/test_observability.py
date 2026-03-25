@@ -52,6 +52,7 @@ class ObservabilityTests(unittest.TestCase):
         self.assertIn("amaryllis_request_availability_ratio", metrics)
         self.assertIn("amaryllis_run_success_ratio", metrics)
         self.assertIn("amaryllis_release_quality_snapshot_loaded 0", metrics)
+        self.assertIn("amaryllis_adoption_snapshot_loaded 0", metrics)
         self.assertIn("amaryllis_nightly_mission_snapshot_loaded 0", metrics)
 
     def test_release_quality_snapshot_metrics_are_exported_when_configured(self) -> None:
@@ -103,6 +104,56 @@ class ObservabilityTests(unittest.TestCase):
             self.assertIn("amaryllis_release_adoption_feature_adoption_rate_pct 100.000000", metrics)
             self.assertIn("amaryllis_release_adoption_channel_manifest_coverage_pct 100.000000", metrics)
             self.assertIn("amaryllis_release_adoption_api_quickstart_pass_rate_pct 100.000000", metrics)
+            self.assertIn("amaryllis_adoption_snapshot_loaded 1", metrics)
+            self.assertIn("amaryllis_adoption_status 1.000000", metrics)
+            self.assertIn("amaryllis_adoption_score_pct 100.000000", metrics)
+            self.assertIn("amaryllis_adoption_install_success_rate_pct 100.000000", metrics)
+            self.assertIn("amaryllis_adoption_retention_proxy_success_rate_pct 100.000000", metrics)
+            self.assertIn("amaryllis_adoption_feature_adoption_rate_pct 100.000000", metrics)
+            self.assertIn("amaryllis_adoption_channel_manifest_coverage_pct 100.000000", metrics)
+            self.assertIn("amaryllis_adoption_api_quickstart_pass_rate_pct 100.000000", metrics)
+
+    def test_adoption_snapshot_metrics_are_exported_when_configured(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amaryllis-observability-") as tmp:
+            snapshot_path = Path(tmp) / "adoption-kpi-snapshot.json"
+            payload = {
+                "suite": "adoption_kpi_snapshot_v1",
+                "summary": {
+                    "status": "pass",
+                    "adoption_score_pct": 100.0,
+                },
+                "kpis": {
+                    "adoption_schema_checks_failed": 0,
+                    "journey_activation_success_rate_pct": 100.0,
+                    "journey_activation_blocked_rate_pct": 0.0,
+                    "journey_install_success_rate_pct": 100.0,
+                    "journey_retention_proxy_success_rate_pct": 100.0,
+                    "journey_feature_adoption_rate_pct": 100.0,
+                    "distribution_channel_manifest_coverage_pct": 100.0,
+                    "api_quickstart_pass_rate_pct": 100.0,
+                },
+            }
+            snapshot_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+            with patch.dict(
+                os.environ,
+                {"AMARYLLIS_ADOPTION_KPI_SNAPSHOT_PATH": str(snapshot_path)},
+                clear=False,
+            ):
+                manager = self._build_manager()
+
+            metrics = manager.sre.render_prometheus_metrics()
+            self.assertIn("amaryllis_adoption_snapshot_loaded 1", metrics)
+            self.assertIn("amaryllis_adoption_status 1.000000", metrics)
+            self.assertIn("amaryllis_adoption_score_pct 100.000000", metrics)
+            self.assertIn("amaryllis_adoption_schema_checks_failed 0.000000", metrics)
+            self.assertIn("amaryllis_adoption_activation_success_rate_pct 100.000000", metrics)
+            self.assertIn("amaryllis_adoption_activation_blocked_rate_pct 0.000000", metrics)
+            self.assertIn("amaryllis_adoption_install_success_rate_pct 100.000000", metrics)
+            self.assertIn("amaryllis_adoption_retention_proxy_success_rate_pct 100.000000", metrics)
+            self.assertIn("amaryllis_adoption_feature_adoption_rate_pct 100.000000", metrics)
+            self.assertIn("amaryllis_adoption_channel_manifest_coverage_pct 100.000000", metrics)
+            self.assertIn("amaryllis_adoption_api_quickstart_pass_rate_pct 100.000000", metrics)
 
     def test_nightly_mission_snapshot_metrics_are_exported_when_configured(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amaryllis-observability-") as tmp:

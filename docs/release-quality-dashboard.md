@@ -7,6 +7,10 @@ Script:
 - `scripts/release/build_quality_dashboard_snapshot.py`
 - `scripts/release/publish_release_quality_snapshot.py`
 
+Companion adoption artifact:
+- `docs/adoption-kpi-snapshot.md`
+- `scripts/release/build_adoption_kpi_snapshot.py`
+
 Primary artifacts:
 - `artifacts/release-quality-dashboard.json`
 - `artifacts/release-quality-dashboard-trend.json`
