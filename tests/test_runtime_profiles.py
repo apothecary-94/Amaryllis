@@ -29,6 +29,8 @@ class RuntimeProfilesTests(unittest.TestCase):
         self.assertEqual(config.slo_profile_schema_version, 1)
         self.assertAlmostEqual(config.perf_budget_max_p95_latency_ms, 350.0)
         self.assertAlmostEqual(config.perf_budget_max_error_rate_pct, 0.0)
+        self.assertEqual(config.qos_mode, "balanced")
+        self.assertTrue(config.qos_auto_enabled)
 
     def test_ci_profile_requires_auth_tokens(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amaryllis-runtime-profile-") as tmp:
@@ -100,6 +102,21 @@ class RuntimeProfilesTests(unittest.TestCase):
         self.assertEqual(config.runtime_profile, "release")
         self.assertEqual(config.slo_profile, "dev")
         self.assertAlmostEqual(config.perf_budget_max_p95_latency_ms, 350.0)
+
+    def test_invalid_qos_mode_falls_back_to_balanced(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amaryllis-runtime-profile-") as tmp:
+            support_dir = Path(tmp) / "support"
+            with patch.dict(
+                os.environ,
+                {
+                    "AMARYLLIS_SUPPORT_DIR": str(support_dir),
+                    "AMARYLLIS_AUTH_TOKENS": "token-user:user-1:user",
+                    "AMARYLLIS_QOS_MODE": "ultra",
+                },
+                clear=True,
+            ):
+                config = AppConfig.from_env()
+        self.assertEqual(config.qos_mode, "balanced")
 
 
 if __name__ == "__main__":

@@ -89,6 +89,8 @@ class APILifecycleTests(unittest.TestCase):
     def test_service_observability_endpoints_require_service_scope(self) -> None:
         denied = self.client.get("/service/observability/slo", headers=self._auth("user-token"))
         self.assertEqual(denied.status_code, 403)
+        denied_qos = self.client.get("/service/qos", headers=self._auth("user-token"))
+        self.assertEqual(denied_qos.status_code, 403)
 
         allowed = self.client.get("/service/observability/slo", headers=self._auth("service-token"))
         self.assertEqual(allowed.status_code, 200)
@@ -100,6 +102,31 @@ class APILifecycleTests(unittest.TestCase):
         quality_budget = payload.get("quality_budget", {})
         self.assertIn("perf_max_p95_latency_ms", quality_budget)
         self.assertIn("perf_max_error_rate_pct", quality_budget)
+        qos = payload.get("qos", {})
+        self.assertIn(str(qos.get("active_mode")), {"quality", "balanced", "power_save"})
+        self.assertIn(str(qos.get("route_mode")), {"quality_first", "balanced", "local_first"})
+
+        qos_get = self.client.get("/service/qos", headers=self._auth("service-token"))
+        self.assertEqual(qos_get.status_code, 200)
+        qos_payload = qos_get.json().get("qos", {})
+        self.assertIn(str(qos_payload.get("active_mode")), {"quality", "balanced", "power_save"})
+
+        qos_set = self.client.post(
+            "/service/qos/mode",
+            headers=self._auth("service-token"),
+            json={"mode": "power_save", "auto_enabled": False},
+        )
+        self.assertEqual(qos_set.status_code, 200)
+        qos_set_payload = qos_set.json().get("qos", {})
+        self.assertEqual(str(qos_set_payload.get("active_mode")), "power_save")
+        self.assertFalse(bool(qos_set_payload.get("auto_enabled", True)))
+
+        qos_set_invalid = self.client.post(
+            "/service/qos/mode",
+            headers=self._auth("service-token"),
+            json={"mode": "ultra"},
+        )
+        self.assertEqual(qos_set_invalid.status_code, 400)
 
         metrics = self.client.get("/service/observability/metrics", headers=self._auth("service-token"))
         self.assertEqual(metrics.status_code, 200)

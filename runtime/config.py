@@ -54,6 +54,14 @@ class AppConfig:
     slo_budget_run_burn_rate: float
     perf_budget_max_p95_latency_ms: float
     perf_budget_max_error_rate_pct: float
+    qos_mode: str
+    qos_auto_enabled: bool
+    qos_ttft_target_ms: float
+    qos_ttft_critical_ms: float
+    qos_request_latency_target_ms: float
+    qos_request_latency_critical_ms: float
+    qos_kv_pressure_target_events: int
+    qos_kv_pressure_critical_events: int
     backup_enabled: bool
     backup_interval_sec: float
     backup_retention_count: int
@@ -312,6 +320,49 @@ class AppConfig:
         ).strip().lower()
         if tool_isolation_profile not in {"balanced", "strict"}:
             tool_isolation_profile = "balanced"
+        qos_mode = env.get("AMARYLLIS_QOS_MODE", "balanced").strip().lower()
+        if qos_mode not in {"quality", "balanced", "power_save"}:
+            qos_mode = "balanced"
+        qos_auto_enabled = _parse_bool(env.get("AMARYLLIS_QOS_AUTO_ENABLED", "true"))
+        qos_ttft_target_ms = max(
+            1.0,
+            float(
+                env.get(
+                    "AMARYLLIS_QOS_TTFT_TARGET_MS",
+                    env.get("AMARYLLIS_SLO_REQUEST_LATENCY_P95_MS_TARGET", "1200"),
+                )
+            ),
+        )
+        qos_ttft_critical_ms = max(
+            qos_ttft_target_ms + 1.0,
+            float(env.get("AMARYLLIS_QOS_TTFT_CRITICAL_MS", str(qos_ttft_target_ms * 1.8))),
+        )
+        qos_request_latency_target_ms = max(
+            1.0,
+            float(
+                env.get(
+                    "AMARYLLIS_QOS_REQUEST_LATENCY_TARGET_MS",
+                    env.get("AMARYLLIS_SLO_REQUEST_LATENCY_P95_MS_TARGET", "1200"),
+                )
+            ),
+        )
+        qos_request_latency_critical_ms = max(
+            qos_request_latency_target_ms + 1.0,
+            float(
+                env.get(
+                    "AMARYLLIS_QOS_REQUEST_LATENCY_CRITICAL_MS",
+                    str(qos_request_latency_target_ms * 1.8),
+                )
+            ),
+        )
+        qos_kv_pressure_target_events = max(
+            0,
+            int(env.get("AMARYLLIS_QOS_KV_PRESSURE_TARGET_EVENTS", "0")),
+        )
+        qos_kv_pressure_critical_events = max(
+            qos_kv_pressure_target_events + 1,
+            int(env.get("AMARYLLIS_QOS_KV_PRESSURE_CRITICAL_EVENTS", "2")),
+        )
         plugin_signing_mode = env.get(
             "AMARYLLIS_PLUGIN_SIGNING_MODE",
             "strict",
@@ -402,6 +453,14 @@ class AppConfig:
             perf_budget_max_error_rate_pct=max(
                 0.0, float(env.get("AMARYLLIS_PERF_BUDGET_MAX_ERROR_RATE_PCT", "0"))
             ),
+            qos_mode=qos_mode,
+            qos_auto_enabled=qos_auto_enabled,
+            qos_ttft_target_ms=qos_ttft_target_ms,
+            qos_ttft_critical_ms=qos_ttft_critical_ms,
+            qos_request_latency_target_ms=qos_request_latency_target_ms,
+            qos_request_latency_critical_ms=qos_request_latency_critical_ms,
+            qos_kv_pressure_target_events=qos_kv_pressure_target_events,
+            qos_kv_pressure_critical_events=qos_kv_pressure_critical_events,
             backup_enabled=_parse_bool(env.get("AMARYLLIS_BACKUP_ENABLED", "true")),
             backup_interval_sec=max(
                 30.0, float(env.get("AMARYLLIS_BACKUP_INTERVAL_SEC", "3600"))

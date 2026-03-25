@@ -133,6 +133,7 @@ jobs:
             tests.test_runtime_service_manifest_renderer \
             tests.test_runtime_service_lifecycle \
             tests.test_runtime_lifecycle_smoke_gate \
+            tests.test_qos_governor \
             tests.test_api_quickstart_compatibility_gate \
             tests.test_sdk_openai_compat_client \
             -v

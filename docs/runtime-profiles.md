@@ -68,6 +68,24 @@ These are auto-populated from the selected SLO profile unless explicitly set:
 
 `/service/observability/slo` now includes active runtime/SLO profile and effective quality budget.
 
+## QoS Governor Keys
+
+QoS governor controls runtime mode switching (`quality` / `balanced` / `power_save`):
+
+- `AMARYLLIS_QOS_MODE`
+- `AMARYLLIS_QOS_AUTO_ENABLED`
+- `AMARYLLIS_QOS_TTFT_TARGET_MS`
+- `AMARYLLIS_QOS_TTFT_CRITICAL_MS`
+- `AMARYLLIS_QOS_REQUEST_LATENCY_TARGET_MS`
+- `AMARYLLIS_QOS_REQUEST_LATENCY_CRITICAL_MS`
+- `AMARYLLIS_QOS_KV_PRESSURE_TARGET_EVENTS`
+- `AMARYLLIS_QOS_KV_PRESSURE_CRITICAL_EVENTS`
+
+Runtime service endpoints:
+
+- `GET /service/qos` (current mode, route mode, thresholds, observed metrics)
+- `POST /service/qos/mode` (manual mode/auto toggle update for service scope)
+
 ## Drift Check (CI)
 
 Use the blocking drift check:

@@ -76,6 +76,11 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Fail with non-zero exit code when any KPI check fails.",
     )
+    parser.add_argument(
+        "--qos-mode",
+        default=os.getenv("AMARYLLIS_QOS_MODE", "balanced"),
+        help="QoS mode to benchmark (`quality`, `balanced`, `power_save`).",
+    )
     return parser.parse_args()
 
 
@@ -88,6 +93,13 @@ def _safe_float(value: Any, *, default: float = 0.0) -> float:
         return float(value)
     except Exception:
         return float(default)
+
+
+def _normalize_qos_mode(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"quality", "balanced", "power_save"}:
+        return normalized
+    return "balanced"
 
 
 def _percentile(values: list[float], p: int) -> float:
@@ -367,6 +379,7 @@ def _trend_status(*, delta: float, direction: str) -> str:
 
 def main() -> int:
     args = _parse_args()
+    qos_mode = _normalize_qos_mode(args.qos_mode)
     if args.iterations <= 0:
         print("[user-journey-benchmark] --iterations must be >= 1", file=sys.stderr)
         return 2
@@ -429,6 +442,7 @@ def main() -> int:
             print(f"[user-journey-benchmark] invalid baseline ignored: {baseline_path} error={exc}")
 
     journeys: list[dict[str, Any]] = []
+    qos_runtime: dict[str, Any] = {}
 
     with tempfile.TemporaryDirectory(prefix="amaryllis-user-journey-benchmark-") as tmp:
         support_dir = Path(tmp) / "support"
@@ -443,6 +457,7 @@ def main() -> int:
         os.environ["AMARYLLIS_MEMORY_CONSOLIDATION_ENABLED"] = "false"
         os.environ["AMARYLLIS_MCP_ENDPOINTS"] = ""
         os.environ["AMARYLLIS_SECURITY_PROFILE"] = "production"
+        os.environ["AMARYLLIS_QOS_MODE"] = qos_mode
 
         import runtime.server as server_module
 
@@ -470,6 +485,21 @@ def main() -> int:
             if not agent_id:
                 print("[user-journey-benchmark] benchmark agent id missing", file=sys.stderr)
                 return 1
+
+            qos_response = client.get("/service/qos", headers=_auth("service-token"))
+            if qos_response.status_code != 200:
+                print(
+                    "[user-journey-benchmark] qos status probe failed "
+                    f"status={qos_response.status_code}",
+                    file=sys.stderr,
+                )
+                return 1
+            qos_payload = (
+                qos_response.json()
+                if qos_response.headers.get("content-type", "").startswith("application/json")
+                else {}
+            )
+            qos_runtime = qos_payload.get("qos") if isinstance(qos_payload.get("qos"), dict) else {}
 
             for iteration in range(1, int(args.iterations) + 1):
                 journeys.append(
@@ -619,6 +649,10 @@ def main() -> int:
         "config": {
             "iterations": int(args.iterations),
             "strict": bool(args.strict),
+            "qos": {
+                "requested_mode": qos_mode,
+                "runtime": qos_runtime,
+            },
             "thresholds": {
                 "min_success_rate_pct": float(args.min_success_rate_pct),
                 "max_p95_journey_latency_ms": float(args.max_p95_journey_latency_ms),

@@ -54,6 +54,11 @@ def _parse_args() -> argparse.Namespace:
         default=os.getenv("AMARYLLIS_PERF_SMOKE_OUTPUT", ""),
         help="Optional report path for JSON output.",
     )
+    parser.add_argument(
+        "--qos-mode",
+        default=os.getenv("AMARYLLIS_QOS_MODE", "balanced"),
+        help="QoS mode to benchmark (`quality`, `balanced`, `power_save`).",
+    )
     return parser.parse_args()
 
 
@@ -84,6 +89,22 @@ def _shutdown_app(app: Any) -> None:
         services.vector_store.persist()
     except Exception:
         pass
+
+
+def _normalize_qos_mode(value: str | None) -> str:
+    mode = str(value or "").strip().lower()
+    if mode in {"quality", "balanced", "power_save"}:
+        return mode
+    return "balanced"
+
+
+def _route_mode_for_qos(qos_mode: str) -> str:
+    mapping = {
+        "quality": "quality_first",
+        "balanced": "balanced",
+        "power_save": "local_first",
+    }
+    return mapping.get(_normalize_qos_mode(qos_mode), "balanced")
 
 
 def _install_perf_smoke_stubs(app: Any) -> None:
@@ -206,7 +227,8 @@ def _install_perf_smoke_stubs(app: Any) -> None:
     model_manager.stream_chat = _fake_stream_chat
 
 
-def _request_checks() -> list[dict[str, Any]]:
+def _request_checks(*, qos_mode: str) -> list[dict[str, Any]]:
+    route_mode = _route_mode_for_qos(qos_mode)
     return [
         {"label": "health", "method": "GET", "path": "/health", "expected": 200, "token": None, "payload": None},
         {
@@ -255,7 +277,7 @@ def _request_checks() -> list[dict[str, Any]]:
             "path": "/v1/models/route",
             "expected": 200,
             "token": "user-token",
-            "payload": {"mode": "balanced"},
+            "payload": {"mode": route_mode},
         },
         {
             "label": "voice_stt_health",
@@ -275,6 +297,7 @@ def _request_checks() -> list[dict[str, Any]]:
                 "messages": [{"role": "user", "content": "perf smoke non-stream"}],
                 "stream": False,
                 "max_tokens": 64,
+                "routing": {"mode": route_mode},
             },
         },
         {
@@ -287,6 +310,7 @@ def _request_checks() -> list[dict[str, Any]]:
                 "messages": [{"role": "user", "content": "perf smoke stream"}],
                 "stream": True,
                 "max_tokens": 64,
+                "routing": {"mode": route_mode},
             },
         },
     ]
@@ -339,6 +363,7 @@ def _run_check(
 
 def main() -> int:
     args = _parse_args()
+    qos_mode = _normalize_qos_mode(args.qos_mode)
     if args.iterations <= 0:
         print("[perf-smoke] --iterations must be >= 1", file=sys.stderr)
         return 2
@@ -373,6 +398,7 @@ def main() -> int:
         os.environ["AMARYLLIS_MEMORY_CONSOLIDATION_ENABLED"] = "false"
         os.environ["AMARYLLIS_MCP_ENDPOINTS"] = ""
         os.environ["AMARYLLIS_SECURITY_PROFILE"] = "production"
+        os.environ["AMARYLLIS_QOS_MODE"] = qos_mode
 
         import runtime.server as server_module
 
@@ -382,7 +408,7 @@ def main() -> int:
         latencies_ms: list[float] = []
         failures: list[dict[str, Any]] = []
         latency_by_label: dict[str, list[float]] = {}
-        checks = _request_checks()
+        checks = _request_checks(qos_mode=qos_mode)
         started_at = datetime.now(timezone.utc).isoformat()
 
         with TestClient(app) as client:
@@ -553,6 +579,10 @@ def main() -> int:
             "thresholds": {
                 "max_p95_latency_ms": args.max_p95_latency_ms,
                 "max_error_rate_pct": args.max_error_rate_pct,
+            },
+            "qos": {
+                "mode": qos_mode,
+                "route_mode": _route_mode_for_qos(qos_mode),
             },
             "failures": failures,
         }

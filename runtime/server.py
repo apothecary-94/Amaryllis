@@ -53,6 +53,7 @@ from runtime.auth import AuthContext, AuthManager, auth_context_from_request
 from runtime.config import AppConfig
 from runtime.errors import AmaryllisError, InternalError, PermissionDeniedError, ProviderError, ValidationError
 from runtime.observability import ObservabilityManager, ObservabilityTelemetry, SLOTargets
+from runtime.qos_governor import QoSGovernor, QoSThresholds
 from runtime.security import LocalIdentityManager, SecurityManager
 from runtime.telemetry import LocalTelemetry
 from storage.database import Database
@@ -106,6 +107,7 @@ class ServiceContainer:
     telemetry: Any
     local_telemetry: LocalTelemetry
     observability: ObservabilityManager
+    qos_governor: QoSGovernor
     api_lifecycle: APILifecyclePolicy
     identity_manager: LocalIdentityManager
     security_manager: SecurityManager
@@ -118,6 +120,11 @@ class RunKillSwitchRequest(BaseModel):
     include_running: bool = True
     include_queued: bool = True
     limit: int = Field(default=5000, ge=1, le=50000)
+
+
+class QoSModeUpdateRequest(BaseModel):
+    mode: str | None = Field(default=None)
+    auto_enabled: bool | None = None
 
 
 logging.basicConfig(
@@ -149,6 +156,18 @@ def create_services() -> ServiceContainer:
             min_request_samples=config.observability_min_request_samples,
             min_run_samples=config.observability_min_run_samples,
             incident_cooldown_sec=config.observability_incident_cooldown_sec,
+        ),
+    )
+    qos_governor = QoSGovernor(
+        initial_mode=config.qos_mode,
+        auto_enabled=config.qos_auto_enabled,
+        thresholds=QoSThresholds(
+            ttft_target_ms=config.qos_ttft_target_ms,
+            ttft_critical_ms=config.qos_ttft_critical_ms,
+            request_latency_target_ms=config.qos_request_latency_target_ms,
+            request_latency_critical_ms=config.qos_request_latency_critical_ms,
+            kv_pressure_target_events=config.qos_kv_pressure_target_events,
+            kv_pressure_critical_events=config.qos_kv_pressure_critical_events,
         ),
     )
     telemetry = ObservabilityTelemetry(base=local_telemetry, monitor=observability.sre)
@@ -403,6 +422,7 @@ def create_services() -> ServiceContainer:
         telemetry=telemetry,
         local_telemetry=local_telemetry,
         observability=observability,
+        qos_governor=qos_governor,
         api_lifecycle=api_lifecycle,
         identity_manager=identity_manager,
         security_manager=security_manager,
@@ -765,6 +785,8 @@ def create_app() -> FastAPI:
     @app.get("/service/observability/slo")
     def service_observability_slo(request: Request) -> dict[str, Any]:
         auth = auth_context_from_request(request)
+        snapshot = services.observability.sre.snapshot()
+        qos = services.qos_governor.reconcile(snapshot=snapshot)
         return {
             "request_id": request_id_from_request(request),
             "actor": auth.user_id,
@@ -779,7 +801,43 @@ def create_app() -> FastAPI:
                 "perf_max_p95_latency_ms": services.config.perf_budget_max_p95_latency_ms,
                 "perf_max_error_rate_pct": services.config.perf_budget_max_error_rate_pct,
             },
-            "snapshot": services.observability.sre.snapshot(),
+            "qos": qos,
+            "snapshot": snapshot,
+        }
+
+    @app.get("/service/qos")
+    def service_qos_status(request: Request) -> dict[str, Any]:
+        auth = auth_context_from_request(request)
+        request_id = request_id_from_request(request)
+        snapshot = services.observability.sre.snapshot()
+        qos = services.qos_governor.reconcile(snapshot=snapshot)
+        return {
+            "request_id": request_id,
+            "actor": auth.user_id,
+            "scopes": sorted(auth.scopes),
+            "qos": qos,
+        }
+
+    @app.post("/service/qos/mode")
+    def service_qos_set_mode(payload: QoSModeUpdateRequest, request: Request) -> dict[str, Any]:
+        auth = auth_context_from_request(request)
+        request_id = request_id_from_request(request)
+        if payload.mode is None and payload.auto_enabled is None:
+            raise ValidationError("mode or auto_enabled must be provided")
+        snapshot = services.observability.sre.snapshot()
+        try:
+            qos = services.qos_governor.set_mode(
+                mode=payload.mode,
+                auto_enabled=payload.auto_enabled,
+                snapshot=snapshot,
+            )
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+        return {
+            "request_id": request_id,
+            "actor": auth.user_id,
+            "scopes": sorted(auth.scopes),
+            "qos": qos,
         }
 
     @app.get("/service/observability/incidents")

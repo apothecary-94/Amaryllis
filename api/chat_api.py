@@ -150,6 +150,31 @@ def _routing_fallback_used(routing: dict[str, Any] | None) -> bool:
     return bool(routing.get("fallback_used", False))
 
 
+def _effective_routing_payload(
+    *,
+    request: Request,
+    payload: ChatCompletionsRequest,
+    tool_names: list[str],
+    stream: bool,
+) -> tuple[dict[str, Any] | None, str]:
+    services = request.app.state.services
+    route_payload = payload.routing.model_dump(exclude_none=True) if payload.routing is not None else None
+    if route_payload is None:
+        try:
+            snapshot = services.observability.sre.snapshot()
+            qos_status = services.qos_governor.reconcile(snapshot=snapshot)
+            route_mode = str(qos_status.get("route_mode") or "balanced").strip().lower() or "balanced"
+            route_payload = {"mode": route_mode, "require_stream": bool(stream)}
+        except Exception:
+            route_payload = None
+
+    if route_payload is not None and tool_names and not bool(route_payload.get("require_tools", False)):
+        route_payload["require_tools"] = True
+
+    effective_mode = str((route_payload or {}).get("mode") or "balanced").strip().lower() or "balanced"
+    return route_payload, effective_mode
+
+
 def _emit_generation_loop_metrics(
     request: Request,
     *,
@@ -157,6 +182,7 @@ def _emit_generation_loop_metrics(
     provider: str,
     model: str,
     routing: dict[str, Any] | None,
+    effective_mode: str | None,
     stream: bool,
     ttft_ms: float | None,
     total_latency_ms: float | None,
@@ -166,7 +192,14 @@ def _emit_generation_loop_metrics(
     provenance: dict[str, Any] | None,
 ) -> None:
     services = request.app.state.services
-    mode = str((payload.routing.model_dump(exclude_none=True) if payload.routing else {}).get("mode") or "balanced")
+    mode = str(effective_mode or "").strip().lower()
+    if not mode:
+        mode = str((payload.routing.model_dump(exclude_none=True) if payload.routing else {}).get("mode") or "balanced")
+    qos_mode = "balanced"
+    try:
+        qos_mode = str(services.qos_governor.mode or "balanced")
+    except Exception:
+        qos_mode = "balanced"
     event = {
         "request_id": _request_id(request),
         "session_id": payload.session_id,
@@ -174,6 +207,7 @@ def _emit_generation_loop_metrics(
         "provider": provider,
         "model": model,
         "mode": mode,
+        "qos_mode": qos_mode,
         "stream": bool(stream),
         "fallback_used": _routing_fallback_used(routing),
         "ttft_ms": round(float(ttft_ms), 3) if ttft_ms is not None else None,
@@ -408,10 +442,12 @@ def chat_completions(payload: ChatCompletionsRequest, request: Request):
         payload=payload,
         normalized_messages=normalized_messages,
     )
-
-    route_payload = payload.routing.model_dump(exclude_none=True) if payload.routing is not None else None
-    if route_payload is not None and tool_names and not bool(route_payload.get("require_tools", False)):
-        route_payload["require_tools"] = True
+    route_payload, effective_route_mode = _effective_routing_payload(
+        request=request,
+        payload=payload,
+        tool_names=tool_names,
+        stream=bool(payload.stream),
+    )
 
     if payload.stream:
         stream_messages = list(normalized_messages)
@@ -515,6 +551,7 @@ def chat_completions(payload: ChatCompletionsRequest, request: Request):
                 provider=provider_used,
                 model=model_used,
                 routing=routing_used,
+                effective_mode=effective_route_mode,
                 stream=True,
                 ttft_ms=ttft_ms,
                 total_latency_ms=total_latency_ms,
@@ -564,6 +601,7 @@ def chat_completions(payload: ChatCompletionsRequest, request: Request):
         provider=provider_used,
         model=model_used,
         routing=routing_used,
+        effective_mode=effective_route_mode,
         stream=False,
         ttft_ms=total_latency_ms,
         total_latency_ms=total_latency_ms,
