@@ -58,3 +58,26 @@ python scripts/release/render_distribution_channel_manifests.py \
   --output-dir "artifacts/distribution-channels-rendered" \
   --report "artifacts/distribution-channels-rendered-report.json"
 ```
+
+Validate rendered outputs as publish-ready artifacts (blocking contract):
+
+```bash
+python scripts/release/distribution_channel_render_gate.py \
+  --render-report artifacts/distribution-channels-rendered-report.json \
+  --expected-version "1.2.3" \
+  --output artifacts/distribution-channel-render-gate-report.json
+```
+
+The render gate fails when:
+
+- any channel output still contains unresolved placeholders,
+- URL/`sha256` contract fields are missing or malformed,
+- rendered channel versions are inconsistent or mismatch expected release version.
+
+## CI Coverage
+
+Both release and nightly workflows run:
+
+- `distribution_channel_manifest_gate.py` (template readiness),
+- `render_distribution_channel_manifests.py` (deterministic render to artifacts),
+- `distribution_channel_render_gate.py` (publish-ready validation for rendered manifests).

@@ -60,6 +60,14 @@ Evidence:
 - release and nightly workflows run this chain as blocking steps (`.github/workflows/release-gate.yml`, `.github/workflows/nightly-reliability.yml`);
 - contract tests covering schema/snapshot/trend/publish/mission/observability pass in CI-local runs.
 
+`WP-13` (`P4-H04`) is closed as implemented and release/nightly-gated.
+
+Evidence:
+- release/nightly workflows run blocking channel template gate + render + render gate (`distribution_channel_manifest_gate.py` -> `render_distribution_channel_manifests.py` -> `distribution_channel_render_gate.py`);
+- rendered WinGet/Homebrew/Flathub manifests are exported as CI artifacts for operator handoff;
+- channel documentation and release playbook include deterministic render and validation commands;
+- channel contract tests cover template gate, render, and render-gate behavior.
+
 ## Critical Path
 1. `WP-01` -> baseline contract required before portability and QoS enforcement.
 2. `WP-02` -> required before `WP-03` mode switching can be policy driven.

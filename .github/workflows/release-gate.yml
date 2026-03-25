@@ -130,6 +130,7 @@ jobs:
             tests.test_distribution_resilience_report \
             tests.test_distribution_channel_manifest_gate \
             tests.test_render_distribution_channel_manifests \
+            tests.test_distribution_channel_render_gate \
             tests.test_user_journey_benchmark \
             tests.test_adoption_kpi_schema_gate \
             tests.test_adoption_kpi_snapshot_builder \
@@ -536,6 +537,62 @@ jobs:
         with:
           name: distribution-channel-manifest-report
           path: artifacts/distribution-channel-manifest-report.json
+          if-no-files-found: error
+
+      - name: Render distribution channel manifests (blocking)
+        run: |
+          RELEASE_REF="${GITHUB_SHA}"
+          RELEASE_VERSION="0.0.0-${GITHUB_SHA::7}"
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            RELEASE_REF="${GITHUB_REF_NAME}"
+            RELEASE_VERSION="${GITHUB_REF_NAME#v}"
+          fi
+
+          BASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_REF}"
+          WINDOWS_SHA="$(printf "%s" "${GITHUB_SHA}-windows-x64" | sha256sum | awk '{print $1}')"
+          MACOS_ARM64_SHA="$(printf "%s" "${GITHUB_SHA}-macos-arm64" | sha256sum | awk '{print $1}')"
+          MACOS_X64_SHA="$(printf "%s" "${GITHUB_SHA}-macos-x64" | sha256sum | awk '{print $1}')"
+          FLATHUB_SHA="$(printf "%s" "${GITHUB_SHA}-flathub-archive" | sha256sum | awk '{print $1}')"
+
+          python scripts/release/render_distribution_channel_manifests.py \
+            --version "${RELEASE_VERSION}" \
+            --windows-x64-url "${BASE_URL}/amaryllis-windows-x64.zip" \
+            --windows-x64-sha256 "${WINDOWS_SHA}" \
+            --macos-arm64-url "${BASE_URL}/amaryllis-macos-arm64.tar.gz" \
+            --macos-arm64-sha256 "${MACOS_ARM64_SHA}" \
+            --macos-x64-url "${BASE_URL}/amaryllis-macos-x64.tar.gz" \
+            --macos-x64-sha256 "${MACOS_X64_SHA}" \
+            --flathub-archive-url "${BASE_URL}/amaryllis-flathub.tar.gz" \
+            --flathub-archive-sha256 "${FLATHUB_SHA}" \
+            --output-dir "artifacts/distribution-channels-rendered" \
+            --report "artifacts/distribution-channels-rendered-report.json"
+
+      - name: Run distribution channel render gate (blocking)
+        run: |
+          RELEASE_VERSION="0.0.0-${GITHUB_SHA::7}"
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            RELEASE_VERSION="${GITHUB_REF_NAME#v}"
+          fi
+
+          python scripts/release/distribution_channel_render_gate.py \
+            --render-report "artifacts/distribution-channels-rendered-report.json" \
+            --expected-version "${RELEASE_VERSION}" \
+            --output "artifacts/distribution-channel-render-gate-report.json"
+
+      - name: Upload distribution channel rendered manifests
+        uses: actions/upload-artifact@v4
+        with:
+          name: distribution-channel-rendered-manifests
+          path: |
+            artifacts/distribution-channels-rendered-report.json
+            artifacts/distribution-channels-rendered
+          if-no-files-found: error
+
+      - name: Upload distribution channel render gate report
+        uses: actions/upload-artifact@v4
+        with:
+          name: distribution-channel-render-gate-report
+          path: artifacts/distribution-channel-render-gate-report.json
           if-no-files-found: error
 
   release-kpi-pack:

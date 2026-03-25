@@ -60,6 +60,28 @@ python3 scripts/release/adoption_kpi_schema_gate.py \
   --output artifacts/nightly-adoption-kpi-schema-gate-report.json
 ```
 
+Nightly distribution channel render + publish-ready validation:
+
+```bash
+python3 scripts/release/render_distribution_channel_manifests.py \
+  --version "0.0.0-nightly-<sha7>" \
+  --windows-x64-url "https://github.com/<org>/<repo>/releases/download/nightly-<sha>/amaryllis-windows-x64.zip" \
+  --windows-x64-sha256 "<sha256>" \
+  --macos-arm64-url "https://github.com/<org>/<repo>/releases/download/nightly-<sha>/amaryllis-macos-arm64.tar.gz" \
+  --macos-arm64-sha256 "<sha256>" \
+  --macos-x64-url "https://github.com/<org>/<repo>/releases/download/nightly-<sha>/amaryllis-macos-x64.tar.gz" \
+  --macos-x64-sha256 "<sha256>" \
+  --flathub-archive-url "https://github.com/<org>/<repo>/releases/download/nightly-<sha>/amaryllis-flathub.tar.gz" \
+  --flathub-archive-sha256 "<sha256>" \
+  --output-dir artifacts/nightly-distribution-channels-rendered \
+  --report artifacts/nightly-distribution-channels-rendered-report.json
+
+python3 scripts/release/distribution_channel_render_gate.py \
+  --render-report artifacts/nightly-distribution-channels-rendered-report.json \
+  --expected-version "0.0.0-nightly-<sha7>" \
+  --output artifacts/nightly-distribution-channel-render-gate-report.json
+```
+
 Nightly adoption KPI snapshot build + publish:
 
 ```bash
@@ -130,6 +152,14 @@ Nightly adoption KPI snapshot artifacts:
 artifacts/nightly-adoption-kpi-snapshot-report.json
 artifacts/nightly-adoption-kpi-trend-gate-report.json
 artifacts/nightly-adoption-kpi-snapshot-runtime-export.json
+```
+
+Nightly distribution channel rendered-manifest artifacts:
+
+```text
+artifacts/nightly-distribution-channels-rendered-report.json
+artifacts/nightly-distribution-channels-rendered/
+artifacts/nightly-distribution-channel-render-gate-report.json
 ```
 
 Mission success/recovery report pack artifact:

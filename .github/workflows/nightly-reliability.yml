@@ -157,6 +157,36 @@ jobs:
           python scripts/release/distribution_channel_manifest_gate.py \
             --output "artifacts/nightly-distribution-channel-manifest-report.json"
 
+      - name: Render nightly distribution channel manifests (blocking)
+        run: |
+          RELEASE_REF="nightly-${GITHUB_SHA}"
+          RELEASE_VERSION="0.0.0-nightly-${GITHUB_SHA::7}"
+          BASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_REF}"
+          WINDOWS_SHA="$(printf "%s" "${GITHUB_SHA}-nightly-windows-x64" | sha256sum | awk '{print $1}')"
+          MACOS_ARM64_SHA="$(printf "%s" "${GITHUB_SHA}-nightly-macos-arm64" | sha256sum | awk '{print $1}')"
+          MACOS_X64_SHA="$(printf "%s" "${GITHUB_SHA}-nightly-macos-x64" | sha256sum | awk '{print $1}')"
+          FLATHUB_SHA="$(printf "%s" "${GITHUB_SHA}-nightly-flathub-archive" | sha256sum | awk '{print $1}')"
+
+          python scripts/release/render_distribution_channel_manifests.py \
+            --version "${RELEASE_VERSION}" \
+            --windows-x64-url "${BASE_URL}/amaryllis-windows-x64.zip" \
+            --windows-x64-sha256 "${WINDOWS_SHA}" \
+            --macos-arm64-url "${BASE_URL}/amaryllis-macos-arm64.tar.gz" \
+            --macos-arm64-sha256 "${MACOS_ARM64_SHA}" \
+            --macos-x64-url "${BASE_URL}/amaryllis-macos-x64.tar.gz" \
+            --macos-x64-sha256 "${MACOS_X64_SHA}" \
+            --flathub-archive-url "${BASE_URL}/amaryllis-flathub.tar.gz" \
+            --flathub-archive-sha256 "${FLATHUB_SHA}" \
+            --output-dir "artifacts/nightly-distribution-channels-rendered" \
+            --report "artifacts/nightly-distribution-channels-rendered-report.json"
+
+      - name: Run nightly distribution channel render gate (blocking)
+        run: |
+          python scripts/release/distribution_channel_render_gate.py \
+            --render-report "artifacts/nightly-distribution-channels-rendered-report.json" \
+            --expected-version "0.0.0-nightly-${GITHUB_SHA::7}" \
+            --output "artifacts/nightly-distribution-channel-render-gate-report.json"
+
       - name: Run nightly API quickstart compatibility gate (blocking)
         run: |
           python scripts/release/api_quickstart_compatibility_gate.py \
@@ -327,6 +357,24 @@ jobs:
         with:
           name: nightly-distribution-channel-manifest-report
           path: artifacts/nightly-distribution-channel-manifest-report.json
+          if-no-files-found: error
+
+      - name: Upload nightly distribution channel rendered manifests
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-distribution-channel-rendered-manifests
+          path: |
+            artifacts/nightly-distribution-channels-rendered-report.json
+            artifacts/nightly-distribution-channels-rendered
+          if-no-files-found: error
+
+      - name: Upload nightly distribution channel render gate report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-distribution-channel-render-gate-report
+          path: artifacts/nightly-distribution-channel-render-gate-report.json
           if-no-files-found: error
 
       - name: Upload nightly API quickstart compatibility report
