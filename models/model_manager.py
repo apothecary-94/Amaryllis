@@ -13,7 +13,10 @@ import time
 from typing import Any, Iterator
 from uuid import uuid4
 
-from models.model_artifact_admission import validate_model_package_manifest
+from models.model_artifact_admission import (
+    evaluate_license_admission,
+    validate_model_package_manifest,
+)
 from models.provider_errors import (
     ProviderErrorInfo,
     ProviderOperationError,
@@ -438,6 +441,12 @@ class ModelManager:
                 profile_scores[profile_id] = score - self._provider_guardrail_penalty(candidate.provider)
             if not profile_scores:
                 continue
+            license_admission = self._license_admission_for_target(
+                provider_name=candidate.provider,
+                model_name=candidate.model,
+                metadata=candidate.metadata if isinstance(candidate.metadata, dict) else {},
+                require_metadata=self._license_metadata_required_for_onboarding(),
+            )
 
             rows.append(
                 self._package_row_from_candidate(
@@ -446,6 +455,7 @@ class ModelManager:
                     active_provider=active_provider,
                     active_model=active_model,
                     profile_scores=profile_scores,
+                    license_admission=license_admission,
                 )
             )
 
@@ -497,13 +507,34 @@ class ModelManager:
         if provider_name not in self.providers:
             raise ValueError(f"Unknown provider: {provider_name}")
 
+        license_admission = self._license_admission_for_target(
+            provider_name=provider_name,
+            model_name=model_name,
+            metadata=self._lookup_model_metadata(provider_name=provider_name, model_name=model_name),
+            require_metadata=self._license_metadata_required_for_onboarding(),
+        )
+        if not bool(license_admission.get("admitted")):
+            reasons = ", ".join([str(item) for item in license_admission.get("errors", [])[:4]])
+            raise ValueError(
+                "Model package license admission failed "
+                f"provider={provider_name} model={model_name} errors={reasons}"
+            )
+
         provider_caps = self.provider_capabilities().get(provider_name, {})
         supports_download = bool(provider_caps.get("supports_download", False))
         installed_before = False
         if supports_download:
             installed_before = self._model_installed(provider_name=provider_name, model_name=model_name)
 
-        steps: list[dict[str, Any]] = []
+        steps: list[dict[str, Any]] = [
+            {
+                "step": "license_admission",
+                "status": "completed",
+                "admitted": True,
+                "policy_id": str((license_admission.get("summary") or {}).get("license_policy_id") or ""),
+                "warnings": [str(item) for item in license_admission.get("warnings", [])],
+            }
+        ]
         download_result: dict[str, Any] | None = None
         if supports_download:
             if installed_before:
@@ -554,6 +585,7 @@ class ModelManager:
             "package_id": self._package_id_from_target(provider_name=provider_name, model_name=model_name),
             "provider": provider_name,
             "model": model_name,
+            "license_admission": license_admission,
             "download": download_result,
             "load": load_result,
             "steps": steps,
@@ -665,6 +697,18 @@ class ModelManager:
         selected = self.providers.get(provider_name)
         if selected is None:
             raise ValueError(f"Unknown provider: {provider_name}")
+        license_admission = self._license_admission_for_target(
+            provider_name=provider_name,
+            model_name=model_id,
+            metadata=self._lookup_model_metadata(provider_name=provider_name, model_name=model_id),
+            require_metadata=self._license_metadata_required_for_onboarding(),
+        )
+        if not bool(license_admission.get("admitted")):
+            reasons = ", ".join([str(item) for item in license_admission.get("errors", [])[:4]])
+            raise ValueError(
+                "Model download license admission failed "
+                f"provider={provider_name} model={model_id} errors={reasons}"
+            )
 
         result = self._download_via_provider(
             provider_name=provider_name,
@@ -677,6 +721,7 @@ class ModelManager:
             model_id=model_id,
             result=result,
         )
+        result["license_admission"] = license_admission
         self._invalidate_provider_models_cache(provider_name)
         self._invalidate_suggested_cache()
         return result
@@ -687,6 +732,18 @@ class ModelManager:
         selected = self.providers.get(provider_name)
         if selected is None:
             raise ValueError(f"Unknown provider: {provider_name}")
+        license_admission = self._license_admission_for_target(
+            provider_name=provider_name,
+            model_name=model_id,
+            metadata=self._lookup_model_metadata(provider_name=provider_name, model_name=model_id),
+            require_metadata=self._license_metadata_required_for_onboarding(),
+        )
+        if not bool(license_admission.get("admitted")):
+            reasons = ", ".join([str(item) for item in license_admission.get("errors", [])[:4]])
+            raise ValueError(
+                "Model download license admission failed "
+                f"provider={provider_name} model={model_id} errors={reasons}"
+            )
 
         with self._download_lock:
             running = self._find_running_download_unlocked(provider_name=provider_name, model_id=model_id)
@@ -1541,6 +1598,23 @@ class ModelManager:
             size_bytes = ModelManager._to_int_or_none(raw.get("size_bytes"))
             seen.add(model_id)
             row: dict[str, Any] = {"id": model_id, "label": label}
+            metadata = raw.get("metadata")
+            metadata_payload = dict(metadata) if isinstance(metadata, dict) else {}
+            for key in (
+                "license",
+                "spdx_id",
+                "license_spdx_id",
+                "license_source",
+                "allows_commercial_use",
+                "allows_derivatives",
+                "requires_share_alike",
+                "restrictions",
+                "license_restrictions",
+            ):
+                if key in raw and key not in metadata_payload:
+                    metadata_payload[key] = raw.get(key)
+            if metadata_payload:
+                row["metadata"] = metadata_payload
             if size_bytes is not None and size_bytes > 0:
                 row["size_bytes"] = size_bytes
             else:
@@ -1877,6 +1951,7 @@ class ModelManager:
         active_provider: str,
         active_model: str,
         profile_scores: dict[str, float],
+        license_admission: dict[str, Any],
     ) -> dict[str, Any]:
         package_id = self._package_id_from_target(
             provider_name=candidate.provider,
@@ -1911,6 +1986,7 @@ class ModelManager:
                 "fit": compatibility_fit,
                 "hardware_memory_gb": memory_gb,
             },
+            "license_admission": license_admission,
             "recommended_profiles": recommended_profiles,
             "profile_scores": profile_scores,
             "install": {
@@ -1936,6 +2012,124 @@ class ModelManager:
             },
         }
 
+    def _lookup_model_metadata(self, *, provider_name: str, model_name: str) -> dict[str, Any]:
+        provider = self.providers.get(provider_name)
+        if provider is None:
+            return {}
+
+        def _extract_from_items(items: list[dict[str, Any]]) -> dict[str, Any]:
+            target = str(model_name).strip()
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("id", "")).strip() != target:
+                    continue
+                metadata = item.get("metadata")
+                payload = dict(metadata) if isinstance(metadata, dict) else {}
+                for key in (
+                    "license",
+                    "spdx_id",
+                    "license_spdx_id",
+                    "license_source",
+                    "allows_commercial_use",
+                    "allows_derivatives",
+                    "requires_share_alike",
+                    "restrictions",
+                    "license_restrictions",
+                ):
+                    if key in item and key not in payload:
+                        payload[key] = item.get(key)
+                return payload
+            return {}
+
+        try:
+            _, _, listed = self._list_provider_models_cached(
+                provider_name=provider_name,
+                provider=provider,
+                allow_background_refresh=False,
+            )
+            metadata = _extract_from_items(listed)
+            if metadata:
+                return metadata
+        except Exception:
+            pass
+
+        suggested_getter = getattr(provider, "suggested_models", None)
+        if callable(suggested_getter):
+            try:
+                suggested = self._normalize_suggested(suggested_getter(limit=300))
+                metadata = _extract_from_items(suggested)
+                if metadata:
+                    return metadata
+            except Exception:
+                pass
+        return {}
+
+    @staticmethod
+    def _normalize_license_payload_from_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(metadata, dict):
+            return {}
+        embedded = metadata.get("license")
+        if isinstance(embedded, dict):
+            payload = dict(embedded)
+            return payload
+
+        payload: dict[str, Any] = {}
+        embedded_str = str(embedded or "").strip()
+        spdx_id = str(
+            metadata.get("spdx_id")
+            or metadata.get("license_spdx_id")
+            or embedded_str
+            or ""
+        ).strip()
+        if spdx_id:
+            payload["spdx_id"] = spdx_id
+
+        source = str(metadata.get("license_source") or metadata.get("source") or "").strip()
+        if source:
+            payload["source"] = source
+
+        for key in ("allows_commercial_use", "allows_derivatives", "requires_share_alike"):
+            value = metadata.get(key)
+            if isinstance(value, bool):
+                payload[key] = value
+
+        restrictions = metadata.get("license_restrictions")
+        if not isinstance(restrictions, list):
+            restrictions = metadata.get("restrictions")
+        if isinstance(restrictions, list):
+            payload["restrictions"] = [str(item).strip() for item in restrictions if str(item).strip()]
+        return payload
+
+    def _license_admission_for_target(
+        self,
+        *,
+        provider_name: str,
+        model_name: str,
+        metadata: dict[str, Any],
+        require_metadata: bool,
+    ) -> dict[str, Any]:
+        payload = self._normalize_license_payload_from_metadata(metadata)
+        decision = evaluate_license_admission(
+            payload or None,
+            require_license_policy=True,
+            require_license_metadata=bool(require_metadata),
+        )
+        summary = dict(decision.get("summary") or {})
+        errors = [str(item) for item in decision.get("errors", []) if str(item).strip()]
+        warnings = [str(item) for item in decision.get("warnings", []) if str(item).strip()]
+        admitted = bool(decision.get("ok"))
+        status = "allow" if admitted and not warnings else ("allow_with_warning" if admitted else "deny")
+        return {
+            "provider": provider_name,
+            "model": model_name,
+            "status": status,
+            "admitted": admitted,
+            "errors": errors,
+            "warnings": warnings,
+            "summary": summary,
+        }
+
     @staticmethod
     def _fit_rank_for_package(fit: str) -> int:
         if fit == "fit":
@@ -1955,6 +2149,10 @@ class ModelManager:
         if fallback_normalized in {"fast", "balanced", "quality"}:
             return fallback_normalized
         return "balanced"
+
+    @staticmethod
+    def _license_metadata_required_for_onboarding() -> bool:
+        return _parse_bool_env(os.getenv("AMARYLLIS_LICENSE_ADMISSION_REQUIRE_METADATA", "false"))
 
     @staticmethod
     def _package_id_from_target(*, provider_name: str, model_name: str) -> str:

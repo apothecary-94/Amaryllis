@@ -21,30 +21,45 @@ class _CatalogProvider:
         supports_download: bool,
         suggested: list[str],
         installed: list[str] | None = None,
+        metadata_by_model: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self.provider = provider
         self.local = local
         self.supports_download = supports_download
         self.suggested = list(suggested)
         self.installed_models: set[str] = set(installed or [])
+        self.metadata_by_model = {
+            str(key): dict(value)
+            for key, value in (metadata_by_model or {}).items()
+            if isinstance(value, dict)
+        }
         self.download_calls = 0
         self.load_calls = 0
 
     def list_models(self) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         for model_id in sorted(self.installed_models):
+            metadata = {"size_bytes": 1024}
+            metadata.update(self.metadata_by_model.get(model_id, {}))
             rows.append(
                 {
                     "id": model_id,
                     "provider": self.provider,
                     "active": False,
-                    "metadata": {"size_bytes": 1024},
+                    "metadata": metadata,
                 }
             )
         return rows
 
     def suggested_models(self, limit: int = 100) -> list[dict[str, Any]]:
-        return [{"id": model_id, "label": model_id, "size_bytes": 1024} for model_id in self.suggested[: max(1, limit)]]
+        rows: list[dict[str, Any]] = []
+        for model_id in self.suggested[: max(1, limit)]:
+            row: dict[str, Any] = {"id": model_id, "label": model_id, "size_bytes": 1024}
+            metadata = self.metadata_by_model.get(model_id)
+            if metadata:
+                row["metadata"] = dict(metadata)
+            rows.append(row)
+        return rows
 
     def capabilities(self) -> dict[str, Any]:
         return {
@@ -127,6 +142,26 @@ class ModelPackageCatalogTests(unittest.TestCase):
                 "mlx-community/Llama-3.1-8B-Instruct-4bit",
             ],
             installed=[],
+            metadata_by_model={
+                "mlx-community/Qwen2.5-1.5B-Instruct-4bit": {
+                    "license": {
+                        "spdx_id": "apache-2.0",
+                        "source": "https://example.org/model-card",
+                        "allows_commercial_use": True,
+                        "allows_derivatives": True,
+                        "requires_share_alike": False,
+                    }
+                },
+                "mlx-community/Llama-3.1-8B-Instruct-4bit": {
+                    "license": {
+                        "spdx_id": "gpl-3.0-only",
+                        "source": "https://example.org/model-card",
+                        "allows_commercial_use": True,
+                        "allows_derivatives": True,
+                        "requires_share_alike": False,
+                    }
+                },
+            },
         )
         self.openai = _CatalogProvider(
             provider="openai",
@@ -174,6 +209,7 @@ class ModelPackageCatalogTests(unittest.TestCase):
         self.assertIn("package_id", row)
         self.assertIn("requirements", row)
         self.assertIn("compatibility", row)
+        self.assertIn("license_admission", row)
         install = row.get("install", {})
         self.assertEqual(str(install.get("endpoint")), "/models/packages/install")
         self.assertIn("payload", install)
@@ -182,6 +218,7 @@ class ModelPackageCatalogTests(unittest.TestCase):
         package_id = "mlx::mlx-community/Qwen2.5-1.5B-Instruct-4bit"
         result = self.manager.install_model_package(package_id=package_id, activate=True)
         self.assertEqual(str(result.get("package_id")), package_id)
+        self.assertTrue(bool((result.get("license_admission") or {}).get("admitted")))
         self.assertEqual(self.mlx.download_calls, 1)
         self.assertEqual(self.mlx.load_calls, 1)
         active = result.get("active", {})
@@ -193,11 +230,18 @@ class ModelPackageCatalogTests(unittest.TestCase):
         result = self.manager.install_model_package(package_id=package_id, activate=True)
         steps = result.get("steps", [])
         self.assertTrue(steps)
-        self.assertEqual(str(steps[0].get("step")), "download")
-        self.assertEqual(str(steps[0].get("status")), "skipped")
-        self.assertEqual(str(steps[0].get("reason")), "provider_download_not_supported")
+        self.assertEqual(str(steps[0].get("step")), "license_admission")
+        self.assertEqual(str(steps[0].get("status")), "completed")
+        self.assertEqual(str(steps[1].get("step")), "download")
+        self.assertEqual(str(steps[1].get("status")), "skipped")
+        self.assertEqual(str(steps[1].get("reason")), "provider_download_not_supported")
         self.assertEqual(self.openai.download_calls, 0)
         self.assertEqual(self.openai.load_calls, 1)
+
+    def test_install_model_package_rejects_denied_license(self) -> None:
+        package_id = "mlx::mlx-community/Llama-3.1-8B-Instruct-4bit"
+        with self.assertRaisesRegex(ValueError, "license admission failed"):
+            self.manager.install_model_package(package_id=package_id, activate=True)
 
 
 if __name__ == "__main__":

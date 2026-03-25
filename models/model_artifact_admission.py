@@ -41,6 +41,124 @@ _DEFAULT_LICENSE_POLICY: dict[str, Any] = {
 }
 
 
+def evaluate_license_admission(
+    license_payload: dict[str, Any] | None,
+    *,
+    license_policy: dict[str, Any] | None = None,
+    license_policy_path: str | Path | None = None,
+    require_license_policy: bool = True,
+    require_license_metadata: bool = True,
+) -> dict[str, Any]:
+    errors: list[str] = []
+    warnings: list[str] = []
+    resolved_policy = _resolve_license_policy(
+        license_policy=license_policy,
+        license_policy_path=license_policy_path,
+        require_license_policy=require_license_policy,
+        errors=errors,
+        warnings=warnings,
+    )
+
+    payload = license_payload if isinstance(license_payload, dict) else {}
+    metadata_present = bool(payload)
+    if not metadata_present:
+        if require_license_metadata:
+            errors.append("license_missing")
+        else:
+            warnings.append("license_missing")
+
+    license_spdx = _normalized_spdx_id(payload.get("spdx_id"))
+    if license_spdx is None:
+        if require_license_metadata:
+            errors.append("license.spdx_id_invalid_or_missing")
+        elif metadata_present:
+            warnings.append("license.spdx_id_invalid_or_missing")
+
+    license_source = str(payload.get("source") or "").strip()
+    if not license_source:
+        if require_license_metadata:
+            errors.append("license.source_missing")
+        elif metadata_present:
+            warnings.append("license.source_missing")
+
+    if require_license_metadata:
+        allows_commercial_use = _required_bool(
+            payload=payload,
+            key="allows_commercial_use",
+            errors=errors,
+            missing_error="license.allows_commercial_use_missing",
+            invalid_error="license.allows_commercial_use_invalid",
+        )
+        allows_derivatives = _required_bool(
+            payload=payload,
+            key="allows_derivatives",
+            errors=errors,
+            missing_error="license.allows_derivatives_missing",
+            invalid_error="license.allows_derivatives_invalid",
+        )
+        requires_share_alike = _optional_bool(
+            payload=payload,
+            key="requires_share_alike",
+            errors=errors,
+            invalid_error="license.requires_share_alike_invalid",
+            default=False,
+        )
+    else:
+        allows_commercial_use = _optional_bool_or_none(
+            payload=payload,
+            key="allows_commercial_use",
+            issues=warnings,
+            invalid_issue="license.allows_commercial_use_invalid",
+        )
+        allows_derivatives = _optional_bool_or_none(
+            payload=payload,
+            key="allows_derivatives",
+            issues=warnings,
+            invalid_issue="license.allows_derivatives_invalid",
+        )
+        requires_share_alike_optional = _optional_bool_or_none(
+            payload=payload,
+            key="requires_share_alike",
+            issues=warnings,
+            invalid_issue="license.requires_share_alike_invalid",
+        )
+        requires_share_alike = bool(requires_share_alike_optional) if requires_share_alike_optional is not None else False
+
+    license_restrictions = _normalized_string_list(payload.get("restrictions"))
+    policy_allow = set(_normalized_string_list(resolved_policy.get("allow_spdx_ids")))
+    policy_deny = set(_normalized_string_list(resolved_policy.get("deny_spdx_ids")))
+
+    if license_spdx:
+        if license_spdx in policy_deny:
+            errors.append("license.spdx_denied")
+        elif not bool(resolved_policy.get("allow_unknown_spdx")) and license_spdx not in policy_allow:
+            errors.append("license.spdx_not_allowed")
+
+    if allows_commercial_use is False and not bool(resolved_policy.get("allow_noncommercial")):
+        errors.append("license.commercial_use_prohibited")
+    if allows_derivatives is False and not bool(resolved_policy.get("allow_no_derivatives")):
+        errors.append("license.derivatives_prohibited")
+    if requires_share_alike and not bool(resolved_policy.get("allow_share_alike")):
+        errors.append("license.share_alike_not_allowed")
+
+    return {
+        "ok": len(errors) == 0,
+        "errors": errors,
+        "warnings": warnings,
+        "policy": resolved_policy,
+        "summary": {
+            "license_policy_id": str(resolved_policy.get("policy_id") or "").strip() or None,
+            "license_spdx_id": license_spdx,
+            "license_source": license_source or None,
+            "license_restrictions": license_restrictions,
+            "license_metadata_present": metadata_present,
+            "license_metadata_required": bool(require_license_metadata),
+            "license_checks_failed": len(errors),
+            "license_checks_warning": len(warnings),
+        },
+    }
+
+
 def validate_model_package_manifest(
     manifest: dict[str, Any],
     *,
@@ -198,68 +316,25 @@ def validate_model_package_manifest(
     elif str(artifact.get("path") or "").strip():
         warnings.append("artifact.path_present_but_artifact_root_missing")
 
-    license_errors_start = len(errors)
-    resolved_license_policy = _resolve_license_policy(
+    license_decision = evaluate_license_admission(
+        license_payload=payload.get("license") if isinstance(payload.get("license"), dict) else None,
         license_policy=license_policy,
         license_policy_path=license_policy_path,
         require_license_policy=require_license_policy,
-        errors=errors,
-        warnings=warnings,
+        require_license_metadata=True,
     )
-
-    license_raw = payload.get("license")
-    license_payload = license_raw if isinstance(license_raw, dict) else {}
-    if not license_payload:
-        errors.append("license_missing")
-
-    license_spdx = _normalized_spdx_id(license_payload.get("spdx_id"))
-    if license_spdx is None:
-        errors.append("license.spdx_id_invalid_or_missing")
-
-    license_source = str(license_payload.get("source") or "").strip()
-    if not license_source:
-        errors.append("license.source_missing")
-
-    allows_commercial_use = _required_bool(
-        payload=license_payload,
-        key="allows_commercial_use",
-        errors=errors,
-        missing_error="license.allows_commercial_use_missing",
-        invalid_error="license.allows_commercial_use_invalid",
+    errors.extend([str(item) for item in license_decision.get("errors", []) if str(item).strip()])
+    warnings.extend([str(item) for item in license_decision.get("warnings", []) if str(item).strip()])
+    license_summary = license_decision.get("summary") if isinstance(license_decision.get("summary"), dict) else {}
+    license_policy_id = str(license_summary.get("license_policy_id") or "").strip() or None
+    license_spdx = str(license_summary.get("license_spdx_id") or "").strip() or None
+    license_source = str(license_summary.get("license_source") or "").strip() or None
+    license_restrictions = (
+        list(license_summary.get("license_restrictions"))
+        if isinstance(license_summary.get("license_restrictions"), list)
+        else []
     )
-    allows_derivatives = _required_bool(
-        payload=license_payload,
-        key="allows_derivatives",
-        errors=errors,
-        missing_error="license.allows_derivatives_missing",
-        invalid_error="license.allows_derivatives_invalid",
-    )
-    requires_share_alike = _optional_bool(
-        payload=license_payload,
-        key="requires_share_alike",
-        errors=errors,
-        invalid_error="license.requires_share_alike_invalid",
-        default=False,
-    )
-    license_restrictions = _normalized_string_list(license_payload.get("restrictions"))
-
-    policy_allow = set(_normalized_string_list(resolved_license_policy.get("allow_spdx_ids")))
-    policy_deny = set(_normalized_string_list(resolved_license_policy.get("deny_spdx_ids")))
-
-    if license_spdx:
-        if license_spdx in policy_deny:
-            errors.append("license.spdx_denied")
-        elif not bool(resolved_license_policy.get("allow_unknown_spdx")) and license_spdx not in policy_allow:
-            errors.append("license.spdx_not_allowed")
-
-    if allows_commercial_use is False and not bool(resolved_license_policy.get("allow_noncommercial")):
-        errors.append("license.commercial_use_prohibited")
-    if allows_derivatives is False and not bool(resolved_license_policy.get("allow_no_derivatives")):
-        errors.append("license.derivatives_prohibited")
-    if requires_share_alike and not bool(resolved_license_policy.get("allow_share_alike")):
-        errors.append("license.share_alike_not_allowed")
-
-    license_checks_failed = max(0, len(errors) - license_errors_start)
+    license_checks_failed = int(license_summary.get("license_checks_failed", 0))
 
     quant_metadata_complete = all(
         [
@@ -285,9 +360,9 @@ def validate_model_package_manifest(
             "has_signature": has_signature,
             "signature_verified": signature_verified,
             "hash_verified": hash_verified,
-            "license_policy_id": str(resolved_license_policy.get("policy_id") or "").strip() or None,
+            "license_policy_id": license_policy_id,
             "license_spdx_id": license_spdx,
-            "license_source": license_source or None,
+            "license_source": license_source,
             "license_restrictions": license_restrictions,
             "license_checks_failed": int(license_checks_failed),
             "checks_failed": len(errors),
@@ -394,6 +469,22 @@ def _optional_bool(
         return value
     errors.append(invalid_error)
     return bool(default)
+
+
+def _optional_bool_or_none(
+    *,
+    payload: dict[str, Any],
+    key: str,
+    issues: list[str],
+    invalid_issue: str,
+) -> bool | None:
+    if key not in payload:
+        return None
+    value = payload.get(key)
+    if isinstance(value, bool):
+        return value
+    issues.append(invalid_issue)
+    return None
 
 
 def _default_license_policy_path() -> Path:

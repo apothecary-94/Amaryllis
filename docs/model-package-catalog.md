@@ -11,10 +11,12 @@
     - quality/speed tiers, tags, estimated size
     - runtime memory requirements
     - compatibility fit against detected hardware
+    - `license_admission` status (`allow` / `allow_with_warning` / `deny`)
     - one-click install contract payload (`/models/packages/install`)
 - `POST /models/packages/install`
   - body: `{"package_id":"<provider>::<model>", "activate": true|false}`
   - executes package install flow:
+    - license admission preflight (blocks install when policy denies)
     - download step (when provider supports download and model is not installed)
     - activate step (`/models/load`) when `activate=true`
 
@@ -26,6 +28,8 @@
 ## Contract Notes
 - Package install flow is idempotent for already-installed local models (download is skipped).
 - For remote providers without download support, install skips download and only activates route target.
+- License policy is loaded from `policies/license/default.json` (override path: `AMARYLLIS_LICENSE_POLICY_PATH`).
+- Strict metadata mode is configurable via `AMARYLLIS_LICENSE_ADMISSION_REQUIRE_METADATA` (default: `false`).
 - `catalog_version` is currently `model_package_catalog_v1`.
 
 ## Test Coverage

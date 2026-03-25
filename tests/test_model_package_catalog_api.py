@@ -23,21 +23,36 @@ class _CatalogProvider:
         local: bool,
         supports_download: bool,
         suggested: list[str],
+        metadata_by_model: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self.provider = provider
         self.local = local
         self.supports_download = supports_download
         self.suggested = list(suggested)
         self.installed_models: set[str] = set()
+        self.metadata_by_model = {
+            str(key): dict(value)
+            for key, value in (metadata_by_model or {}).items()
+            if isinstance(value, dict)
+        }
 
     def list_models(self) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         for model_id in sorted(self.installed_models):
-            rows.append({"id": model_id, "provider": self.provider, "active": False, "metadata": {"size_bytes": 1024}})
+            metadata = {"size_bytes": 1024}
+            metadata.update(self.metadata_by_model.get(model_id, {}))
+            rows.append({"id": model_id, "provider": self.provider, "active": False, "metadata": metadata})
         return rows
 
     def suggested_models(self, limit: int = 100) -> list[dict[str, Any]]:
-        return [{"id": model_id, "label": model_id, "size_bytes": 1024} for model_id in self.suggested[: max(1, limit)]]
+        rows: list[dict[str, Any]] = []
+        for model_id in self.suggested[: max(1, limit)]:
+            row: dict[str, Any] = {"id": model_id, "label": model_id, "size_bytes": 1024}
+            metadata = self.metadata_by_model.get(model_id)
+            if metadata:
+                row["metadata"] = dict(metadata)
+            rows.append(row)
+        return rows
 
     def capabilities(self) -> dict[str, Any]:
         return {
@@ -131,6 +146,26 @@ class ModelPackageCatalogAPITests(unittest.TestCase):
                     "mlx-community/Qwen2.5-1.5B-Instruct-4bit",
                     "mlx-community/Llama-3.1-8B-Instruct-4bit",
                 ],
+                metadata_by_model={
+                    "mlx-community/Qwen2.5-1.5B-Instruct-4bit": {
+                        "license": {
+                            "spdx_id": "apache-2.0",
+                            "source": "https://example.org/model-card",
+                            "allows_commercial_use": True,
+                            "allows_derivatives": True,
+                            "requires_share_alike": False,
+                        }
+                    },
+                    "mlx-community/Llama-3.1-8B-Instruct-4bit": {
+                        "license": {
+                            "spdx_id": "gpl-3.0-only",
+                            "source": "https://example.org/model-card",
+                            "allows_commercial_use": True,
+                            "allows_derivatives": True,
+                            "requires_share_alike": False,
+                        }
+                    },
+                },
             ),
             "openai": _CatalogProvider(
                 provider="openai",
@@ -183,6 +218,7 @@ class ModelPackageCatalogAPITests(unittest.TestCase):
         self.assertIsInstance(packages, list)
         self.assertTrue(packages)
         self.assertIn("package_id", packages[0])
+        self.assertIn("license_admission", packages[0])
 
     def test_model_package_install_endpoint_runs_install_flow(self) -> None:
         package_id = "mlx::mlx-community/Qwen2.5-1.5B-Instruct-4bit"
@@ -196,6 +232,17 @@ class ModelPackageCatalogAPITests(unittest.TestCase):
         self.assertEqual(str(payload.get("package_id")), package_id)
         self.assertIn("steps", payload)
         self.assertIn("request_id", payload)
+
+    def test_model_package_install_endpoint_rejects_denied_license(self) -> None:
+        package_id = "mlx::mlx-community/Llama-3.1-8B-Instruct-4bit"
+        response = self.client.post(
+            "/models/packages/install",
+            headers=self._auth(),
+            json={"package_id": package_id, "activate": True},
+        )
+        self.assertEqual(response.status_code, 400)
+        payload = response.json()
+        self.assertIn("license admission failed", str(payload.get("error", "")).lower())
 
 
 if __name__ == "__main__":
