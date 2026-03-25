@@ -213,6 +213,9 @@ class ModelPackageCatalogTests(unittest.TestCase):
         install = row.get("install", {})
         self.assertEqual(str(install.get("endpoint")), "/models/packages/install")
         self.assertIn("payload", install)
+        license_step = install.get("license_admission_step", {})
+        self.assertEqual(str(license_step.get("endpoint")), "/models/packages/license-admission")
+        self.assertEqual(str((license_step.get("query") or {}).get("package_id")), str(row.get("package_id")))
 
     def test_install_model_package_downloads_and_activates(self) -> None:
         package_id = "mlx::mlx-community/Qwen2.5-1.5B-Instruct-4bit"
@@ -242,6 +245,23 @@ class ModelPackageCatalogTests(unittest.TestCase):
         package_id = "mlx::mlx-community/Llama-3.1-8B-Instruct-4bit"
         with self.assertRaisesRegex(ValueError, "license admission failed"):
             self.manager.install_model_package(package_id=package_id, activate=True)
+
+    def test_model_package_license_admission_allows_compatible_package(self) -> None:
+        package_id = "mlx::mlx-community/Qwen2.5-1.5B-Instruct-4bit"
+        decision = self.manager.model_package_license_admission(package_id=package_id, require_metadata=True)
+        self.assertEqual(str(decision.get("package_id")), package_id)
+        self.assertTrue(bool(decision.get("admitted")))
+        self.assertEqual(str(decision.get("status")), "allow")
+        self.assertTrue(bool(decision.get("require_metadata")))
+
+    def test_model_package_license_admission_denies_incompatible_package(self) -> None:
+        package_id = "mlx::mlx-community/Llama-3.1-8B-Instruct-4bit"
+        decision = self.manager.model_package_license_admission(package_id=package_id)
+        self.assertEqual(str(decision.get("package_id")), package_id)
+        self.assertFalse(bool(decision.get("admitted")))
+        self.assertEqual(str(decision.get("status")), "deny")
+        errors = [str(item) for item in decision.get("errors", [])]
+        self.assertTrue(errors)
 
 
 if __name__ == "__main__":

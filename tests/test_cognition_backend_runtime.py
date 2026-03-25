@@ -141,6 +141,19 @@ class CognitionBackendRuntimeTests(unittest.TestCase):
         self.assertEqual(str(active.get("provider")), "deterministic")
         self.assertIn("request_id", install_payload)
 
+    def test_model_package_license_admission_endpoint_uses_backend_contract(self) -> None:
+        package_id = "deterministic::deterministic-v1"
+        response = self.client.get(
+            f"/models/packages/license-admission?package_id={package_id}",
+            headers=self._auth("user-token"),
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(str(payload.get("package_id")), package_id)
+        self.assertTrue(bool(payload.get("admitted")))
+        self.assertEqual(str(payload.get("status")), "allow")
+        self.assertIn("request_id", payload)
+
     def test_generation_loop_contract_endpoint_returns_conformance_matrix(self) -> None:
         response = self.client.get(
             "/models/generation-loop/contract",

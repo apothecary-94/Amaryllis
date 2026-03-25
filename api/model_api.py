@@ -319,6 +319,26 @@ def model_package_catalog(
         raise ProviderError(str(exc)) from exc
 
 
+@router.get("/models/packages/license-admission")
+def model_package_license_admission(
+    request: Request,
+    package_id: str,
+    require_metadata: bool | None = None,
+) -> dict[str, Any]:
+    services = request.app.state.services
+    try:
+        payload = services.model_manager.model_package_license_admission(
+            package_id=package_id,
+            require_metadata=require_metadata,
+        )
+        payload["request_id"] = _request_id(request)
+        return payload
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
+    except Exception as exc:
+        raise ProviderError(str(exc)) from exc
+
+
 @router.post("/models/packages/install")
 def install_model_package(payload: InstallModelPackageRequest, request: Request) -> dict[str, Any]:
     services = request.app.state.services

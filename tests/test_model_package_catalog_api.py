@@ -219,6 +219,8 @@ class ModelPackageCatalogAPITests(unittest.TestCase):
         self.assertTrue(packages)
         self.assertIn("package_id", packages[0])
         self.assertIn("license_admission", packages[0])
+        install = (packages[0] or {}).get("install", {})
+        self.assertEqual(str((install.get("license_admission_step") or {}).get("endpoint")), "/models/packages/license-admission")
 
     def test_model_package_install_endpoint_runs_install_flow(self) -> None:
         package_id = "mlx::mlx-community/Qwen2.5-1.5B-Instruct-4bit"
@@ -243,6 +245,42 @@ class ModelPackageCatalogAPITests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         payload = response.json()
         self.assertIn("license admission failed", str(payload.get("error", "")).lower())
+
+    def test_model_package_license_admission_endpoint_returns_allow(self) -> None:
+        package_id = "mlx::mlx-community/Qwen2.5-1.5B-Instruct-4bit"
+        response = self.client.get(
+            f"/models/packages/license-admission?package_id={package_id}&require_metadata=true",
+            headers=self._auth(),
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(str(payload.get("package_id")), package_id)
+        self.assertTrue(bool(payload.get("admitted")))
+        self.assertEqual(str(payload.get("status")), "allow")
+        self.assertTrue(bool(payload.get("require_metadata")))
+        self.assertIn("request_id", payload)
+
+    def test_model_package_license_admission_endpoint_returns_deny(self) -> None:
+        package_id = "mlx::mlx-community/Llama-3.1-8B-Instruct-4bit"
+        response = self.client.get(
+            f"/models/packages/license-admission?package_id={package_id}",
+            headers=self._auth(),
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(str(payload.get("package_id")), package_id)
+        self.assertFalse(bool(payload.get("admitted")))
+        self.assertEqual(str(payload.get("status")), "deny")
+        self.assertTrue(payload.get("errors"))
+
+    def test_model_package_license_admission_endpoint_rejects_invalid_package_id(self) -> None:
+        response = self.client.get(
+            "/models/packages/license-admission?package_id=invalid-package",
+            headers=self._auth(),
+        )
+        self.assertEqual(response.status_code, 400)
+        payload = response.json()
+        self.assertIn("package_id", str(payload.get("error", "")).lower())
 
 
 if __name__ == "__main__":

@@ -62,6 +62,19 @@ class _FakeCognitionManager:
             "active": {"provider": self.active_provider, "model": self.active_model},
         }
 
+    def model_package_license_admission(self, *, package_id: str, require_metadata: bool | None = None) -> dict[str, object]:
+        return {
+            "package_id": package_id,
+            "provider": self.active_provider,
+            "model": self.active_model,
+            "status": "allow",
+            "admitted": True,
+            "errors": [],
+            "warnings": [],
+            "summary": {"license_policy_id": "test.default"},
+            "require_metadata": bool(require_metadata) if require_metadata is not None else False,
+        }
+
     def choose_route(self, **_: object) -> dict[str, object]:
         return {"selected": {"provider": self.active_provider, "model": self.active_model}, "fallbacks": []}
 
@@ -160,6 +173,8 @@ class KernelContractsTests(unittest.TestCase):
             self.assertIn("packages", catalog)
             installed = backend.install_model_package(package_id=f"{provider}::{model}", activate=True)
             self.assertIn("package_id", installed)
+            admission = backend.model_package_license_admission(package_id=f"{provider}::{model}")
+            self.assertTrue(bool(admission.get("admitted")))
 
 
 if __name__ == "__main__":

@@ -92,6 +92,17 @@ class ModelManagerCognitionBackend:
             limit=limit,
         )
 
+    def model_package_license_admission(
+        self,
+        *,
+        package_id: str,
+        require_metadata: bool | None = None,
+    ) -> dict[str, Any]:
+        return self._manager.model_package_license_admission(
+            package_id=package_id,
+            require_metadata=require_metadata,
+        )
+
     def install_model_package(
         self,
         *,
@@ -434,6 +445,13 @@ class DeterministicCognitionBackend:
                     "package_id": package_id,
                     "activate": True,
                 },
+                "license_admission_step": {
+                    "endpoint": "/models/packages/license-admission",
+                    "query": {
+                        "package_id": package_id,
+                        "require_metadata": False,
+                    },
+                },
                 "download_step": {
                     "endpoint": "/models/download/start",
                     "payload": {
@@ -529,6 +547,41 @@ class DeterministicCognitionBackend:
                 "provider": self.active_provider,
                 "model": self.active_model,
             },
+        }
+
+    def model_package_license_admission(
+        self,
+        *,
+        package_id: str,
+        require_metadata: bool | None = None,
+    ) -> dict[str, Any]:
+        normalized = str(package_id or "").strip()
+        if not normalized:
+            raise ValueError("package_id is required")
+        if "::" in normalized:
+            provider_name, model_name = normalized.split("::", 1)
+        else:
+            provider_name, model_name = "deterministic", normalized
+        provider_name = str(provider_name).strip()
+        model_name = str(model_name).strip()
+        if not provider_name or not model_name:
+            raise ValueError("package_id must include both provider and model")
+
+        admitted = provider_name == "deterministic"
+        errors = [] if admitted else [f"unknown_provider:{provider_name}"]
+        return {
+            "package_id": f"{provider_name}::{model_name}",
+            "provider": provider_name,
+            "model": model_name,
+            "status": "allow" if admitted else "deny",
+            "admitted": admitted,
+            "errors": errors,
+            "warnings": [],
+            "summary": {
+                "license_policy_id": "deterministic.default",
+                "require_metadata": bool(require_metadata) if require_metadata is not None else False,
+            },
+            "require_metadata": bool(require_metadata) if require_metadata is not None else False,
         }
 
     def choose_route(

@@ -133,6 +133,33 @@ class _FakeModelManager:
             },
         }
 
+    def model_package_license_admission(
+        self,
+        *,
+        package_id: str,
+        require_metadata: bool | None = None,
+    ) -> dict[str, Any]:
+        self.calls.append(
+            (
+                "model_package_license_admission",
+                {
+                    "package_id": package_id,
+                    "require_metadata": require_metadata,
+                },
+            )
+        )
+        return {
+            "package_id": package_id,
+            "provider": self.active_provider,
+            "model": self.active_model,
+            "status": "allow",
+            "admitted": True,
+            "errors": [],
+            "warnings": [],
+            "summary": {"license_policy_id": "test.default"},
+            "require_metadata": bool(require_metadata) if require_metadata is not None else False,
+        }
+
     def choose_route(self, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(("choose_route", dict(kwargs)))
         return {
@@ -216,6 +243,9 @@ class CognitionBackendsTests(unittest.TestCase):
         package_id = str((catalog.get("packages") or [{}])[0].get("package_id", ""))
         installed = backend.install_model_package(package_id=package_id, activate=True)
         self.assertEqual(str(installed.get("package_id")), package_id)
+        admission = backend.model_package_license_admission(package_id=package_id)
+        self.assertEqual(str(admission.get("package_id")), package_id)
+        self.assertTrue(bool(admission.get("admitted")))
 
         route = backend.choose_route(mode="balanced", require_stream=True)
         selected = route.get("selected")

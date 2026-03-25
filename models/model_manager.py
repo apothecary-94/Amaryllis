@@ -507,11 +507,9 @@ class ModelManager:
         if provider_name not in self.providers:
             raise ValueError(f"Unknown provider: {provider_name}")
 
-        license_admission = self._license_admission_for_target(
-            provider_name=provider_name,
-            model_name=model_name,
-            metadata=self._lookup_model_metadata(provider_name=provider_name, model_name=model_name),
-            require_metadata=self._license_metadata_required_for_onboarding(),
+        license_admission = self.model_package_license_admission(
+            package_id=package_id,
+            require_metadata=None,
         )
         if not bool(license_admission.get("admitted")):
             reasons = ", ".join([str(item) for item in license_admission.get("errors", [])[:4]])
@@ -593,6 +591,32 @@ class ModelManager:
                 "provider": final_provider,
                 "model": final_model,
             },
+        }
+
+    def model_package_license_admission(
+        self,
+        *,
+        package_id: str,
+        require_metadata: bool | None = None,
+    ) -> dict[str, Any]:
+        provider_name, model_name = self._parse_package_id(package_id)
+        if provider_name not in self.providers:
+            raise ValueError(f"Unknown provider: {provider_name}")
+        effective_require_metadata = (
+            self._license_metadata_required_for_onboarding()
+            if require_metadata is None
+            else bool(require_metadata)
+        )
+        admission = self._license_admission_for_target(
+            provider_name=provider_name,
+            model_name=model_name,
+            metadata=self._lookup_model_metadata(provider_name=provider_name, model_name=model_name),
+            require_metadata=effective_require_metadata,
+        )
+        return {
+            **admission,
+            "package_id": self._package_id_from_target(provider_name=provider_name, model_name=model_name),
+            "require_metadata": effective_require_metadata,
         }
 
     def choose_route(
@@ -1994,6 +2018,13 @@ class ModelManager:
                 "payload": {
                     "package_id": package_id,
                     "activate": True,
+                },
+                "license_admission_step": {
+                    "endpoint": "/models/packages/license-admission",
+                    "query": {
+                        "package_id": package_id,
+                        "require_metadata": self._license_metadata_required_for_onboarding(),
+                    },
                 },
                 "download_step": {
                     "endpoint": "/models/download/start",

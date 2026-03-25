@@ -137,6 +137,14 @@ class CognitionBackendContract(Protocol):
     ) -> dict[str, Any]:
         ...
 
+    def model_package_license_admission(
+        self,
+        *,
+        package_id: str,
+        require_metadata: bool | None = None,
+    ) -> dict[str, Any]:
+        ...
+
     def install_model_package(
         self,
         *,
