@@ -45,6 +45,7 @@ class ReleaseQualityDashboardSnapshotTests(unittest.TestCase):
         injection = base / "injection-containment.json"
         model_admission = base / "model-artifact-admission.json"
         environment_passport = base / "environment-passport.json"
+        api_quickstart = base / "api-quickstart-compat.json"
 
         self._write_json(
             perf,
@@ -205,6 +206,18 @@ class ReleaseQualityDashboardSnapshotTests(unittest.TestCase):
                 },
             },
         )
+        self._write_json(
+            api_quickstart,
+            {
+                "suite": "api_quickstart_compatibility_gate_v1",
+                "generated_at": "2026-03-21T00:00:00+00:00",
+                "summary": {
+                    "status": "pass",
+                    "checks_total": 16,
+                    "checks_failed": 0,
+                },
+            },
+        )
 
         return {
             "perf": perf,
@@ -217,6 +230,7 @@ class ReleaseQualityDashboardSnapshotTests(unittest.TestCase):
             "injection": injection,
             "model_admission": model_admission,
             "environment_passport": environment_passport,
+            "api_quickstart": api_quickstart,
         }
 
     @staticmethod
@@ -242,6 +256,8 @@ class ReleaseQualityDashboardSnapshotTests(unittest.TestCase):
                 {"metric_id": "distribution_resilience.status", "value": 1.0},
                 {"metric_id": "distribution_resilience.checks_failed", "value": 0.0},
                 {"metric_id": "distribution_resilience.score_pct", "value": 100.0},
+                {"metric_id": "api_quickstart_compat.status", "value": 1.0},
+                {"metric_id": "api_quickstart_compat.checks_failed", "value": 0.0},
                 {"metric_id": "macos_desktop_parity.status", "value": 1.0},
                 {"metric_id": "macos_desktop_parity.checks_failed", "value": 0.0},
                 {"metric_id": "macos_desktop_parity.error_rate_pct", "value": 0.0},
@@ -337,6 +353,49 @@ class ReleaseQualityDashboardSnapshotTests(unittest.TestCase):
             self.assertEqual(int(payload.get("summary", {}).get("signals_total", 0)), 18)
             trend_payload = json.loads(trend.read_text(encoding="utf-8"))
             self.assertEqual(int(trend_payload.get("summary", {}).get("compared_metrics", 0)), 18)
+
+    def test_snapshot_and_trend_include_api_quickstart_when_report_provided(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amaryllis-quality-dashboard-") as tmp:
+            base = Path(tmp)
+            reports = self._write_reports(base=base)
+            baseline = base / "baseline.json"
+            snapshot = base / "dashboard.json"
+            trend = base / "trend.json"
+            self._write_baseline(baseline)
+
+            proc = self._run(
+                "--perf-report",
+                str(reports["perf"]),
+                "--fault-injection-report",
+                str(reports["fault"]),
+                "--mission-queue-report",
+                str(reports["mission"]),
+                "--runtime-lifecycle-report",
+                str(reports["runtime"]),
+                "--user-journey-report",
+                str(reports["journey"]),
+                "--api-quickstart-report",
+                str(reports["api_quickstart"]),
+                "--baseline",
+                str(baseline),
+                "--output",
+                str(snapshot),
+                "--trend-output",
+                str(trend),
+            )
+            self.assertEqual(proc.returncode, 0, msg=f"stdout={proc.stdout}\nstderr={proc.stderr}")
+            payload = json.loads(snapshot.read_text(encoding="utf-8"))
+            self.assertEqual(payload.get("summary", {}).get("status"), "pass")
+            self.assertEqual(int(payload.get("summary", {}).get("signals_total", 0)), 17)
+            trend_payload = json.loads(trend.read_text(encoding="utf-8"))
+            self.assertEqual(int(trend_payload.get("summary", {}).get("compared_metrics", 0)), 17)
+            metric_ids = {
+                str(item.get("metric_id"))
+                for item in payload.get("signals", [])
+                if isinstance(item, dict)
+            }
+            self.assertIn("api_quickstart_compat.status", metric_ids)
+            self.assertIn("api_quickstart_compat.checks_failed", metric_ids)
 
     def test_snapshot_and_trend_include_macos_staging_when_report_provided(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amaryllis-quality-dashboard-") as tmp:

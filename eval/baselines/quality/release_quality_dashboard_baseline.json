@@ -104,6 +104,14 @@
       "value": 100.0
     },
     {
+      "metric_id": "api_quickstart_compat.status",
+      "value": 1.0
+    },
+    {
+      "metric_id": "api_quickstart_compat.checks_failed",
+      "value": 0.0
+    },
+    {
       "metric_id": "macos_desktop_parity.status",
       "value": 1.0
     },

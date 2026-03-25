@@ -24,6 +24,8 @@ Implemented in this version:
 - FastAPI backend runtime
 - native macOS UI (`SwiftUI`) with dark amaryllis theme
 - OpenAI-compatible endpoint: `POST /v1/chat/completions`
+- developer quickstart pack for OpenAI-compatible local API (`docs/developer-quickstart.md`, `examples/openai_compat/*`)
+- minimal SDK helpers for OpenAI-compatible integration (`sdk/python/*`, `sdk/javascript/*`)
 - auth enabled by default with scoped access (`user`, `admin`, `service`)
 - model manager with MLX primary provider, Ollama fallback, and optional cloud providers (OpenAI / Anthropic / OpenRouter)
 - model APIs: list/download/load/capabilities

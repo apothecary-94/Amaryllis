@@ -14,7 +14,7 @@ def _parse_args() -> argparse.Namespace:
         description=(
             "Build consolidated release quality dashboard snapshot from gate reports "
             "(perf/fault/injection-containment/model-artifact-admission/environment-passport/mission-queue/runtime-lifecycle/user-journey "
-            "with optional distribution resilience and macOS desktop parity staging)."
+            "with optional distribution resilience, API quickstart compatibility, and macOS desktop parity staging)."
         )
     )
     parser.add_argument(
@@ -61,6 +61,11 @@ def _parse_args() -> argparse.Namespace:
         "--distribution-resilience-report",
         default="",
         help="Optional path to distribution resilience report JSON.",
+    )
+    parser.add_argument(
+        "--api-quickstart-report",
+        default="",
+        help="Optional path to API quickstart compatibility gate report JSON.",
     )
     parser.add_argument(
         "--macos-desktop-parity-report",
@@ -210,6 +215,12 @@ def _build_snapshot(
     distribution_summary = (
         distribution.get("summary")
         if isinstance(distribution, dict) and isinstance(distribution.get("summary"), dict)
+        else {}
+    )
+    api_quickstart = reports.get("api_quickstart_compat")
+    api_quickstart_summary = (
+        api_quickstart.get("summary")
+        if isinstance(api_quickstart, dict) and isinstance(api_quickstart.get("summary"), dict)
         else {}
     )
     macos_parity = reports.get("macos_desktop_parity")
@@ -420,6 +431,30 @@ def _build_snapshot(
                     threshold=100.0,
                     comparator="gte",
                     unit="pct",
+                ),
+            ]
+        )
+    if api_quickstart_summary:
+        quickstart_status = str(api_quickstart_summary.get("status") or "").strip().lower()
+        signals.extend(
+            [
+                _metric_signal(
+                    metric_id="api_quickstart_compat.status",
+                    source="api_quickstart_compat",
+                    category="developer_adoption",
+                    value=1.0 if quickstart_status == "pass" else 0.0,
+                    threshold=1.0,
+                    comparator="gte",
+                    unit="bool",
+                ),
+                _metric_signal(
+                    metric_id="api_quickstart_compat.checks_failed",
+                    source="api_quickstart_compat",
+                    category="developer_adoption",
+                    value=_safe_float(api_quickstart_summary.get("checks_failed")),
+                    threshold=0.0,
+                    comparator="lte",
+                    unit="count",
                 ),
             ]
         )
@@ -648,6 +683,8 @@ def main() -> int:
     }
     distribution_raw = str(args.distribution_resilience_report or "").strip()
     distribution_path = _resolve_path(project_root, distribution_raw) if distribution_raw else None
+    api_quickstart_raw = str(args.api_quickstart_report or "").strip()
+    api_quickstart_path = _resolve_path(project_root, api_quickstart_raw) if api_quickstart_raw else None
     macos_parity_raw = str(args.macos_desktop_parity_report or "").strip()
     macos_parity_path = _resolve_path(project_root, macos_parity_raw) if macos_parity_raw else None
     injection_raw = str(args.injection_containment_report or "").strip()
@@ -678,6 +715,21 @@ def main() -> int:
         except Exception as exc:
             print(
                 f"[quality-dashboard] invalid report for distribution_resilience: {distribution_path} error={exc}",
+                file=sys.stderr,
+            )
+            return 2
+    if api_quickstart_path is not None:
+        if not api_quickstart_path.exists():
+            print(
+                f"[quality-dashboard] missing report for api_quickstart_compat: {api_quickstart_path}",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            reports["api_quickstart_compat"] = _load_json_object(api_quickstart_path)
+        except Exception as exc:
+            print(
+                f"[quality-dashboard] invalid report for api_quickstart_compat: {api_quickstart_path} error={exc}",
                 file=sys.stderr,
             )
             return 2

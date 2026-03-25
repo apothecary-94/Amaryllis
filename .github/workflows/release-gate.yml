@@ -133,11 +133,25 @@ jobs:
             tests.test_runtime_service_manifest_renderer \
             tests.test_runtime_service_lifecycle \
             tests.test_runtime_lifecycle_smoke_gate \
+            tests.test_api_quickstart_compatibility_gate \
+            tests.test_sdk_openai_compat_client \
             -v
 
       - name: Run compatibility gate script (blocking)
         run: |
           python scripts/release/api_compat_gate.py
+
+      - name: Run API quickstart compatibility gate (blocking)
+        run: |
+          python scripts/release/api_quickstart_compatibility_gate.py \
+            --output "artifacts/api-quickstart-compat-report.json"
+
+      - name: Upload API quickstart compatibility report
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-quickstart-compat-report
+          path: artifacts/api-quickstart-compat-report.json
+          if-no-files-found: error
 
   canary-smoke:
     name: Canary Smoke Gate
@@ -301,6 +315,12 @@ jobs:
           path: artifacts/user-journey-benchmark-report.json
           if-no-files-found: error
 
+      - name: Download API quickstart compatibility report
+        uses: actions/download-artifact@v4
+        with:
+          name: api-quickstart-compat-report
+          path: artifacts/api-quickstart
+
       - name: Run macOS desktop parity smoke (staging, non-blocking)
         continue-on-error: true
         run: |
@@ -326,6 +346,10 @@ jobs:
           if [[ -f "artifacts/macos-desktop-parity-smoke-report.json" ]]; then
             MACOS_DESKTOP_PARITY_ARG="--macos-desktop-parity-report artifacts/macos-desktop-parity-smoke-report.json"
           fi
+          API_QUICKSTART_ARG=""
+          if [[ -f "artifacts/api-quickstart/api-quickstart-compat-report.json" ]]; then
+            API_QUICKSTART_ARG="--api-quickstart-report artifacts/api-quickstart/api-quickstart-compat-report.json"
+          fi
 
           python scripts/release/build_quality_dashboard_snapshot.py \
             --perf-report "artifacts/perf-smoke-report.json" \
@@ -336,6 +360,7 @@ jobs:
             --mission-queue-report "artifacts/mission-queue-load-report.json" \
             --runtime-lifecycle-report "artifacts/runtime-lifecycle-smoke-report.json" \
             --user-journey-report "artifacts/user-journey-benchmark-report.json" \
+            ${API_QUICKSTART_ARG} \
             ${MACOS_DESKTOP_PARITY_ARG} \
             --baseline "eval/baselines/quality/release_quality_dashboard_baseline.json" \
             --output "artifacts/release-quality-dashboard.json" \
@@ -512,6 +537,12 @@ jobs:
           name: distribution-channel-manifest-report
           path: artifacts/distribution-channel-manifest
 
+      - name: Download API quickstart compatibility report
+        uses: actions/download-artifact@v4
+        with:
+          name: api-quickstart-compat-report
+          path: artifacts/api-quickstart
+
       - name: Download macOS desktop parity smoke report (staging, optional)
         continue-on-error: true
         uses: actions/download-artifact@v4
@@ -540,6 +571,7 @@ jobs:
             --runtime-lifecycle-report "artifacts/runtime-lifecycle/runtime-lifecycle-smoke-report.json" \
             --user-journey-report "artifacts/user-journey/user-journey-benchmark-report.json" \
             --distribution-resilience-report "artifacts/distribution/distribution-resilience-report.json" \
+            --api-quickstart-report "artifacts/api-quickstart/api-quickstart-compat-report.json" \
             ${MACOS_DESKTOP_PARITY_ARG} \
             --baseline "eval/baselines/quality/release_quality_dashboard_baseline.json" \
             --output "artifacts/release-quality-dashboard-final.json" \
