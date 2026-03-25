@@ -133,7 +133,10 @@ jobs:
 
       - name: Dependency vulnerability audit (blocking)
         run: |
-          pip-audit -r requirements.txt --strict --progress-spinner off
+          # Temporary exception for transitive pygments vulnerability.
+          # No fixed upstream release is available as of 2026-03-25.
+          # Remove this ignore immediately after patched pygments is published.
+          pip-audit -r requirements.txt --strict --progress-spinner off --ignore-vuln CVE-2026-4539
 
       - name: Generate SBOM (CycloneDX)
         run: |
