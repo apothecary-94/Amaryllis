@@ -35,6 +35,7 @@ class ReleaseQualityDashboardSnapshotTests(unittest.TestCase):
         distribution_status: str = "pass",
         macos_status: str = "pass",
         qos_status: str = "pass",
+        long_context_status: str = "pass",
     ) -> dict[str, Path]:
         perf = base / "perf.json"
         fault = base / "fault.json"
@@ -48,6 +49,7 @@ class ReleaseQualityDashboardSnapshotTests(unittest.TestCase):
         environment_passport = base / "environment-passport.json"
         api_quickstart = base / "api-quickstart-compat.json"
         qos_governor = base / "qos-governor-gate.json"
+        long_context = base / "long-context-reliability.json"
 
         self._write_json(
             perf,
@@ -233,6 +235,21 @@ class ReleaseQualityDashboardSnapshotTests(unittest.TestCase):
                 },
             },
         )
+        self._write_json(
+            long_context,
+            {
+                "suite": "long_context_reliability_gate_v1",
+                "generated_at": "2026-03-21T00:00:00+00:00",
+                "summary": {
+                    "status": long_context_status,
+                    "checks_total": 7,
+                    "checks_passed": 7 if long_context_status == "pass" else 5,
+                    "checks_failed": 0 if long_context_status == "pass" else 2,
+                    "relevance_score_pct": 100.0 if long_context_status == "pass" else 80.0,
+                    "stability_score_pct": 100.0 if long_context_status == "pass" else 75.0,
+                },
+            },
+        )
 
         return {
             "perf": perf,
@@ -247,6 +264,7 @@ class ReleaseQualityDashboardSnapshotTests(unittest.TestCase):
             "environment_passport": environment_passport,
             "api_quickstart": api_quickstart,
             "qos_governor": qos_governor,
+            "long_context": long_context,
         }
 
     @staticmethod
@@ -276,6 +294,8 @@ class ReleaseQualityDashboardSnapshotTests(unittest.TestCase):
                 {"metric_id": "api_quickstart_compat.checks_failed", "value": 0.0},
                 {"metric_id": "qos_governor.status", "value": 1.0},
                 {"metric_id": "qos_governor.checks_failed", "value": 0.0},
+                {"metric_id": "long_context.status", "value": 1.0},
+                {"metric_id": "long_context.checks_failed", "value": 0.0},
                 {"metric_id": "macos_desktop_parity.status", "value": 1.0},
                 {"metric_id": "macos_desktop_parity.checks_failed", "value": 0.0},
                 {"metric_id": "macos_desktop_parity.error_rate_pct", "value": 0.0},
@@ -457,6 +477,49 @@ class ReleaseQualityDashboardSnapshotTests(unittest.TestCase):
             }
             self.assertIn("qos_governor.status", metric_ids)
             self.assertIn("qos_governor.checks_failed", metric_ids)
+
+    def test_snapshot_and_trend_include_long_context_when_report_provided(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amaryllis-quality-dashboard-") as tmp:
+            base = Path(tmp)
+            reports = self._write_reports(base=base)
+            baseline = base / "baseline.json"
+            snapshot = base / "dashboard.json"
+            trend = base / "trend.json"
+            self._write_baseline(baseline)
+
+            proc = self._run(
+                "--perf-report",
+                str(reports["perf"]),
+                "--fault-injection-report",
+                str(reports["fault"]),
+                "--mission-queue-report",
+                str(reports["mission"]),
+                "--runtime-lifecycle-report",
+                str(reports["runtime"]),
+                "--user-journey-report",
+                str(reports["journey"]),
+                "--long-context-report",
+                str(reports["long_context"]),
+                "--baseline",
+                str(baseline),
+                "--output",
+                str(snapshot),
+                "--trend-output",
+                str(trend),
+            )
+            self.assertEqual(proc.returncode, 0, msg=f"stdout={proc.stdout}\nstderr={proc.stderr}")
+            payload = json.loads(snapshot.read_text(encoding="utf-8"))
+            self.assertEqual(payload.get("summary", {}).get("status"), "pass")
+            self.assertEqual(int(payload.get("summary", {}).get("signals_total", 0)), 17)
+            trend_payload = json.loads(trend.read_text(encoding="utf-8"))
+            self.assertEqual(int(trend_payload.get("summary", {}).get("compared_metrics", 0)), 17)
+            metric_ids = {
+                str(item.get("metric_id"))
+                for item in payload.get("signals", [])
+                if isinstance(item, dict)
+            }
+            self.assertIn("long_context.status", metric_ids)
+            self.assertIn("long_context.checks_failed", metric_ids)
 
     def test_snapshot_and_trend_include_macos_staging_when_report_provided(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amaryllis-quality-dashboard-") as tmp:
@@ -751,6 +814,39 @@ class ReleaseQualityDashboardSnapshotTests(unittest.TestCase):
                 str(reports["journey"]),
                 "--qos-governor-report",
                 str(reports["qos_governor"]),
+                "--baseline",
+                str(baseline),
+                "--output",
+                str(snapshot),
+                "--trend-output",
+                str(trend),
+            )
+            self.assertEqual(proc.returncode, 1, msg=f"stdout={proc.stdout}\nstderr={proc.stderr}")
+            payload = json.loads(snapshot.read_text(encoding="utf-8"))
+            self.assertEqual(payload.get("summary", {}).get("status"), "fail")
+
+    def test_snapshot_fails_when_long_context_signal_breaches_threshold(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amaryllis-quality-dashboard-") as tmp:
+            base = Path(tmp)
+            reports = self._write_reports(base=base, long_context_status="fail")
+            baseline = base / "baseline.json"
+            snapshot = base / "dashboard.json"
+            trend = base / "trend.json"
+            self._write_baseline(baseline)
+
+            proc = self._run(
+                "--perf-report",
+                str(reports["perf"]),
+                "--fault-injection-report",
+                str(reports["fault"]),
+                "--mission-queue-report",
+                str(reports["mission"]),
+                "--runtime-lifecycle-report",
+                str(reports["runtime"]),
+                "--user-journey-report",
+                str(reports["journey"]),
+                "--long-context-report",
+                str(reports["long_context"]),
                 "--baseline",
                 str(baseline),
                 "--output",

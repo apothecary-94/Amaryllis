@@ -76,6 +76,14 @@ def _base_manifest(*, artifact_rel_path: str, artifact_sha: str, artifact_bytes:
                 "sha256": artifact_sha,
             }
         ],
+        "license": {
+            "spdx_id": "apache-2.0",
+            "source": "https://example.org/model-card",
+            "allows_commercial_use": True,
+            "allows_derivatives": True,
+            "requires_share_alike": False,
+            "restrictions": [],
+        },
         "provenance": {
             "generated_at": "2026-03-25T00:00:00+00:00",
         },
@@ -109,6 +117,7 @@ def _evaluate(
             "admitted": admitted,
             "errors": [str(item) for item in decision.get("errors", [])],
             "warnings": [str(item) for item in decision.get("warnings", [])],
+            "summary": dict(decision.get("summary") or {}),
         },
         "status": "pass" if passed else "fail",
     }
@@ -245,6 +254,28 @@ def _run_scenarios() -> tuple[list[dict[str, Any]], dict[str, Any]]:
                 name="Development trust signature is rejected in strict mode",
                 expected_admitted=False,
                 manifest=development_trust_signed,
+                artifact_root=root,
+                signing_key=signing_key,
+                validate_fn=validate_model_package_manifest,
+            )
+        )
+
+        denied_license = json.loads(json.dumps(valid))
+        license_payload = denied_license.get("license")
+        if isinstance(license_payload, dict):
+            license_payload["spdx_id"] = "gpl-3.0-only"
+        denied_license_signed = sign_model_package_manifest(
+            denied_license,
+            signing_key=signing_key,
+            key_id="model-key-1",
+            trust_level="managed",
+        )
+        scenarios.append(
+            _evaluate(
+                scenario_id="denied_license_rejected",
+                name="Denied SPDX license is rejected by policy",
+                expected_admitted=False,
+                manifest=denied_license_signed,
                 artifact_root=root,
                 signing_key=signing_key,
                 validate_fn=validate_model_package_manifest,

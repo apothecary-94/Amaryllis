@@ -32,6 +32,7 @@ Optional:
 - `artifacts/model-artifact-admission-report.json`
 - `artifacts/environment-passport-report.json`
 - `artifacts/qos-governor-gate-report.json`
+- `artifacts/long-context-reliability-report.json`
 - `artifacts/distribution-resilience-report.json`
 - `artifacts/macos-desktop-parity-smoke-report.json`
 
@@ -46,7 +47,7 @@ Optional:
   - `value`
   - `threshold`
   - `comparator` (`lte` or `gte`)
-  - `category` (performance/reliability/resilience/queue/runtime/user_flow/security/supply_chain/reproducibility/runtime_qos/distribution/desktop_staging)
+  - `category` (performance/reliability/resilience/queue/runtime/user_flow/security/supply_chain/reproducibility/runtime_qos/long_context/distribution/desktop_staging)
   - `passed`
 - `summary`: total/passed/failed signals + `quality_score_pct` + `status`
 
@@ -65,6 +66,7 @@ Optional:
 - enriches dashboard with model package admission score when `model-artifact-admission-report` artifact is present,
 - enriches dashboard with environment passport completeness score when `environment-passport-report` artifact is present,
 - enriches dashboard with QoS governor contract status when `qos-governor-gate-report` artifact is present,
+- enriches dashboard with long-context reliability status when `long-context-reliability-report` artifact is present,
 - optionally enriches both canary/final dashboard snapshots with macOS desktop parity staging report when present,
 - rebuilds final dashboard in `Release KPI Pack` with `distribution-resilience-report` included (`release-quality-dashboard-final`),
 - publishes runtime-export snapshot/trend copies via `publish_release_quality_snapshot.py`,

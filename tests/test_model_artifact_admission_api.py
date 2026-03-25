@@ -88,6 +88,14 @@ class ModelArtifactAdmissionAPITests(unittest.TestCase):
                     "sha256": digest,
                 }
             ],
+            "license": {
+                "spdx_id": "apache-2.0",
+                "source": "https://example.org/model-card",
+                "allows_commercial_use": True,
+                "allows_derivatives": True,
+                "requires_share_alike": False,
+                "restrictions": [],
+            },
             "provenance": {
                 "generated_at": "2026-03-25T00:00:00+00:00",
             },
@@ -138,6 +146,27 @@ class ModelArtifactAdmissionAPITests(unittest.TestCase):
         payload = response.json()
         self.assertFalse(bool(payload.get("admitted")))
         self.assertIn("quantization.recipe_id_missing", payload.get("errors", []))
+
+    def test_admit_model_artifact_rejects_denied_license(self) -> None:
+        root = Path(self._tmp.name) / "case-denied-license"
+        manifest = self._build_manifest(root=root, include_quant_recipe=True)
+        license_payload = manifest.get("license")
+        if isinstance(license_payload, dict):
+            license_payload["spdx_id"] = "agpl-3.0-only"
+
+        response = self.client.post(
+            "/models/artifacts/admit",
+            headers=self._auth(),
+            json={
+                "manifest": manifest,
+                "strict": True,
+                "artifact_root": str(root),
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertFalse(bool(payload.get("admitted")))
+        self.assertIn("license.spdx_denied", payload.get("errors", []))
 
 
 if __name__ == "__main__":

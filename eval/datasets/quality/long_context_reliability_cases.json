@@ -1,0 +1,39 @@
+{
+  "suite": "long_context_reliability_dataset_v1",
+  "description": "Synthetic long-context cases for relevance/stability gate. Each case includes long context, query, and expected answer keywords.",
+  "cases": [
+    {
+      "id": "lc_policy_001",
+      "title": "Policy Chain Priorities",
+      "context": "System policy digest section A. Prioritize deterministic execution, explicit rollback hints, and reproducible outputs. Segment 1 repeats infrastructure details for long-context pressure. Segment 2 repeats infrastructure details for long-context pressure. Segment 3 repeats infrastructure details for long-context pressure. Segment 4 repeats infrastructure details for long-context pressure. Segment 5 repeats infrastructure details for long-context pressure. Segment 6 repeats infrastructure details for long-context pressure. Segment 7 repeats infrastructure details for long-context pressure. Segment 8 repeats infrastructure details for long-context pressure. Segment 9 repeats infrastructure details for long-context pressure. Segment 10 repeats infrastructure details for long-context pressure. Policy chain closing note: mandatory principles are determinism, rollback, and reproducibility.",
+      "question": "Which three principles are mandatory in the policy chain summary?",
+      "expected_keywords": [
+        "determinism",
+        "rollback",
+        "reproducibility"
+      ]
+    },
+    {
+      "id": "lc_safety_002",
+      "title": "Safety Runtime Envelope",
+      "context": "Safety runtime envelope notes: enforce provenance visibility, maintain sandbox boundaries, and preserve offline defaults for privacy. Block known unsafe deserialization vectors and audit all critical actions. Extended context payload part 1. Extended context payload part 2. Extended context payload part 3. Extended context payload part 4. Extended context payload part 5. Extended context payload part 6. Extended context payload part 7. Extended context payload part 8. Extended context payload part 9. Extended context payload part 10. Final memo: key envelope terms are provenance, sandbox, privacy.",
+      "question": "Name the three key envelope terms from the final memo.",
+      "expected_keywords": [
+        "provenance",
+        "sandbox",
+        "privacy"
+      ]
+    },
+    {
+      "id": "lc_ops_003",
+      "title": "Operational KPI Loop",
+      "context": "Operational loop briefing: use benchmark evidence for release quality, tie alerts to objective gate failures, and keep nightly trend deltas visible. Repeated operational appendix line 1. Repeated operational appendix line 2. Repeated operational appendix line 3. Repeated operational appendix line 4. Repeated operational appendix line 5. Repeated operational appendix line 6. Repeated operational appendix line 7. Repeated operational appendix line 8. Repeated operational appendix line 9. Repeated operational appendix line 10. Closing line: the operational loop depends on benchmarks, alerts, and trends.",
+      "question": "Which three elements does the operational loop depend on?",
+      "expected_keywords": [
+        "benchmarks",
+        "alerts",
+        "trends"
+      ]
+    }
+  ]
+}

@@ -73,6 +73,11 @@ def _parse_args() -> argparse.Namespace:
         help="Optional path to QoS governor gate report JSON.",
     )
     parser.add_argument(
+        "--long-context-report",
+        default="",
+        help="Optional path to long-context reliability gate report JSON.",
+    )
+    parser.add_argument(
         "--macos-desktop-parity-report",
         default="",
         help="Optional path to macOS desktop parity smoke report JSON.",
@@ -232,6 +237,12 @@ def _build_snapshot(
     qos_governor_summary = (
         qos_governor.get("summary")
         if isinstance(qos_governor, dict) and isinstance(qos_governor.get("summary"), dict)
+        else {}
+    )
+    long_context = reports.get("long_context")
+    long_context_summary = (
+        long_context.get("summary")
+        if isinstance(long_context, dict) and isinstance(long_context.get("summary"), dict)
         else {}
     )
     macos_parity = reports.get("macos_desktop_parity")
@@ -493,6 +504,30 @@ def _build_snapshot(
                 ),
             ]
         )
+    if long_context_summary:
+        long_context_status = str(long_context_summary.get("status") or "").strip().lower()
+        signals.extend(
+            [
+                _metric_signal(
+                    metric_id="long_context.status",
+                    source="long_context",
+                    category="long_context",
+                    value=1.0 if long_context_status == "pass" else 0.0,
+                    threshold=1.0,
+                    comparator="gte",
+                    unit="bool",
+                ),
+                _metric_signal(
+                    metric_id="long_context.checks_failed",
+                    source="long_context",
+                    category="long_context",
+                    value=_safe_float(long_context_summary.get("checks_failed")),
+                    threshold=0.0,
+                    comparator="lte",
+                    unit="count",
+                ),
+            ]
+        )
     if macos_parity_summary:
         macos_status = str(macos_parity_summary.get("status") or "").strip().lower()
         signals.extend(
@@ -722,6 +757,8 @@ def main() -> int:
     api_quickstart_path = _resolve_path(project_root, api_quickstart_raw) if api_quickstart_raw else None
     qos_governor_raw = str(args.qos_governor_report or "").strip()
     qos_governor_path = _resolve_path(project_root, qos_governor_raw) if qos_governor_raw else None
+    long_context_raw = str(args.long_context_report or "").strip()
+    long_context_path = _resolve_path(project_root, long_context_raw) if long_context_raw else None
     macos_parity_raw = str(args.macos_desktop_parity_report or "").strip()
     macos_parity_path = _resolve_path(project_root, macos_parity_raw) if macos_parity_raw else None
     injection_raw = str(args.injection_containment_report or "").strip()
@@ -779,6 +816,18 @@ def main() -> int:
         except Exception as exc:
             print(
                 f"[quality-dashboard] invalid report for qos_governor: {qos_governor_path} error={exc}",
+                file=sys.stderr,
+            )
+            return 2
+    if long_context_path is not None:
+        if not long_context_path.exists():
+            print(f"[quality-dashboard] missing report for long_context: {long_context_path}", file=sys.stderr)
+            return 2
+        try:
+            reports["long_context"] = _load_json_object(long_context_path)
+        except Exception as exc:
+            print(
+                f"[quality-dashboard] invalid report for long_context: {long_context_path} error={exc}",
                 file=sys.stderr,
             )
             return 2

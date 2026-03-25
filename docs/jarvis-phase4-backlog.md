@@ -65,7 +65,7 @@ Move from OSS platform readiness to daily-driver "Jarvis on PC": unified multimo
 | P4-E01 | in_progress | Define backend-portable generation-loop contract (`prefill/decode`, cache, fallback semantics) | contract spec + conformance tests | CPU/GPU/NPU backends pass the same functional contract and fallback determinism checks |
 | P4-E02 | in_progress | Add KV cache observability and pressure-policy framework | KV telemetry schema + policy engine | Runtime emits KV pressure signals and applies policy transitions without silent quality collapse |
 | P4-E03 | in_progress | Implement QoS governor (`TTFT`, sustained decode, thermal-aware mode switching) | qos governor module + benchmark hooks | User-visible modes maintain target latency/stability envelopes under stress |
-| P4-E04 | todo | Add long-context reliability eval pack | eval dataset + gate job | Release/nightly fail on long-context regressions in relevance and stability |
+| P4-E04 | done | Add long-context reliability eval pack | eval dataset + gate job | Release/nightly fail on long-context regressions in relevance and stability |
 
 ### Epic F - Trust, Safety, and Supply Chain Hardening
 
@@ -81,7 +81,7 @@ Move from OSS platform readiness to daily-driver "Jarvis on PC": unified multimo
 | ID | Status | Task | Deliverable | Definition of Done |
 |---|---|---|---|---|
 | P4-G01 | in_progress | Add runtime environment passport generation (hardware, drivers, runtime, quant recipe) | env passport artifact + collector | Every benchmark and release bundle contains environment passport metadata |
-| P4-G02 | todo | Add license admission policy for models/adapters/index packs | license policy engine + report | Artifact onboarding is blocked on incompatible licensing constraints |
+| P4-G02 | in_progress | Add license admission policy for models/adapters/index packs | license policy engine + report | Artifact onboarding is blocked on incompatible licensing constraints |
 | P4-G03 | todo | Add adapter-based personalization lane with rollback and signature checks | personalization workflow + adapter registry | Personalization uses reversible adapter stacks; base weights remain immutable in default path |
 
 ### Epic H - Mass Adoption, Distribution, and Ecosystem
@@ -119,12 +119,13 @@ Move from OSS platform readiness to daily-driver "Jarvis on PC": unified multimo
 | P4-E01 | in_progress | generation-loop portability contract draft + backend conformance matrix |
 | P4-E02 | in_progress | KV telemetry schema + initial pressure-policy transitions |
 | P4-E03 | in_progress | QoS governor baseline with `balanced` and `power-save` modes |
+| P4-E04 | done | long-context reliability eval dataset + release/nightly blocking gate |
 | P4-F01 | in_progress | provenance contract for RAG responses + API payload wiring |
 | P4-F02 | in_progress | unsafe-deserialization denylist checks + sandbox policy tests |
 | P4-F03 | in_progress | injection-containment regression gate + release/nightly artifact wiring |
 | P4-F04 | done | signed model artifact and quant-passport validator MVP + admission gate wiring |
 | P4-G01 | in_progress | environment passport collector in release/nightly artifacts |
-| P4-G02 | todo | license admission checker for model/adapters onboarding |
+| P4-G02 | in_progress | license admission checker for model/adapters onboarding |
 
 ## Planned Sprint (P4-S2, Mass Adoption Foundation)
 

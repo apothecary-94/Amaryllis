@@ -120,6 +120,14 @@
       "value": 0.0
     },
     {
+      "metric_id": "long_context.status",
+      "value": 1.0
+    },
+    {
+      "metric_id": "long_context.checks_failed",
+      "value": 0.0
+    },
+    {
       "metric_id": "macos_desktop_parity.status",
       "value": 1.0
     },

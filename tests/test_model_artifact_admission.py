@@ -35,6 +35,14 @@ class ModelArtifactAdmissionTests(unittest.TestCase):
                     "sha256": artifact_sha,
                 }
             ],
+            "license": {
+                "spdx_id": "apache-2.0",
+                "source": "https://example.org/model-card",
+                "allows_commercial_use": True,
+                "allows_derivatives": True,
+                "requires_share_alike": False,
+                "restrictions": [],
+            },
             "provenance": {
                 "generated_at": "2026-03-25T00:00:00+00:00",
             },
@@ -140,6 +148,56 @@ class ModelArtifactAdmissionTests(unittest.TestCase):
         )
         self.assertFalse(decision.get("ok"))
         self.assertIn("signing_key_missing", decision.get("errors", []))
+
+    def test_denied_license_is_rejected(self) -> None:
+        manifest = self._base_manifest(
+            artifact_rel_path="models/qwen.gguf",
+            artifact_sha="e" * 64,
+            artifact_bytes=32,
+        )
+        license_payload = manifest.get("license")
+        if isinstance(license_payload, dict):
+            license_payload["spdx_id"] = "gpl-3.0-only"
+        signed = sign_model_package_manifest(
+            manifest,
+            signing_key="fixture-model-signing-key",
+            key_id="model-key-1",
+            trust_level="managed",
+        )
+
+        decision = validate_model_package_manifest(
+            signed,
+            signing_key="fixture-model-signing-key",
+            require_signing_key=True,
+            require_managed_trust=True,
+        )
+        self.assertFalse(decision.get("ok"))
+        self.assertIn("license.spdx_denied", decision.get("errors", []))
+
+    def test_noncommercial_license_flag_is_rejected(self) -> None:
+        manifest = self._base_manifest(
+            artifact_rel_path="models/qwen.gguf",
+            artifact_sha="f" * 64,
+            artifact_bytes=32,
+        )
+        license_payload = manifest.get("license")
+        if isinstance(license_payload, dict):
+            license_payload["allows_commercial_use"] = False
+        signed = sign_model_package_manifest(
+            manifest,
+            signing_key="fixture-model-signing-key",
+            key_id="model-key-1",
+            trust_level="managed",
+        )
+
+        decision = validate_model_package_manifest(
+            signed,
+            signing_key="fixture-model-signing-key",
+            require_signing_key=True,
+            require_managed_trust=True,
+        )
+        self.assertFalse(decision.get("ok"))
+        self.assertIn("license.commercial_use_prohibited", decision.get("errors", []))
 
 
 if __name__ == "__main__":

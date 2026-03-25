@@ -45,6 +45,12 @@ class ModelArtifactAdmissionGateTests(unittest.TestCase):
             quant = report.get("quantization_reference")
             self.assertIsInstance(quant, dict)
             self.assertEqual(str(quant.get("recipe_id")), "qwen2.5-int4-v1")
+            scenario_ids = {
+                str(item.get("id"))
+                for item in report.get("scenarios", [])
+                if isinstance(item, dict)
+            }
+            self.assertIn("denied_license_rejected", scenario_ids)
 
     def test_model_admission_gate_validates_min_score_range(self) -> None:
         proc = self._run("--min-admission-score-pct", "101")

@@ -4,11 +4,41 @@ import copy
 import hashlib
 import hmac
 import json
+import os
 from pathlib import Path
 import re
 from typing import Any
 
 _HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
+_SPDX_RE = re.compile(r"^[a-z0-9.\-+]+$", re.IGNORECASE)
+_DEFAULT_LICENSE_POLICY: dict[str, Any] = {
+    "policy_id": "amaryllis.license_admission.v1",
+    "allow_spdx_ids": [
+        "apache-2.0",
+        "mit",
+        "bsd-2-clause",
+        "bsd-3-clause",
+        "mpl-2.0",
+        "cc-by-4.0",
+        "cc-by-sa-4.0",
+        "cc0-1.0",
+    ],
+    "deny_spdx_ids": [
+        "agpl-3.0",
+        "agpl-3.0-only",
+        "agpl-3.0-or-later",
+        "gpl-3.0",
+        "gpl-3.0-only",
+        "gpl-3.0-or-later",
+        "gpl-2.0",
+        "gpl-2.0-only",
+        "gpl-2.0-or-later",
+    ],
+    "allow_unknown_spdx": False,
+    "allow_noncommercial": False,
+    "allow_no_derivatives": False,
+    "allow_share_alike": True,
+}
 
 
 def validate_model_package_manifest(
@@ -18,6 +48,9 @@ def validate_model_package_manifest(
     require_signing_key: bool = False,
     require_managed_trust: bool = True,
     artifact_root: str | Path | None = None,
+    license_policy: dict[str, Any] | None = None,
+    license_policy_path: str | Path | None = None,
+    require_license_policy: bool = True,
 ) -> dict[str, Any]:
     errors: list[str] = []
     warnings: list[str] = []
@@ -165,6 +198,69 @@ def validate_model_package_manifest(
     elif str(artifact.get("path") or "").strip():
         warnings.append("artifact.path_present_but_artifact_root_missing")
 
+    license_errors_start = len(errors)
+    resolved_license_policy = _resolve_license_policy(
+        license_policy=license_policy,
+        license_policy_path=license_policy_path,
+        require_license_policy=require_license_policy,
+        errors=errors,
+        warnings=warnings,
+    )
+
+    license_raw = payload.get("license")
+    license_payload = license_raw if isinstance(license_raw, dict) else {}
+    if not license_payload:
+        errors.append("license_missing")
+
+    license_spdx = _normalized_spdx_id(license_payload.get("spdx_id"))
+    if license_spdx is None:
+        errors.append("license.spdx_id_invalid_or_missing")
+
+    license_source = str(license_payload.get("source") or "").strip()
+    if not license_source:
+        errors.append("license.source_missing")
+
+    allows_commercial_use = _required_bool(
+        payload=license_payload,
+        key="allows_commercial_use",
+        errors=errors,
+        missing_error="license.allows_commercial_use_missing",
+        invalid_error="license.allows_commercial_use_invalid",
+    )
+    allows_derivatives = _required_bool(
+        payload=license_payload,
+        key="allows_derivatives",
+        errors=errors,
+        missing_error="license.allows_derivatives_missing",
+        invalid_error="license.allows_derivatives_invalid",
+    )
+    requires_share_alike = _optional_bool(
+        payload=license_payload,
+        key="requires_share_alike",
+        errors=errors,
+        invalid_error="license.requires_share_alike_invalid",
+        default=False,
+    )
+    license_restrictions = _normalized_string_list(license_payload.get("restrictions"))
+
+    policy_allow = set(_normalized_string_list(resolved_license_policy.get("allow_spdx_ids")))
+    policy_deny = set(_normalized_string_list(resolved_license_policy.get("deny_spdx_ids")))
+
+    if license_spdx:
+        if license_spdx in policy_deny:
+            errors.append("license.spdx_denied")
+        elif not bool(resolved_license_policy.get("allow_unknown_spdx")) and license_spdx not in policy_allow:
+            errors.append("license.spdx_not_allowed")
+
+    if allows_commercial_use is False and not bool(resolved_license_policy.get("allow_noncommercial")):
+        errors.append("license.commercial_use_prohibited")
+    if allows_derivatives is False and not bool(resolved_license_policy.get("allow_no_derivatives")):
+        errors.append("license.derivatives_prohibited")
+    if requires_share_alike and not bool(resolved_license_policy.get("allow_share_alike")):
+        errors.append("license.share_alike_not_allowed")
+
+    license_checks_failed = max(0, len(errors) - license_errors_start)
+
     quant_metadata_complete = all(
         [
             bool(quant_method),
@@ -189,6 +285,11 @@ def validate_model_package_manifest(
             "has_signature": has_signature,
             "signature_verified": signature_verified,
             "hash_verified": hash_verified,
+            "license_policy_id": str(resolved_license_policy.get("policy_id") or "").strip() or None,
+            "license_spdx_id": license_spdx,
+            "license_source": license_source or None,
+            "license_restrictions": license_restrictions,
+            "license_checks_failed": int(license_checks_failed),
             "checks_failed": len(errors),
             "checks_warning": len(warnings),
         },
@@ -240,6 +341,120 @@ def _normalized_sha256(value: Any) -> str | None:
     if not text or not _HEX64_RE.fullmatch(text):
         return None
     return text
+
+
+def _normalized_spdx_id(value: Any) -> str | None:
+    text = str(value or "").strip().lower()
+    if not text or not _SPDX_RE.fullmatch(text):
+        return None
+    return text
+
+
+def _normalized_string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    output: list[str] = []
+    for item in value:
+        normalized = str(item or "").strip().lower()
+        if normalized:
+            output.append(normalized)
+    return output
+
+
+def _required_bool(
+    *,
+    payload: dict[str, Any],
+    key: str,
+    errors: list[str],
+    missing_error: str,
+    invalid_error: str,
+) -> bool | None:
+    if key not in payload:
+        errors.append(missing_error)
+        return None
+    value = payload.get(key)
+    if isinstance(value, bool):
+        return value
+    errors.append(invalid_error)
+    return None
+
+
+def _optional_bool(
+    *,
+    payload: dict[str, Any],
+    key: str,
+    errors: list[str],
+    invalid_error: str,
+    default: bool,
+) -> bool:
+    if key not in payload:
+        return bool(default)
+    value = payload.get(key)
+    if isinstance(value, bool):
+        return value
+    errors.append(invalid_error)
+    return bool(default)
+
+
+def _default_license_policy_path() -> Path:
+    return (Path(__file__).resolve().parents[1] / "policies" / "license" / "default.json").resolve()
+
+
+def _resolve_license_policy(
+    *,
+    license_policy: dict[str, Any] | None,
+    license_policy_path: str | Path | None,
+    require_license_policy: bool,
+    errors: list[str],
+    warnings: list[str],
+) -> dict[str, Any]:
+    if isinstance(license_policy, dict):
+        return _normalize_license_policy(license_policy)
+
+    raw_path = str(license_policy_path or os.getenv("AMARYLLIS_LICENSE_POLICY_PATH", "")).strip()
+    policy_path = Path(raw_path).expanduser() if raw_path else _default_license_policy_path()
+    if not policy_path.is_absolute():
+        policy_path = (Path.cwd() / policy_path).resolve()
+
+    if not policy_path.exists():
+        if require_license_policy:
+            errors.append("license.policy_missing")
+        else:
+            warnings.append("license.policy_missing_using_builtin_defaults")
+        return _normalize_license_policy({})
+
+    try:
+        payload = json.loads(policy_path.read_text(encoding="utf-8"))
+    except Exception:
+        errors.append("license.policy_load_failed")
+        return _normalize_license_policy({})
+    if not isinstance(payload, dict):
+        errors.append("license.policy_invalid")
+        return _normalize_license_policy({})
+    return _normalize_license_policy(payload)
+
+
+def _normalize_license_policy(payload: dict[str, Any]) -> dict[str, Any]:
+    policy = dict(_DEFAULT_LICENSE_POLICY)
+    if not isinstance(payload, dict):
+        return policy
+
+    policy_id = str(payload.get("policy_id") or "").strip()
+    if policy_id:
+        policy["policy_id"] = policy_id
+
+    allow = _normalized_string_list(payload.get("allow_spdx_ids"))
+    deny = _normalized_string_list(payload.get("deny_spdx_ids"))
+    if allow:
+        policy["allow_spdx_ids"] = allow
+    if deny:
+        policy["deny_spdx_ids"] = deny
+
+    for key in ("allow_unknown_spdx", "allow_noncommercial", "allow_no_derivatives", "allow_share_alike"):
+        value = payload.get(key)
+        if isinstance(value, bool):
+            policy[key] = value
+    return policy
 
 
 def _resolve_artifact_path(*, artifact: dict[str, Any], artifact_root: str | Path | None) -> Path | None:

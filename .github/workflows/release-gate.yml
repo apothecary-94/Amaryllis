@@ -135,6 +135,7 @@ jobs:
             tests.test_runtime_lifecycle_smoke_gate \
             tests.test_qos_governor \
             tests.test_qos_governor_gate \
+            tests.test_long_context_reliability_gate \
             tests.test_api_quickstart_compatibility_gate \
             tests.test_sdk_openai_compat_client \
             -v
@@ -267,6 +268,9 @@ jobs:
           python scripts/release/model_artifact_admission_gate.py \
             --min-admission-score-pct "${AMARYLLIS_MODEL_ADMISSION_MIN_SCORE_PCT:-100}" \
             --max-failed-scenarios "${AMARYLLIS_MODEL_ADMISSION_MAX_FAILED_SCENARIOS:-0}" \
+            --require-scenario "valid_manifest_admitted" \
+            --require-scenario "missing_quant_recipe_rejected" \
+            --require-scenario "denied_license_rejected" \
             --output "artifacts/model-artifact-admission-report.json"
 
       - name: Upload model artifact admission report
@@ -332,6 +336,28 @@ jobs:
           path: artifacts/user-journey-benchmark-report.json
           if-no-files-found: error
 
+      - name: Run long-context reliability gate (blocking)
+        run: |
+          python scripts/release/long_context_reliability_gate.py \
+            --dataset "eval/datasets/quality/long_context_reliability_cases.json" \
+            --iterations "${AMARYLLIS_LONG_CONTEXT_ITERATIONS:-2}" \
+            --min-run-success-rate-pct "${AMARYLLIS_LONG_CONTEXT_MIN_SUCCESS_RATE_PCT:-100}" \
+            --min-relevance-score-pct "${AMARYLLIS_LONG_CONTEXT_MIN_RELEVANCE_PCT:-95}" \
+            --min-stability-score-pct "${AMARYLLIS_LONG_CONTEXT_MIN_STABILITY_PCT:-100}" \
+            --max-p95-latency-ms "${AMARYLLIS_LONG_CONTEXT_MAX_P95_MS:-4000}" \
+            --baseline "eval/baselines/quality/long_context_reliability_baseline.json" \
+            --max-relevance-regression-pct "${AMARYLLIS_LONG_CONTEXT_MAX_RELEVANCE_REGRESSION_PCT:-2}" \
+            --max-stability-regression-pct "${AMARYLLIS_LONG_CONTEXT_MAX_STABILITY_REGRESSION_PCT:-1}" \
+            --max-latency-regression-pct "${AMARYLLIS_LONG_CONTEXT_MAX_LATENCY_REGRESSION_PCT:-40}" \
+            --output "artifacts/long-context-reliability-report.json"
+
+      - name: Upload long-context reliability report
+        uses: actions/upload-artifact@v4
+        with:
+          name: long-context-reliability-report
+          path: artifacts/long-context-reliability-report.json
+          if-no-files-found: error
+
       - name: Download API quickstart compatibility report
         uses: actions/download-artifact@v4
         with:
@@ -377,6 +403,7 @@ jobs:
             --mission-queue-report "artifacts/mission-queue-load-report.json" \
             --runtime-lifecycle-report "artifacts/runtime-lifecycle-smoke-report.json" \
             --user-journey-report "artifacts/user-journey-benchmark-report.json" \
+            --long-context-report "artifacts/long-context-reliability-report.json" \
             --qos-governor-report "artifacts/qos-governor-gate-report.json" \
             ${API_QUICKSTART_ARG} \
             ${MACOS_DESKTOP_PARITY_ARG} \
@@ -543,6 +570,12 @@ jobs:
           name: user-journey-benchmark-report
           path: artifacts/user-journey
 
+      - name: Download long-context reliability report
+        uses: actions/download-artifact@v4
+        with:
+          name: long-context-reliability-report
+          path: artifacts/long-context
+
       - name: Download distribution resilience report
         uses: actions/download-artifact@v4
         with:
@@ -594,6 +627,7 @@ jobs:
             --mission-queue-report "artifacts/mission-queue/mission-queue-load-report.json" \
             --runtime-lifecycle-report "artifacts/runtime-lifecycle/runtime-lifecycle-smoke-report.json" \
             --user-journey-report "artifacts/user-journey/user-journey-benchmark-report.json" \
+            --long-context-report "artifacts/long-context/long-context-reliability-report.json" \
             --qos-governor-report "artifacts/qos-governor/qos-governor-gate-report.json" \
             --distribution-resilience-report "artifacts/distribution/distribution-resilience-report.json" \
             --api-quickstart-report "artifacts/api-quickstart/api-quickstart-compat-report.json" \
