@@ -9,6 +9,8 @@ struct ModelsView: View {
     @State private var quickSearch: String = ""
     @State private var showAdvancedModelManagement: Bool = false
     @State private var loadingModelID: String?
+    @State private var loadingPackageID: String?
+    @State private var quickProfile: String = "auto"
     private let maxSuggestedPerProvider: Int = 24
 
     private let fallbackSuggested: [String: [APIModelCatalog.SuggestedModel]] = [
@@ -86,11 +88,28 @@ struct ModelsView: View {
             }
             if appState.modelCatalog == nil {
                 Task { await appState.refreshModels(includeSuggested: false, includeRemoteProviders: false) }
+            } else if appState.modelPackageCatalog == nil {
+                Task {
+                    await appState.refreshModelPackages(
+                        profile: requestedQuickProfile,
+                        includeRemoteProviders: true,
+                        limit: 120
+                    )
+                }
             }
         }
         .onChange(of: providerOptions) { options in
             if !options.contains(providerForDownload) {
                 providerForDownload = options.first ?? "mlx"
+            }
+        }
+        .onChange(of: quickProfile) { _ in
+            Task {
+                await appState.refreshModelPackages(
+                    profile: requestedQuickProfile,
+                    includeRemoteProviders: true,
+                    limit: 120
+                )
             }
         }
     }
@@ -254,16 +273,40 @@ struct ModelsView: View {
                 .font(AmaryllisTheme.bodyFont(size: 12, weight: .medium))
                 .foregroundStyle(AmaryllisTheme.textSecondary)
 
+            HStack(spacing: 8) {
+                Text("Profile")
+                    .font(AmaryllisTheme.bodyFont(size: 11, weight: .semibold))
+                    .foregroundStyle(AmaryllisTheme.textSecondary)
+                Picker("Profile", selection: $quickProfile) {
+                    Text("Auto").tag("auto")
+                    Text("Fast").tag("fast")
+                    Text("Balanced").tag("balanced")
+                    Text("Quality").tag("quality")
+                }
+                .pickerStyle(.segmented)
+                if let catalog = appState.modelPackageCatalog {
+                    Text("active: \(catalog.selectedProfile)")
+                        .font(AmaryllisTheme.monoFont(size: 10, weight: .regular))
+                        .foregroundStyle(AmaryllisTheme.textSecondary)
+                }
+            }
+
             TextField("Search model", text: $quickSearch)
                 .textFieldStyle(AmaryllisTerminalTextFieldStyle())
 
-            if filteredQuickSuggestions.isEmpty {
-                Text("No models found for current filter.")
-                    .font(AmaryllisTheme.bodyFont(size: 12, weight: .medium))
-                    .foregroundStyle(AmaryllisTheme.textSecondary)
+            if !filteredQuickPackages.isEmpty {
+                ForEach(filteredQuickPackages.prefix(12)) { package in
+                    quickPackageRow(for: package.row)
+                }
             } else {
-                ForEach(filteredQuickSuggestions.prefix(12)) { suggestion in
-                    quickLibraryRow(for: suggestion)
+                if filteredQuickSuggestions.isEmpty {
+                    Text("No models found for current filter.")
+                        .font(AmaryllisTheme.bodyFont(size: 12, weight: .medium))
+                        .foregroundStyle(AmaryllisTheme.textSecondary)
+                } else {
+                    ForEach(filteredQuickSuggestions.prefix(12)) { suggestion in
+                        quickLibraryRow(for: suggestion)
+                    }
                 }
             }
         }
@@ -320,6 +363,93 @@ struct ModelsView: View {
                 } label: {
                     if isDownloading {
                         Text("Downloading").frame(width: 110)
+                    } else if installed {
+                        Text("Use").frame(width: 110)
+                    } else {
+                        Text("Install & Use").frame(width: 110)
+                    }
+                }
+                .buttonStyle(AmaryllisPrimaryButtonStyle())
+            }
+
+            if let job, isDownloading {
+                modelDownloadProgress(job: job)
+            }
+        }
+        .padding(.vertical, 4)
+        .padding(.horizontal, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(installed ? AmaryllisTheme.border.opacity(0.14) : Color.clear)
+        )
+    }
+
+    private func quickPackageRow(for package: APIModelPackageCatalog.PackageRow) -> some View {
+        let installed = package.installed || isInstalled(provider: package.provider, modelID: package.model)
+        let job = appState.modelDownloadJob(modelId: package.model, provider: package.provider)
+        let isDownloading = job != nil && !(job?.isTerminal ?? true)
+        let isInstalling = loadingPackageID == package.packageID && appState.isBusy
+        let fit = package.compatibility?.fit ?? "unknown"
+
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(package.label ?? package.model)
+                        .font(AmaryllisTheme.bodyFont(size: 12, weight: .semibold))
+                        .foregroundStyle(AmaryllisTheme.textPrimary)
+                    HStack(spacing: 6) {
+                        Text("\(package.provider)/\(package.model)")
+                            .font(AmaryllisTheme.monoFont(size: 11, weight: .regular))
+                            .foregroundStyle(AmaryllisTheme.textSecondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        if let sizeText = packageSizeText(for: package) {
+                            Text("•")
+                                .font(AmaryllisTheme.monoFont(size: 11, weight: .regular))
+                                .foregroundStyle(AmaryllisTheme.textSecondary)
+                            Text(sizeText)
+                                .font(AmaryllisTheme.monoFont(size: 11, weight: .regular))
+                                .foregroundStyle(AmaryllisTheme.textSecondary)
+                        }
+                        if let memoryText = packageMemoryText(for: package) {
+                            Text("•")
+                                .font(AmaryllisTheme.monoFont(size: 11, weight: .regular))
+                                .foregroundStyle(AmaryllisTheme.textSecondary)
+                            Text(memoryText)
+                                .font(AmaryllisTheme.monoFont(size: 11, weight: .regular))
+                                .foregroundStyle(AmaryllisTheme.textSecondary)
+                        }
+                    }
+                }
+                Spacer()
+
+                Text(fit.uppercased())
+                    .font(AmaryllisTheme.monoFont(size: 10, weight: .regular))
+                    .foregroundStyle(fit == "fit" ? AmaryllisTheme.okGreen : AmaryllisTheme.textSecondary)
+
+                if installed {
+                    Text("installed")
+                        .font(AmaryllisTheme.bodyFont(size: 10, weight: .bold))
+                        .foregroundStyle(AmaryllisTheme.okGreen)
+                }
+
+                Button {
+                    loadingPackageID = package.packageID
+                    Task {
+                        quickSearch = ""
+                        appState.lastError = installed
+                            ? "Activating \(package.model)..."
+                            : "Installing \(package.model)..."
+                        if installed {
+                            await appState.loadModel(modelId: package.model, provider: package.provider)
+                        } else {
+                            await appState.installAndActivatePackage(packageId: package.packageID)
+                        }
+                        loadingPackageID = nil
+                    }
+                } label: {
+                    if isInstalling || isDownloading {
+                        Text("Installing").frame(width: 110)
                     } else if installed {
                         Text("Use").frame(width: 110)
                     } else {
@@ -619,6 +749,75 @@ struct ModelsView: View {
         return filtered
     }
 
+    private var requestedQuickProfile: String? {
+        let normalized = quickProfile.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalized == "auto" || normalized.isEmpty {
+            return nil
+        }
+        return normalized
+    }
+
+    private var activeQuickProfile: String {
+        if let requestedQuickProfile {
+            return requestedQuickProfile
+        }
+        if let selected = appState.modelPackageCatalog?.selectedProfile,
+           !selected.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return selected
+        }
+        return "balanced"
+    }
+
+    private var filteredQuickPackages: [QuickPackage] {
+        guard let catalog = appState.modelPackageCatalog else {
+            return []
+        }
+        let term = quickSearch.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let normalizedProfile = activeQuickProfile
+        var items: [QuickPackage] = []
+        for package in catalog.packages {
+            let candidate = "\(package.provider) \(package.model) \(package.label ?? package.model)".lowercased()
+            if !term.isEmpty && !candidate.contains(term) {
+                continue
+            }
+            items.append(
+                QuickPackage(
+                    id: package.packageID,
+                    row: package
+                )
+            )
+        }
+
+        return items.sorted { lhs, rhs in
+            let lhsInstalled = lhs.row.installed || isInstalled(provider: lhs.row.provider, modelID: lhs.row.model)
+            let rhsInstalled = rhs.row.installed || isInstalled(provider: rhs.row.provider, modelID: rhs.row.model)
+            if lhsInstalled != rhsInstalled {
+                return lhsInstalled && !rhsInstalled
+            }
+            let lhsFit = lhs.row.compatibility?.fit ?? "unknown"
+            let rhsFit = rhs.row.compatibility?.fit ?? "unknown"
+            let fitOrder: [String: Int] = [
+                "fit": 3,
+                "tight": 2,
+                "unknown": 1,
+                "not_recommended": 0
+            ]
+            let lhsFitRank = fitOrder[lhsFit, default: 1]
+            let rhsFitRank = fitOrder[rhsFit, default: 1]
+            if lhsFitRank != rhsFitRank {
+                return lhsFitRank > rhsFitRank
+            }
+            let lhsScore = lhs.row.profileScores?[normalizedProfile] ?? -999.0
+            let rhsScore = rhs.row.profileScores?[normalizedProfile] ?? -999.0
+            if lhsScore != rhsScore {
+                return lhsScore > rhsScore
+            }
+            let lhsLabel = lhs.row.label ?? lhs.row.model
+            let rhsLabel = rhs.row.label ?? rhs.row.model
+            return lhsLabel.localizedCaseInsensitiveCompare(rhsLabel) == .orderedAscending
+        }
+    }
+
     private var advancedSuggestedForDisplay: [String: [APIModelCatalog.SuggestedModel]] {
         let allowedProviders = downloadableProviders
 
@@ -774,6 +973,22 @@ struct ModelsView: View {
         return nil
     }
 
+    private func packageSizeText(for package: APIModelPackageCatalog.PackageRow) -> String? {
+        guard let bytes = package.estimatedDownloadBytes, bytes > 0 else {
+            return nil
+        }
+        return "~" + byteCountFormatter.string(fromByteCount: Int64(bytes))
+    }
+
+    private func packageMemoryText(for package: APIModelPackageCatalog.PackageRow) -> String? {
+        guard let requirements = package.requirements,
+              let minimum = requirements.minMemoryGB else {
+            return nil
+        }
+        let rounded = Int(ceil(minimum))
+        return "RAM >= \(rounded) GB"
+    }
+
     private func modelSizeText(fromMetadata metadata: [String: JSONValue]?) -> String? {
         guard let bytes = modelSizeBytes(fromMetadata: metadata), bytes > 0 else {
             return nil
@@ -827,6 +1042,11 @@ struct ModelsView: View {
         let id: String
         let provider: String
         let model: APIModelCatalog.SuggestedModel
+    }
+
+    private struct QuickPackage: Identifiable {
+        let id: String
+        let row: APIModelPackageCatalog.PackageRow
     }
 
     private struct InstalledModel: Identifiable {

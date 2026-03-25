@@ -56,6 +56,28 @@ final class AmaryllisAPIClient {
         return try await request(path: path, method: "GET", body: Optional<Data>.none)
     }
 
+    func listModelPackages(
+        profile: String? = nil,
+        includeRemoteProviders: Bool = true,
+        limit: Int = 120
+    ) async throws -> APIModelPackageCatalog {
+        var queryItems: [URLQueryItem] = [
+            URLQueryItem(name: "include_remote_providers", value: includeRemoteProviders ? "true" : "false"),
+            URLQueryItem(name: "limit", value: String(max(1, min(limit, 500))))
+        ]
+        if let profile, !profile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            queryItems.append(URLQueryItem(name: "profile", value: profile))
+        }
+        let path = buildPath(path: "/models/packages", queryItems: queryItems)
+        return try await request(path: path, method: "GET", body: Optional<Data>.none)
+    }
+
+    func installModelPackage(packageId: String, activate: Bool = true) async throws -> APIModelPackageInstallResponse {
+        let payload = APIInstallModelPackageRequest(packageID: packageId, activate: activate)
+        let body = try jsonEncoder.encode(payload)
+        return try await request(path: "/models/packages/install", method: "POST", body: body)
+    }
+
     func downloadModel(modelId: String, provider: String?) async throws -> APIModelActionResponse {
         let payload = APIDownloadModelRequest(modelId: modelId, provider: provider)
         let body = try jsonEncoder.encode(payload)

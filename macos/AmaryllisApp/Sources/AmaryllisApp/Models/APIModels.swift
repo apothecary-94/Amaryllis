@@ -129,6 +129,131 @@ struct APIModelActionResponse: Decodable {
     let model: String
 }
 
+struct APIModelPackageCatalog: Decodable {
+    struct ProfileSummary: Decodable {
+        let routeMode: String
+        let topPackageIDs: [String]
+
+        private enum CodingKeys: String, CodingKey {
+            case routeMode = "route_mode"
+            case topPackageIDs = "top_package_ids"
+        }
+    }
+
+    struct PackageCompatibility: Decodable {
+        let fit: String
+        let hardwareMemoryGB: Double?
+
+        private enum CodingKeys: String, CodingKey {
+            case fit
+            case hardwareMemoryGB = "hardware_memory_gb"
+        }
+    }
+
+    struct PackageRequirements: Decodable {
+        let localRuntimeRequired: Bool
+        let minMemoryGB: Double?
+        let recommendedMemoryGB: Double?
+
+        private enum CodingKeys: String, CodingKey {
+            case localRuntimeRequired = "local_runtime_required"
+            case minMemoryGB = "min_memory_gb"
+            case recommendedMemoryGB = "recommended_memory_gb"
+        }
+    }
+
+    struct PackageInstallContract: Decodable {
+        let endpoint: String?
+        let payload: [String: JSONValue]?
+    }
+
+    struct PackageRow: Decodable, Identifiable {
+        let packageID: String
+        let provider: String
+        let model: String
+        let label: String?
+        let source: String?
+        let local: Bool
+        let installed: Bool
+        let active: Bool
+        let qualityTier: String?
+        let speedTier: String?
+        let tags: [String]
+        let estimatedParamsB: Double?
+        let estimatedDownloadBytes: Int?
+        let requirements: PackageRequirements?
+        let compatibility: PackageCompatibility?
+        let recommendedProfiles: [String]
+        let profileScores: [String: Double]?
+        let install: PackageInstallContract?
+
+        var id: String { packageID }
+
+        private enum CodingKeys: String, CodingKey {
+            case packageID = "package_id"
+            case provider
+            case model
+            case label
+            case source
+            case local
+            case installed
+            case active
+            case qualityTier = "quality_tier"
+            case speedTier = "speed_tier"
+            case tags
+            case estimatedParamsB = "estimated_params_b"
+            case estimatedDownloadBytes = "estimated_download_bytes"
+            case requirements
+            case compatibility
+            case recommendedProfiles = "recommended_profiles"
+            case profileScores = "profile_scores"
+            case install
+        }
+    }
+
+    let catalogVersion: String
+    let recommendedProfile: String?
+    let selectedProfile: String
+    let profiles: [String: ProfileSummary]?
+    let packages: [PackageRow]
+    let count: Int
+    let requestID: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case catalogVersion = "catalog_version"
+        case recommendedProfile = "recommended_profile"
+        case selectedProfile = "selected_profile"
+        case profiles
+        case packages
+        case count
+        case requestID = "request_id"
+    }
+}
+
+struct APIInstallModelPackageRequest: Encodable {
+    let packageID: String
+    let activate: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case packageID = "package_id"
+        case activate
+    }
+}
+
+struct APIModelPackageInstallResponse: Decodable {
+    let packageID: String
+    let provider: String?
+    let model: String?
+    let requestID: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case packageID = "package_id"
+        case provider
+        case model
+        case requestID = "request_id"
+    }
+}
+
 struct APIModelDownloadJob: Decodable, Identifiable {
     let id: String
     let provider: String

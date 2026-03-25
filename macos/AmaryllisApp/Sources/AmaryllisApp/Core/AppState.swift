@@ -7,6 +7,7 @@ final class AppState: ObservableObject {
     @Published var endpoint: String
     @Published var runtimeDirectory: String
     @Published var modelCatalog: APIModelCatalog?
+    @Published var modelPackageCatalog: APIModelPackageCatalog?
     @Published var selectedModel: String?
     @Published var selectedProvider: String?
     @Published var openAIBaseURL: String
@@ -238,6 +239,12 @@ final class AppState: ObservableObject {
             modelCatalog = catalog
             selectedModel = catalog.active.model
             selectedProvider = catalog.active.provider
+            let selectedProfile = modelPackageCatalog?.selectedProfile
+            await refreshModelPackages(
+                profile: selectedProfile,
+                includeRemoteProviders: includeRemoteProviders,
+                limit: 80
+            )
             lastError = nil
         } catch {
             lastError = error.localizedDescription
@@ -247,6 +254,70 @@ final class AppState: ObservableObject {
         if pendingModelsRefreshWithSuggested {
             pendingModelsRefreshWithSuggested = false
             await refreshModels(includeSuggested: true, includeRemoteProviders: includeRemoteProviders)
+        }
+    }
+
+    func refreshModelPackages(
+        profile: String? = nil,
+        includeRemoteProviders: Bool = true,
+        limit: Int = 120
+    ) async {
+        guard await ensureRuntimeOnline() else {
+            return
+        }
+        do {
+            let catalog = try await apiClient.listModelPackages(
+                profile: profile,
+                includeRemoteProviders: includeRemoteProviders,
+                limit: limit
+            )
+            modelPackageCatalog = catalog
+        } catch {
+            if isLikelyMissingModelPackageEndpoints(error) {
+                modelPackageCatalog = nil
+                return
+            }
+            lastError = error.localizedDescription
+        }
+    }
+
+    func installAndActivatePackage(packageId: String) async {
+        let normalized = packageId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else {
+            lastError = "Package id is empty."
+            return
+        }
+        guard await ensureRuntimeOnline() else {
+            return
+        }
+
+        isBusy = true
+        defer { isBusy = false }
+
+        do {
+            _ = try await apiClient.installModelPackage(packageId: normalized, activate: true)
+            await refreshModels(includeSuggested: false, includeRemoteProviders: false)
+            if let selectedProfile = modelPackageCatalog?.selectedProfile {
+                await refreshModelPackages(
+                    profile: selectedProfile,
+                    includeRemoteProviders: true,
+                    limit: 120
+                )
+            } else {
+                await refreshModelPackages(
+                    profile: nil,
+                    includeRemoteProviders: true,
+                    limit: 120
+                )
+            }
+            lastError = nil
+        } catch {
+            if isLikelyMissingModelPackageEndpoints(error),
+               let parsed = parsePackageId(normalized) {
+                await installAndActivateModel(modelId: parsed.modelId, provider: parsed.provider)
+                return
+            }
+            lastError = error.localizedDescription
         }
     }
 
@@ -931,6 +1002,24 @@ final class AppState: ObservableObject {
         env["AMARYLLIS_AUTH_ENABLED"] = "true"
         env["AMARYLLIS_AUTH_TOKENS"] = "\(normalizedAuthToken):user-001:admin|user"
         return env
+    }
+
+    private func parsePackageId(_ packageId: String) -> (provider: String, modelId: String)? {
+        let normalized = packageId.trimmingCharacters(in: .whitespacesAndNewlines)
+        if normalized.contains("::"),
+           let range = normalized.range(of: "::") {
+            let provider = String(normalized[..<range.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let modelId = String(normalized[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !provider.isEmpty, !modelId.isEmpty {
+                return (provider: provider, modelId: modelId)
+            }
+        }
+        return nil
+    }
+
+    private func isLikelyMissingModelPackageEndpoints(_ error: Error) -> Bool {
+        let detail = error.localizedDescription.lowercased()
+        return detail.contains("404") || detail.contains("not found")
     }
 
     private func resolveProviderForModelAction(_ provider: String?) -> String {
