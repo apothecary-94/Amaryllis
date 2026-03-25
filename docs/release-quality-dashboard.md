@@ -30,6 +30,7 @@ The snapshot builder consumes these gate reports:
 Optional:
 - `artifacts/injection-containment-report.json`
 - `artifacts/model-artifact-admission-report.json`
+- `artifacts/license-admission-report.json`
 - `artifacts/environment-passport-report.json`
 - `artifacts/qos-governor-gate-report.json`
 - `artifacts/long-context-reliability-report.json`
@@ -47,7 +48,7 @@ Optional:
   - `value`
   - `threshold`
   - `comparator` (`lte` or `gte`)
-  - `category` (performance/reliability/resilience/queue/runtime/user_flow/security/supply_chain/reproducibility/runtime_qos/long_context/distribution/desktop_staging)
+  - `category` (performance/reliability/resilience/queue/runtime/user_flow/security/supply_chain/compliance/reproducibility/runtime_qos/long_context/distribution/desktop_staging)
   - `passed`
 - `summary`: total/passed/failed signals + `quality_score_pct` + `status`
 
@@ -64,6 +65,7 @@ Optional:
 - builds dashboard snapshot after canary benchmark gates (`release-quality-dashboard`),
 - enriches dashboard with injection containment score when `injection-containment-report` artifact is present,
 - enriches dashboard with model package admission score when `model-artifact-admission-report` artifact is present,
+- enriches dashboard with license admission score when `license-admission-report` artifact is present,
 - enriches dashboard with environment passport completeness score when `environment-passport-report` artifact is present,
 - enriches dashboard with QoS governor contract status when `qos-governor-gate-report` artifact is present,
 - enriches dashboard with long-context reliability status when `long-context-reliability-report` artifact is present,

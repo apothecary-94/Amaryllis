@@ -128,6 +128,16 @@ jobs:
             --require-scenario "denied_license_rejected" \
             --output "artifacts/nightly-model-artifact-admission-report.json"
 
+      - name: Run nightly license admission gate (blocking)
+        run: |
+          python scripts/release/license_admission_gate.py \
+            --min-admission-score-pct "${AMARYLLIS_NIGHTLY_LICENSE_ADMISSION_MIN_SCORE_PCT:-100}" \
+            --max-failed-scenarios "${AMARYLLIS_NIGHTLY_LICENSE_ADMISSION_MAX_FAILED_SCENARIOS:-0}" \
+            --require-scenario "allowed_license_admitted" \
+            --require-scenario "denied_spdx_rejected" \
+            --require-scenario "noncommercial_rejected" \
+            --output "artifacts/nightly-license-admission-report.json"
+
       - name: Run nightly environment passport gate (blocking)
         run: |
           python scripts/release/environment_passport_gate.py \
@@ -244,6 +254,14 @@ jobs:
         with:
           name: nightly-model-artifact-admission-report
           path: artifacts/nightly-model-artifact-admission-report.json
+          if-no-files-found: error
+
+      - name: Upload nightly license admission report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-license-admission-report
+          path: artifacts/nightly-license-admission-report.json
           if-no-files-found: error
 
       - name: Upload nightly environment passport report

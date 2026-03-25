@@ -14,7 +14,7 @@ def _parse_args() -> argparse.Namespace:
         description=(
             "Build consolidated release quality dashboard snapshot from gate reports "
             "(perf/fault/injection-containment/model-artifact-admission/environment-passport/mission-queue/runtime-lifecycle/user-journey "
-            "with optional distribution resilience, API quickstart compatibility, QoS governor gate, and macOS desktop parity staging)."
+            "with optional license admission, distribution resilience, API quickstart compatibility, QoS governor gate, and macOS desktop parity staging)."
         )
     )
     parser.add_argument(
@@ -41,6 +41,11 @@ def _parse_args() -> argparse.Namespace:
         "--environment-passport-report",
         default="",
         help="Optional path to environment passport gate report JSON.",
+    )
+    parser.add_argument(
+        "--license-admission-report",
+        default="",
+        help="Optional path to license admission gate report JSON.",
     )
     parser.add_argument(
         "--mission-queue-report",
@@ -268,6 +273,13 @@ def _build_snapshot(
         environment_passport.get("summary")
         if isinstance(environment_passport, dict)
         and isinstance(environment_passport.get("summary"), dict)
+        else {}
+    )
+    license_admission = reports.get("license_admission")
+    license_admission_summary = (
+        license_admission.get("summary")
+        if isinstance(license_admission, dict)
+        and isinstance(license_admission.get("summary"), dict)
         else {}
     )
 
@@ -636,6 +648,35 @@ def _build_snapshot(
                 ),
             ]
         )
+    if license_admission_summary:
+        signals.extend(
+            [
+                _metric_signal(
+                    metric_id="license_admission.admission_score_pct",
+                    source="license_admission",
+                    category="compliance",
+                    value=_safe_float(license_admission_summary.get("admission_score_pct")),
+                    threshold=_safe_float(
+                        license_admission_summary.get("min_admission_score_pct"),
+                        default=100.0,
+                    ),
+                    comparator="gte",
+                    unit="pct",
+                ),
+                _metric_signal(
+                    metric_id="license_admission.failed_scenarios",
+                    source="license_admission",
+                    category="compliance",
+                    value=_safe_float(license_admission_summary.get("failed_scenarios")),
+                    threshold=_safe_float(
+                        license_admission_summary.get("max_failed_scenarios"),
+                        default=0.0,
+                    ),
+                    comparator="lte",
+                    unit="count",
+                ),
+            ]
+        )
 
     total = len(signals)
     passed = sum(1 for item in signals if bool(item.get("passed")))
@@ -769,6 +810,10 @@ def main() -> int:
     environment_passport_path = (
         _resolve_path(project_root, environment_passport_raw) if environment_passport_raw else None
     )
+    license_admission_raw = str(args.license_admission_report or "").strip()
+    license_admission_path = (
+        _resolve_path(project_root, license_admission_raw) if license_admission_raw else None
+    )
 
     reports: dict[str, dict[str, Any]] = {}
     for key, path in report_paths.items():
@@ -882,6 +927,21 @@ def main() -> int:
         except Exception as exc:
             print(
                 f"[quality-dashboard] invalid report for environment_passport: {environment_passport_path} error={exc}",
+                file=sys.stderr,
+            )
+            return 2
+    if license_admission_path is not None:
+        if not license_admission_path.exists():
+            print(
+                f"[quality-dashboard] missing report for license_admission: {license_admission_path}",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            reports["license_admission"] = _load_json_object(license_admission_path)
+        except Exception as exc:
+            print(
+                f"[quality-dashboard] invalid report for license_admission: {license_admission_path} error={exc}",
                 file=sys.stderr,
             )
             return 2

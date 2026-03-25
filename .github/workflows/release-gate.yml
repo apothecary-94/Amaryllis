@@ -114,6 +114,7 @@ jobs:
             tests.test_model_artifact_admission \
             tests.test_model_artifact_admission_api \
             tests.test_model_artifact_admission_gate \
+            tests.test_license_admission_gate \
             tests.test_environment_passport_gate \
             tests.test_privacy_transparency_contract \
             tests.test_privacy_transparency_api \
@@ -280,6 +281,23 @@ jobs:
           path: artifacts/model-artifact-admission-report.json
           if-no-files-found: error
 
+      - name: Run license admission gate (blocking)
+        run: |
+          python scripts/release/license_admission_gate.py \
+            --min-admission-score-pct "${AMARYLLIS_LICENSE_ADMISSION_MIN_SCORE_PCT:-100}" \
+            --max-failed-scenarios "${AMARYLLIS_LICENSE_ADMISSION_MAX_FAILED_SCENARIOS:-0}" \
+            --require-scenario "allowed_license_admitted" \
+            --require-scenario "denied_spdx_rejected" \
+            --require-scenario "noncommercial_rejected" \
+            --output "artifacts/license-admission-report.json"
+
+      - name: Upload license admission report
+        uses: actions/upload-artifact@v4
+        with:
+          name: license-admission-report
+          path: artifacts/license-admission-report.json
+          if-no-files-found: error
+
       - name: Run environment passport gate (blocking)
         run: |
           python scripts/release/environment_passport_gate.py \
@@ -399,6 +417,7 @@ jobs:
             --fault-injection-report "artifacts/fault-injection-reliability-report.json" \
             --injection-containment-report "artifacts/injection-containment-report.json" \
             --model-artifact-admission-report "artifacts/model-artifact-admission-report.json" \
+            --license-admission-report "artifacts/license-admission-report.json" \
             --environment-passport-report "artifacts/environment-passport-report.json" \
             --mission-queue-report "artifacts/mission-queue-load-report.json" \
             --runtime-lifecycle-report "artifacts/runtime-lifecycle-smoke-report.json" \
@@ -552,6 +571,12 @@ jobs:
           name: model-artifact-admission-report
           path: artifacts/model-artifact-admission
 
+      - name: Download license admission report
+        uses: actions/download-artifact@v4
+        with:
+          name: license-admission-report
+          path: artifacts/license-admission
+
       - name: Download environment passport report
         uses: actions/download-artifact@v4
         with:
@@ -623,6 +648,7 @@ jobs:
             --fault-injection-report "artifacts/fault-injection/fault-injection-reliability-report.json" \
             --injection-containment-report "artifacts/injection-containment/injection-containment-report.json" \
             --model-artifact-admission-report "artifacts/model-artifact-admission/model-artifact-admission-report.json" \
+            --license-admission-report "artifacts/license-admission/license-admission-report.json" \
             --environment-passport-report "artifacts/environment-passport/environment-passport-report.json" \
             --mission-queue-report "artifacts/mission-queue/mission-queue-load-report.json" \
             --runtime-lifecycle-report "artifacts/runtime-lifecycle/runtime-lifecycle-smoke-report.json" \
