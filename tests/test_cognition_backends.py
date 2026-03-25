@@ -99,6 +99,40 @@ class _FakeModelManager:
             },
         }
 
+    def model_package_catalog(
+        self,
+        *,
+        profile: str | None = None,
+        include_remote_providers: bool = True,
+        limit: int = 120,
+    ) -> dict[str, Any]:
+        self.calls.append(
+            (
+                "model_package_catalog",
+                {
+                    "profile": profile,
+                    "include_remote_providers": include_remote_providers,
+                    "limit": limit,
+                },
+            )
+        )
+        package_id = f"{self.active_provider}::{self.active_model}"
+        return {
+            "selected_profile": profile or "balanced",
+            "packages": [{"package_id": package_id}],
+            "count": 1,
+        }
+
+    def install_model_package(self, *, package_id: str, activate: bool = True) -> dict[str, Any]:
+        self.calls.append(("install_model_package", {"package_id": package_id, "activate": activate}))
+        return {
+            "package_id": package_id,
+            "active": {
+                "provider": self.active_provider,
+                "model": self.active_model,
+            },
+        }
+
     def choose_route(self, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(("choose_route", dict(kwargs)))
         return {
@@ -174,6 +208,14 @@ class CognitionBackendsTests(unittest.TestCase):
         onboarding = backend.recommend_onboarding_profile()
         self.assertIn("recommended_profile", onboarding)
         self.assertIn("profiles", onboarding)
+
+        catalog = backend.model_package_catalog(profile="balanced", include_remote_providers=True, limit=10)
+        self.assertIn("packages", catalog)
+        self.assertGreaterEqual(int(catalog.get("count", 0)), 1)
+
+        package_id = str((catalog.get("packages") or [{}])[0].get("package_id", ""))
+        installed = backend.install_model_package(package_id=package_id, activate=True)
+        self.assertEqual(str(installed.get("package_id")), package_id)
 
         route = backend.choose_route(mode="balanced", require_stream=True)
         selected = route.get("selected")

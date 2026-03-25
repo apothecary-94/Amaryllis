@@ -177,6 +177,11 @@ class ModelRouteRequest(BaseModel):
     limit_per_provider: int = Field(default=120, ge=1, le=500)
 
 
+class InstallModelPackageRequest(BaseModel):
+    package_id: str = Field(min_length=1)
+    activate: bool = True
+
+
 class ModelFailoverDebugResponse(BaseModel):
     request_id: str
     diagnostics: dict[str, Any]
@@ -289,6 +294,71 @@ def onboarding_profile(request: Request) -> dict[str, Any]:
     except ValueError as exc:
         raise ValidationError(str(exc)) from exc
     except Exception as exc:
+        raise ProviderError(str(exc)) from exc
+
+
+@router.get("/models/packages")
+def model_package_catalog(
+    request: Request,
+    profile: str | None = None,
+    include_remote_providers: bool = True,
+    limit: int = 120,
+) -> dict[str, Any]:
+    services = request.app.state.services
+    try:
+        payload = services.model_manager.model_package_catalog(
+            profile=profile,
+            include_remote_providers=include_remote_providers,
+            limit=max(1, min(limit, 500)),
+        )
+        payload["request_id"] = _request_id(request)
+        return payload
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
+    except Exception as exc:
+        raise ProviderError(str(exc)) from exc
+
+
+@router.post("/models/packages/install")
+def install_model_package(payload: InstallModelPackageRequest, request: Request) -> dict[str, Any]:
+    services = request.app.state.services
+    auth = auth_context_from_request(request)
+    try:
+        result = services.model_manager.install_model_package(
+            package_id=payload.package_id,
+            activate=bool(payload.activate),
+        )
+        target_id = str(result.get("model", "")).strip() or payload.package_id
+        result["action_receipt"] = _sign_action(
+            request,
+            action="model_package_install",
+            payload=payload.model_dump(),
+            actor=auth.user_id,
+            target_id=target_id,
+        )
+        result["request_id"] = _request_id(request)
+        return result
+    except ValueError as exc:
+        _sign_action(
+            request,
+            action="model_package_install",
+            payload=payload.model_dump(),
+            actor=auth.user_id,
+            target_id=payload.package_id,
+            status="failed",
+            details={"error": str(exc)},
+        )
+        raise ValidationError(str(exc)) from exc
+    except Exception as exc:
+        _sign_action(
+            request,
+            action="model_package_install",
+            payload=payload.model_dump(),
+            actor=auth.user_id,
+            target_id=payload.package_id,
+            status="failed",
+            details={"error": str(exc)},
+        )
         raise ProviderError(str(exc)) from exc
 
 

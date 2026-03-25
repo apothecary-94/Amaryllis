@@ -446,6 +446,23 @@ curl "http://localhost:8000/models/onboarding/profile"
 
 Response includes hardware snapshot + recommended profile (`fast`, `balanced`, `quality`) and per-profile route targets.
 
+### Model package catalog (requirements + one-click install contract)
+
+```bash
+curl "http://localhost:8000/models/packages?profile=balanced&include_remote_providers=true&limit=60"
+```
+
+### Install model package (one-click API flow)
+
+```bash
+curl -X POST http://localhost:8000/models/packages/install \
+  -H "Content-Type: application/json" \
+  -d '{
+    "package_id": "mlx::mlx-community/Qwen2.5-1.5B-Instruct-4bit",
+    "activate": true
+  }'
+```
+
 ### Resolve best route for request policy
 
 ```bash

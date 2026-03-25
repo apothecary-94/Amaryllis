@@ -48,6 +48,20 @@ class _FakeCognitionManager:
             },
         }
 
+    def model_package_catalog(self, **_: object) -> dict[str, object]:
+        package_id = f"{self.active_provider}::{self.active_model}"
+        return {
+            "selected_profile": "balanced",
+            "packages": [{"package_id": package_id}],
+            "count": 1,
+        }
+
+    def install_model_package(self, **_: object) -> dict[str, object]:
+        return {
+            "package_id": f"{self.active_provider}::{self.active_model}",
+            "active": {"provider": self.active_provider, "model": self.active_model},
+        }
+
     def choose_route(self, **_: object) -> dict[str, object]:
         return {"selected": {"provider": self.active_provider, "model": self.active_model}, "fallbacks": []}
 
@@ -142,6 +156,10 @@ class KernelContractsTests(unittest.TestCase):
             self.assertTrue(str(model).strip())
             onboarding = backend.recommend_onboarding_profile()
             self.assertIn("recommended_profile", onboarding)
+            catalog = backend.model_package_catalog(profile="balanced")
+            self.assertIn("packages", catalog)
+            installed = backend.install_model_package(package_id=f"{provider}::{model}", activate=True)
+            self.assertIn("package_id", installed)
 
 
 if __name__ == "__main__":

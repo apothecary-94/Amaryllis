@@ -115,6 +115,32 @@ class CognitionBackendRuntimeTests(unittest.TestCase):
         self.assertIn("balanced", profiles)
         self.assertIn("request_id", payload)
 
+    def test_model_package_catalog_and_install_endpoints_use_backend_contract(self) -> None:
+        catalog_response = self.client.get(
+            "/models/packages?profile=balanced&include_remote_providers=true&limit=20",
+            headers=self._auth("user-token"),
+        )
+        self.assertEqual(catalog_response.status_code, 200)
+        catalog_payload = catalog_response.json()
+        self.assertEqual(str(catalog_payload.get("catalog_version")), "model_package_catalog_v1")
+        packages = catalog_payload.get("packages", [])
+        self.assertIsInstance(packages, list)
+        self.assertTrue(packages)
+        package_id = str((packages[0] or {}).get("package_id", ""))
+        self.assertTrue(package_id)
+
+        install_response = self.client.post(
+            "/models/packages/install",
+            headers=self._auth("user-token"),
+            json={"package_id": package_id, "activate": True},
+        )
+        self.assertEqual(install_response.status_code, 200)
+        install_payload = install_response.json()
+        self.assertEqual(str(install_payload.get("package_id")), package_id)
+        active = install_payload.get("active", {})
+        self.assertEqual(str(active.get("provider")), "deterministic")
+        self.assertIn("request_id", install_payload)
+
     def test_generation_loop_contract_endpoint_returns_conformance_matrix(self) -> None:
         response = self.client.get(
             "/models/generation-loop/contract",

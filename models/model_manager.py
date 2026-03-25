@@ -388,6 +388,181 @@ class ModelManager:
             "profiles": profiles,
         }
 
+    def model_package_catalog(
+        self,
+        *,
+        profile: str | None = None,
+        include_remote_providers: bool = True,
+        limit: int = 120,
+    ) -> dict[str, Any]:
+        normalized_limit = max(1, min(int(limit), 500))
+        active_provider, active_model = self._active_target()
+        provider_caps = self.provider_capabilities()
+        hardware = self._onboarding_hardware_snapshot(provider_capabilities=provider_caps)
+        recommended_profile, _ = self._onboarding_profile_from_hardware(hardware)
+        selected_profile = self._normalize_onboarding_profile(profile, fallback=recommended_profile)
+        profile_specs = self._onboarding_profile_specs(hardware.get("memory_gb"))
+        profile_constraints: dict[str, RoutingConstraints] = {}
+        for profile_id, spec in profile_specs.items():
+            profile_constraints[profile_id] = RoutingConstraints(
+                mode=str(spec["route_mode"]),
+                require_stream=True,
+                require_tools=False,
+                prefer_local=spec.get("prefer_local"),
+                min_params_b=spec.get("min_params_b"),
+                max_params_b=spec.get("max_params_b"),
+            )
+
+        memory_gb: float | None = None
+        try:
+            raw_memory = hardware.get("memory_gb")
+            memory_gb = float(raw_memory) if raw_memory is not None else None
+        except Exception:
+            memory_gb = None
+
+        candidates = self._build_model_candidates(
+            provider_capabilities=provider_caps,
+            include_suggested=True,
+            limit_per_provider=normalized_limit,
+        )
+        rows: list[dict[str, Any]] = []
+        for candidate in candidates:
+            if not include_remote_providers and not candidate.local:
+                continue
+
+            profile_scores: dict[str, float] = {}
+            for profile_id, constraints in profile_constraints.items():
+                score = score_candidate(candidate, constraints)
+                if score is None:
+                    continue
+                profile_scores[profile_id] = score - self._provider_guardrail_penalty(candidate.provider)
+            if not profile_scores:
+                continue
+
+            rows.append(
+                self._package_row_from_candidate(
+                    candidate=candidate,
+                    memory_gb=memory_gb,
+                    active_provider=active_provider,
+                    active_model=active_model,
+                    profile_scores=profile_scores,
+                )
+            )
+
+        rows.sort(
+            key=lambda row: (
+                1 if bool(row.get("active")) else 0,
+                1 if bool(row.get("installed")) else 0,
+                self._fit_rank_for_package(str((row.get("compatibility") or {}).get("fit", "unknown"))),
+                float((row.get("profile_scores") or {}).get(selected_profile, -999.0)),
+            ),
+            reverse=True,
+        )
+        trimmed = rows[:normalized_limit]
+        top_by_profile = self._build_profile_top_packages(
+            rows=trimmed,
+            profile_ids=list(profile_constraints.keys()),
+            top_k=6,
+        )
+
+        profiles_payload: dict[str, Any] = {}
+        for profile_id, spec in profile_specs.items():
+            profiles_payload[profile_id] = {
+                "route_mode": str(spec["route_mode"]),
+                "top_package_ids": top_by_profile.get(profile_id, []),
+            }
+
+        return {
+            "catalog_version": "model_package_catalog_v1",
+            "generated_at": self._utc_now_iso(),
+            "active": {
+                "provider": active_provider,
+                "model": active_model,
+            },
+            "hardware": hardware,
+            "recommended_profile": recommended_profile,
+            "selected_profile": selected_profile,
+            "profiles": profiles_payload,
+            "count": len(trimmed),
+            "packages": trimmed,
+        }
+
+    def install_model_package(
+        self,
+        *,
+        package_id: str,
+        activate: bool = True,
+    ) -> dict[str, Any]:
+        provider_name, model_name = self._parse_package_id(package_id)
+        if provider_name not in self.providers:
+            raise ValueError(f"Unknown provider: {provider_name}")
+
+        provider_caps = self.provider_capabilities().get(provider_name, {})
+        supports_download = bool(provider_caps.get("supports_download", False))
+        installed_before = False
+        if supports_download:
+            installed_before = self._model_installed(provider_name=provider_name, model_name=model_name)
+
+        steps: list[dict[str, Any]] = []
+        download_result: dict[str, Any] | None = None
+        if supports_download:
+            if installed_before:
+                steps.append(
+                    {
+                        "step": "download",
+                        "status": "skipped",
+                        "reason": "already_installed",
+                    }
+                )
+            else:
+                download_result = self.download_model(model_id=model_name, provider=provider_name)
+                steps.append(
+                    {
+                        "step": "download",
+                        "status": "completed",
+                    }
+                )
+        else:
+            steps.append(
+                {
+                    "step": "download",
+                    "status": "skipped",
+                    "reason": "provider_download_not_supported",
+                }
+            )
+
+        load_result: dict[str, Any] | None = None
+        if activate:
+            load_result = self.load_model(model_id=model_name, provider=provider_name)
+            steps.append(
+                {
+                    "step": "activate",
+                    "status": "completed",
+                }
+            )
+        else:
+            steps.append(
+                {
+                    "step": "activate",
+                    "status": "skipped",
+                    "reason": "activate_disabled",
+                }
+            )
+
+        final_provider, final_model = self._active_target()
+        return {
+            "package_id": self._package_id_from_target(provider_name=provider_name, model_name=model_name),
+            "provider": provider_name,
+            "model": model_name,
+            "download": download_result,
+            "load": load_result,
+            "steps": steps,
+            "active": {
+                "provider": final_provider,
+                "model": final_model,
+            },
+        }
+
     def choose_route(
         self,
         *,
@@ -1666,6 +1841,221 @@ class ModelManager:
         except Exception:
             return None
         return None
+
+    @staticmethod
+    def _build_profile_top_packages(
+        *,
+        rows: list[dict[str, Any]],
+        profile_ids: list[str],
+        top_k: int = 6,
+    ) -> dict[str, list[str]]:
+        top: dict[str, list[str]] = {}
+        for profile_id in profile_ids:
+            ranked = sorted(
+                rows,
+                key=lambda row: float((row.get("profile_scores") or {}).get(profile_id, -999.0)),
+                reverse=True,
+            )
+            picked: list[str] = []
+            seen: set[str] = set()
+            for row in ranked:
+                package_id = str(row.get("package_id", "")).strip()
+                if not package_id or package_id in seen:
+                    continue
+                seen.add(package_id)
+                picked.append(package_id)
+                if len(picked) >= max(1, top_k):
+                    break
+            top[profile_id] = picked
+        return top
+
+    def _package_row_from_candidate(
+        self,
+        *,
+        candidate: ModelCandidate,
+        memory_gb: float | None,
+        active_provider: str,
+        active_model: str,
+        profile_scores: dict[str, float],
+    ) -> dict[str, Any]:
+        package_id = self._package_id_from_target(
+            provider_name=candidate.provider,
+            model_name=candidate.model,
+        )
+        requirements = self._memory_requirements_for_candidate(candidate)
+        compatibility_fit = self._memory_fit_for_candidate(
+            memory_gb=memory_gb,
+            requirements=requirements,
+        )
+        ranked_profiles = sorted(profile_scores.items(), key=lambda item: item[1], reverse=True)
+        recommended_profiles = [profile_id for profile_id, _ in ranked_profiles[:2]]
+        if not recommended_profiles:
+            recommended_profiles = ["balanced"]
+
+        return {
+            "package_id": package_id,
+            "provider": candidate.provider,
+            "model": candidate.model,
+            "label": candidate.metadata.get("label") or candidate.model,
+            "source": candidate.source,
+            "local": candidate.local,
+            "installed": candidate.installed,
+            "active": candidate.provider == active_provider and candidate.model == active_model,
+            "quality_tier": candidate.quality_tier,
+            "speed_tier": candidate.speed_tier,
+            "tags": list(candidate.tags),
+            "estimated_params_b": candidate.estimated_params_b,
+            "estimated_download_bytes": self._estimated_download_size_bytes(candidate),
+            "requirements": requirements,
+            "compatibility": {
+                "fit": compatibility_fit,
+                "hardware_memory_gb": memory_gb,
+            },
+            "recommended_profiles": recommended_profiles,
+            "profile_scores": profile_scores,
+            "install": {
+                "endpoint": "/models/packages/install",
+                "payload": {
+                    "package_id": package_id,
+                    "activate": True,
+                },
+                "download_step": {
+                    "endpoint": "/models/download/start",
+                    "payload": {
+                        "model_id": candidate.model,
+                        "provider": candidate.provider,
+                    },
+                },
+                "activate_step": {
+                    "endpoint": "/models/load",
+                    "payload": {
+                        "model_id": candidate.model,
+                        "provider": candidate.provider,
+                    },
+                },
+            },
+        }
+
+    @staticmethod
+    def _fit_rank_for_package(fit: str) -> int:
+        if fit == "fit":
+            return 3
+        if fit == "tight":
+            return 2
+        if fit == "unknown":
+            return 1
+        return 0
+
+    @staticmethod
+    def _normalize_onboarding_profile(profile: str | None, *, fallback: str = "balanced") -> str:
+        normalized = str(profile or "").strip().lower()
+        if normalized in {"fast", "balanced", "quality"}:
+            return normalized
+        fallback_normalized = str(fallback or "").strip().lower()
+        if fallback_normalized in {"fast", "balanced", "quality"}:
+            return fallback_normalized
+        return "balanced"
+
+    @staticmethod
+    def _package_id_from_target(*, provider_name: str, model_name: str) -> str:
+        return f"{provider_name}::{model_name}"
+
+    @staticmethod
+    def _parse_package_id(package_id: str) -> tuple[str, str]:
+        normalized = str(package_id or "").strip()
+        if not normalized:
+            raise ValueError("package_id is required")
+        parts = normalized.split("::", 1)
+        if len(parts) != 2:
+            raise ValueError("package_id must use '<provider>::<model>' format")
+        provider_name, model_name = parts[0].strip(), parts[1].strip()
+        if not provider_name or not model_name:
+            raise ValueError("package_id must include both provider and model")
+        return provider_name, model_name
+
+    @staticmethod
+    def _estimated_download_size_bytes(candidate: ModelCandidate) -> int | None:
+        metadata = candidate.metadata if isinstance(candidate.metadata, dict) else {}
+        for key in ("size_bytes", "estimated_total_bytes"):
+            value = metadata.get(key)
+            if value is None:
+                continue
+            try:
+                parsed = int(value)
+            except Exception:
+                continue
+            if parsed > 0:
+                return parsed
+        if candidate.estimated_params_b is not None:
+            return int(float(candidate.estimated_params_b) * 1_000_000_000 * 0.56)
+        return None
+
+    @staticmethod
+    def _memory_requirements_for_candidate(candidate: ModelCandidate) -> dict[str, Any]:
+        local_runtime_required = bool(candidate.local)
+        estimated_params = candidate.estimated_params_b
+        if not local_runtime_required:
+            return {
+                "local_runtime_required": False,
+                "min_memory_gb": 2.0,
+                "recommended_memory_gb": 4.0,
+            }
+
+        if estimated_params is None:
+            return {
+                "local_runtime_required": True,
+                "min_memory_gb": 8.0,
+                "recommended_memory_gb": 16.0,
+            }
+
+        min_memory_gb = max(4.0, round(float(estimated_params) * 0.7, 1))
+        recommended_memory_gb = max(min_memory_gb + 2.0, round(float(estimated_params) * 1.05, 1))
+        return {
+            "local_runtime_required": True,
+            "min_memory_gb": min_memory_gb,
+            "recommended_memory_gb": recommended_memory_gb,
+        }
+
+    @staticmethod
+    def _memory_fit_for_candidate(
+        *,
+        memory_gb: float | None,
+        requirements: dict[str, Any],
+    ) -> str:
+        if not bool(requirements.get("local_runtime_required", False)):
+            return "fit"
+        if memory_gb is None:
+            return "unknown"
+        min_memory = float(requirements.get("min_memory_gb", 0.0))
+        recommended_memory = float(requirements.get("recommended_memory_gb", min_memory))
+        if memory_gb >= recommended_memory:
+            return "fit"
+        if memory_gb >= min_memory:
+            return "tight"
+        return "not_recommended"
+
+    def _model_installed(self, *, provider_name: str, model_name: str) -> bool:
+        provider = self.providers.get(provider_name)
+        if provider is None:
+            return False
+        try:
+            items = self._call_provider_resilient(
+                provider_name=provider_name,
+                operation="list_models",
+                call=provider.list_models,
+                max_attempts=1,
+            )
+        except Exception:
+            return False
+        if not isinstance(items, list):
+            return False
+        target = str(model_name).strip()
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("id", "")).strip() == target:
+                return True
+        return False
 
     def _candidate_from_model_id(
         self,

@@ -79,6 +79,27 @@ class ModelManagerCognitionBackend:
     def recommend_onboarding_profile(self) -> dict[str, Any]:
         return self._manager.recommend_onboarding_profile()
 
+    def model_package_catalog(
+        self,
+        *,
+        profile: str | None = None,
+        include_remote_providers: bool = True,
+        limit: int = 120,
+    ) -> dict[str, Any]:
+        return self._manager.model_package_catalog(
+            profile=profile,
+            include_remote_providers=include_remote_providers,
+            limit=limit,
+        )
+
+    def install_model_package(
+        self,
+        *,
+        package_id: str,
+        activate: bool = True,
+    ) -> dict[str, Any]:
+        return self._manager.install_model_package(package_id=package_id, activate=activate)
+
     def choose_route(
         self,
         *,
@@ -363,6 +384,151 @@ class DeterministicCognitionBackend:
             "recommended_profile": "balanced",
             "reason_codes": ["deterministic_backend_default"],
             "profiles": profiles,
+        }
+
+    def model_package_catalog(
+        self,
+        *,
+        profile: str | None = None,
+        include_remote_providers: bool = True,
+        limit: int = 120,
+    ) -> dict[str, Any]:
+        _ = (include_remote_providers, limit)
+        model_name = str(self.active_model or "deterministic-v1")
+        selected_profile = str(profile or "balanced").strip().lower()
+        if selected_profile not in {"fast", "balanced", "quality"}:
+            selected_profile = "balanced"
+        package_id = f"deterministic::{model_name}"
+        package = {
+            "package_id": package_id,
+            "provider": "deterministic",
+            "model": model_name,
+            "label": model_name,
+            "source": "deterministic",
+            "local": True,
+            "installed": True,
+            "active": True,
+            "quality_tier": "standard",
+            "speed_tier": "fast",
+            "tags": ["deterministic"],
+            "estimated_params_b": 0.1,
+            "estimated_download_bytes": 1024,
+            "requirements": {
+                "local_runtime_required": True,
+                "min_memory_gb": 2.0,
+                "recommended_memory_gb": 4.0,
+            },
+            "compatibility": {
+                "fit": "fit",
+                "hardware_memory_gb": 16.0,
+            },
+            "recommended_profiles": ["balanced", "fast"],
+            "profile_scores": {
+                "fast": 1.0,
+                "balanced": 1.1,
+                "quality": 0.9,
+            },
+            "install": {
+                "endpoint": "/models/packages/install",
+                "payload": {
+                    "package_id": package_id,
+                    "activate": True,
+                },
+                "download_step": {
+                    "endpoint": "/models/download/start",
+                    "payload": {
+                        "model_id": model_name,
+                        "provider": "deterministic",
+                    },
+                },
+                "activate_step": {
+                    "endpoint": "/models/load",
+                    "payload": {
+                        "model_id": model_name,
+                        "provider": "deterministic",
+                    },
+                },
+            },
+        }
+        return {
+            "catalog_version": "model_package_catalog_v1",
+            "generated_at": self._utc_now_iso(),
+            "active": {
+                "provider": "deterministic",
+                "model": model_name,
+            },
+            "hardware": {
+                "platform": "deterministic",
+                "machine": "synthetic",
+                "cpu_count_logical": 8,
+                "memory_bytes": 16 * 1024 * 1024 * 1024,
+                "memory_gb": 16.0,
+                "provider_count": 1,
+                "local_provider_available": True,
+                "cloud_provider_available": False,
+            },
+            "recommended_profile": "balanced",
+            "selected_profile": selected_profile,
+            "profiles": {
+                "fast": {"route_mode": "local_first", "top_package_ids": [package_id]},
+                "balanced": {"route_mode": "balanced", "top_package_ids": [package_id]},
+                "quality": {"route_mode": "quality_first", "top_package_ids": [package_id]},
+            },
+            "count": 1,
+            "packages": [package],
+        }
+
+    def install_model_package(
+        self,
+        *,
+        package_id: str,
+        activate: bool = True,
+    ) -> dict[str, Any]:
+        normalized = str(package_id or "").strip()
+        if not normalized:
+            raise ValueError("package_id is required")
+        if "::" in normalized:
+            provider_name, model_name = normalized.split("::", 1)
+        else:
+            provider_name, model_name = "deterministic", normalized
+        provider_name = str(provider_name).strip() or "deterministic"
+        model_name = str(model_name).strip()
+        if not model_name:
+            raise ValueError("package_id must include model")
+        load_payload: dict[str, Any] | None = None
+        steps = [
+            {
+                "step": "download",
+                "status": "skipped",
+                "reason": "already_installed",
+            }
+        ]
+        if activate:
+            self.active_provider = provider_name
+            self.active_model = model_name
+            load_payload = {
+                "status": "loaded",
+                "provider": provider_name,
+                "model": model_name,
+                "active": {
+                    "provider": provider_name,
+                    "model": model_name,
+                },
+            }
+            steps.append({"step": "activate", "status": "completed"})
+        else:
+            steps.append({"step": "activate", "status": "skipped", "reason": "activate_disabled"})
+        return {
+            "package_id": f"{provider_name}::{model_name}",
+            "provider": provider_name,
+            "model": model_name,
+            "download": None,
+            "load": load_payload,
+            "steps": steps,
+            "active": {
+                "provider": self.active_provider,
+                "model": self.active_model,
+            },
         }
 
     def choose_route(
